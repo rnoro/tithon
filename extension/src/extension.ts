@@ -49,7 +49,10 @@ export function activate(context: vscode.ExtensionContext): void {
             (vscode.window.activeTextEditor
               ? findNotebook(vscode.window.activeTextEditor.document.uri)
               : undefined);
-          if (nb) await notebookCtrl.ensureLive(nb);
+          if (nb) {
+            await notebookCtrl.ensureLive(nb);
+            notebookCtrl.refreshLive(nb); // pick up cells added since live started (ADR-022)
+          }
 
           const execId = await client.execute(arg.code, arg.origin);
           vscode.window.setStatusBarMessage(`Tithon: submitted ${execId}`, 3000);

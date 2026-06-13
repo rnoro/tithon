@@ -83,7 +83,18 @@ export class LiveOutputSync {
     private readonly sink: CellSink,
     private readonly scheduler: Scheduler,
   ) {
-    // Memoized once: the sha256 cell-hash pass runs per document, not per event.
+    this.refreshCells(cells);
+  }
+
+  /**
+   * Rebuild the cell_hash -> cell-index map from the current document cells.
+   * The index is otherwise computed once at construction; call this when cells
+   * are ADDED or EDITED after live sync started, so a newly-added cell's
+   * execution still maps (otherwise its output is dropped — ADR-022). Cheap: one
+   * sha256 pass over the cells, not per event.
+   */
+  refreshCells(cells: Cell[]): void {
+    this.hashIndex.clear();
     const docCells: DocCell[] = docCellsFromParsed(cells);
     for (const dc of docCells) {
       if (!this.hashIndex.has(dc.cellHash)) this.hashIndex.set(dc.cellHash, dc.index);

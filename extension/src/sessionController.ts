@@ -170,7 +170,10 @@ class VSCodeCellSink implements CellSink {
 export class TithonNotebookController {
   private readonly controller: vscode.NotebookController;
   private readonly daemon: DaemonClient;
-  private readonly liveSessions = new Map<string, vscode.Disposable>();
+  private readonly liveSessions = new Map<
+    string,
+    { dispose: () => void; refresh: () => void }
+  >();
 
   constructor(sockPath?: string) {
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
@@ -187,6 +190,9 @@ export class TithonNotebookController {
   ): Promise<void> {
     try {
       await this.ensureLive(notebook);
+      // Cells may have been added/edited since live sync started; refresh the
+      // index so this run's cell maps (ADR-022).
+      this.refreshLive(notebook);
       // Submit with the cell's *line* range (matching the CodeLens path and the
       // doc-cell ranges restore uses), not a cell-index range — see ADR-019.
       const ranges = await this.cellLineRanges(notebook);
@@ -232,6 +238,15 @@ export class TithonNotebookController {
     this.liveSessions.set(key, session);
   }
 
+  /**
+   * Refresh the live cell-hash index for a notebook from its current cells
+   * (no-op if live sync isn't running). Call right before submitting so cells
+   * added/edited since live sync started still map their output (ADR-022).
+   */
+  refreshLive(notebook: vscode.NotebookDocument): void {
+    this.liveSessions.get(notebook.uri.toString())?.refresh();
+  }
+
   /** Attach a session, restore folded outputs, and write them into the cells. */
   async restore(notebook: vscode.NotebookDocument): Promise<void> {
     const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
@@ -260,18 +275,35 @@ export class TithonNotebookController {
   /**
    * Start *live* sync: keep a session open and mirror the daemon's output stream
    * into the notebook's cells in real time, with bounded render cost (coalesced
-   * by {@link LiveOutputSync}). Returns a Disposable that stops the session.
+   * by {@link LiveOutputSync}). Returns a handle with `dispose` (stops the
+   * session) and `refresh` (rebuilds the cell-hash index from current cells).
    */
-  async startLive(notebook: vscode.NotebookDocument): Promise<vscode.Disposable> {
-    const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
-
+  async startLive(
+    notebook: vscode.NotebookDocument,
+  ): Promise<{ dispose: () => void; refresh: () => void }> {
     const client = new SessionClient();
     await client.attach(0); // catch up on any prior state, then stream live
     const sink = new VSCodeCellSink(this.controller, notebook);
-    const live = new LiveOutputSync(cells, sink, new ThrottleScheduler(50));
+    const live = new LiveOutputSync(
+      cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
+      sink,
+      new ThrottleScheduler(50),
+    );
     live.seed(client.executions().map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
+    const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
+    // Keep the index current as cells are added/edited after live started
+    // (ADR-022) — otherwise a new cell's execution maps to nothing.
+    const changeSub = vscode.workspace.onDidChangeNotebookDocument((e) => {
+      if (e.notebook.uri.toString() === notebook.uri.toString()) refresh();
+    });
     client.onEvent((ev) => live.onEvent(ev));
-    return new vscode.Disposable(() => client.close());
+    return {
+      dispose: () => {
+        changeSub.dispose();
+        client.close();
+      },
+      refresh,
+    };
   }
 }
 

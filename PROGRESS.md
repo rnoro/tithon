@@ -26,7 +26,13 @@
   저장 안 한 편집이면 실행 셀 해시와 불일치 → 미매핑 → 드롭. `cellsFromNotebook()`이 열린 노트북의
   getText()를 그대로 해시(cellSource===getText())해 데몬 cell_hash와 정확히 일치. 디스크 read 제거.
   검증 실 VSCode v13(디스크 DISKVERSION ↔ 메모리 EDITED 실행→EDITED 출력). verify-d = v8 v10 v11 v12 v13.
-- 확장 버전 0.0.1→0.0.2(강제 재로드)→0.0.3(메모리 매핑). vsix 재패키징+재설치 필요(같은 버전 덮어쓰면 미반영).
+- **#5 셀 추가 후 실행 시 라이브 출력 안 뜸** (ADR-022): LiveOutputSync hashIndex가 startLive 때 1회만
+  구성돼 이후 추가된 셀이 미매핑→드롭(restore는 됐던 이유). `refreshCells()` + onDidChangeNotebookDocument
+  구독 + 제출 직전 `refreshLive()`. 검증 실 VSCode v14(라이브 시작 후 셀 추가→그 셀 실행이 restore 없이
+  라이브 출력). verify-d = v8 v10 v11 v12 v13 v14 (6/6).
+- 확장 버전 0.0.1→0.0.2(강제 재로드)→0.0.3(메모리 매핑)→0.0.4(인덱스 갱신). vsix 재패키징+재설치 필요.
+- 트레일링 개행 함정: 디스크 cellSource는 끝 \n O, 방금 타이핑한 셀 getText()는 \n X → 0.0.2 디스크 매핑이
+  깨졌던 이유. 0.0.3 메모리 매핑(getText 그대로 해시)이 근본 해결.
 
 ### Phase 1 ⑨⑩ 산출물 (라이브 동기화 · 최적화 · 백프레셔)
 - extension/src/`liveSync.ts`: `LiveOutputSync` — throttle/coalesce(주입 Scheduler) + run-merge +

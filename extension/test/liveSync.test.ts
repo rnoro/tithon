@@ -166,3 +166,29 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     expect(sink.ops).toEqual([{ op: "appendStream", idx: 1, name: "stdout", text: "hello" }]);
   });
 });
+
+describe("LiveOutputSync — refreshCells (ADR-022: cell added after live started)", () => {
+  it("drops a not-yet-indexed cell's output, then maps it after refreshCells", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    // Live sync starts when only cell "a" exists.
+    const initial = parse(["# %% a", "a = 1", ""].join("\n")).cells;
+    const live = new LiveOutputSync(initial, sink, sched);
+
+    const full = parse(DOC).cells; // a, b
+    const bSrc = cellSource(full[1]);
+
+    // Cell "b" is added and run, but the index predates it -> output dropped.
+    live.onEvent(queued("e2", bSrc));
+    live.onEvent(stream("e2", "B\n"));
+    sched.tick();
+    expect(sink.ops.length).toBe(0);
+
+    // Refresh from the current 2-cell document; a re-run now maps to cell 1.
+    live.refreshCells(full);
+    live.onEvent(queued("e2b", bSrc));
+    live.onEvent(stream("e2b", "B\n"));
+    sched.tick();
+    expect(sink.visibleStdout(1)).toBe("B\n");
+  });
+});
