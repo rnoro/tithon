@@ -21,7 +21,12 @@
   synthesizeCell이 마지막 줄 terminator를 ""로 둔 탓. serializer.ts `bodyLinesFromText()`(순수,
   모든 줄 "\n" 종결+끝개행 1개 정규화)로 수정, synthesizeCell이 사용. 기존 셀 verbatim 불변(ADR-011).
   회귀: serializer.test.ts(glue 금지 + 3셀 라운드트립). ADR-020.
-- ⚠ 이 수정들은 소스에만 있음 — 사용자는 **vsix 재패키징(`npx vsce package`) + 재설치** 후에야 적용됨.
+- **#4 매핑을 메모리 노트북 셀에서 산출** (ADR-021): 0.0.2 설치 후에도 출력이 안 뜬 원인 — startLive/
+  restore가 디스크 .py를 다시 parse해 hashIndex를 만들었는데, 손상된 test.py(옛 glue로 1셀 붕괴)나
+  저장 안 한 편집이면 실행 셀 해시와 불일치 → 미매핑 → 드롭. `cellsFromNotebook()`이 열린 노트북의
+  getText()를 그대로 해시(cellSource===getText())해 데몬 cell_hash와 정확히 일치. 디스크 read 제거.
+  검증 실 VSCode v13(디스크 DISKVERSION ↔ 메모리 EDITED 실행→EDITED 출력). verify-d = v8 v10 v11 v12 v13.
+- 확장 버전 0.0.1→0.0.2(강제 재로드)→0.0.3(메모리 매핑). vsix 재패키징+재설치 필요(같은 버전 덮어쓰면 미반영).
 
 ### Phase 1 ⑨⑩ 산출물 (라이브 동기화 · 최적화 · 백프레셔)
 - extension/src/`liveSync.ts`: `LiveOutputSync` — throttle/coalesce(주입 Scheduler) + run-merge +

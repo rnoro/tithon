@@ -8,7 +8,7 @@ case "${1:-a}" in
   a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
   b) scripts="v5 v6"; label="VERIFY-B" ;;
   c) scripts="v7 v9"; label="VERIFY-C" ;;   # client restore + daemon backpressure (hermetic)
-  d) scripts="v8 v10 v11 v12"; label="VERIFY-D" ;;  # real VSCode host: restore + live + native-run + multi-cell (network + xvfb)
+  d) scripts="v8 v10 v11 v12 v13"; label="VERIFY-D" ;;  # real VSCode: restore+live+native+multicell+stale-file (network + xvfb)
   all) scripts="v1 v2 v3 v4 v5 v6 v7 v9"; label="VERIFY" ;;
   *) echo "usage: $0 a|b|c|d|all" >&2; exit 2 ;;
 esac

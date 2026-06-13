@@ -12,10 +12,30 @@
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
 import { DaemonClient } from "./daemonClient";
-import { parse } from "./serializer";
+import { parse, type Cell } from "./serializer";
 import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
 import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
+
+/**
+ * Build serializer Cells from the IN-MEMORY notebook (the authoritative cell
+ * state), hashing the exact text each cell submits. The daemon journals
+ * cell_hash = sha256(submitted code) = sha256(cell.document.getText()); building
+ * the live/restore index from the open notebook — rather than re-parsing the
+ * on-disk .py — makes output→cell mapping robust against unsaved edits or a
+ * corrupted/stale file on disk (e.g. an older glue-bug file). See ADR-021.
+ * One verbatim body line means cellSource(cell) === getText() exactly, so the
+ * computed hash matches the daemon's. Markup cells are kept so indices align
+ * with notebook.cellAt(i).
+ */
+function cellsFromNotebook(notebook: vscode.NotebookDocument): Cell[] {
+  return notebook.getCells().map((c) => ({
+    kind: c.kind === vscode.NotebookCellKind.Markup ? "markdown" : "code",
+    hasMarker: true,
+    markerLine: { text: "# %%", terminator: "\n" },
+    body: [{ text: c.document.getText(), terminator: "" }],
+  }));
+}
 
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
 const STDERR_MIME = "application/vnd.code.notebook.stderr";
@@ -214,9 +234,7 @@ export class TithonNotebookController {
 
   /** Attach a session, restore folded outputs, and write them into the cells. */
   async restore(notebook: vscode.NotebookDocument): Promise<void> {
-    const bytes = await vscode.workspace.fs.readFile(notebook.uri);
-    const text = new TextDecoder().decode(bytes);
-    const cells = parse(text).cells;
+    const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
 
     const client = new SessionClient();
     await client.attach(0);
@@ -245,8 +263,7 @@ export class TithonNotebookController {
    * by {@link LiveOutputSync}). Returns a Disposable that stops the session.
    */
   async startLive(notebook: vscode.NotebookDocument): Promise<vscode.Disposable> {
-    const bytes = await vscode.workspace.fs.readFile(notebook.uri);
-    const cells = parse(new TextDecoder().decode(bytes)).cells;
+    const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
 
     const client = new SessionClient();
     await client.attach(0); // catch up on any prior state, then stream live
