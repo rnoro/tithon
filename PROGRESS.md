@@ -42,11 +42,16 @@
 - verify/: v1~v4 + lib.sh + run_verify.sh + 파이썬 체커(_check_v1~3, _lastseq)
 - Makefile: verify-a / verify-b / verify / test
 
+### Stage B 후속 (⑥ end-to-end 연결)
+- execute 경로에 origin{uri,range} + 데몬 산출 cell_hash(=sha256(code)) 저널 기록 → 스냅샷
+  executions[]에 cell_hash·origin 노출. extension `executionsFromSnapshot`가 이를 받아
+  `attachOutputs`로 셀 부착 → v6의 cell_hash 매핑이 실데이터로 연결(ADR-014). 구 저널은
+  additive 마이그레이션(ALTER TABLE ADD COLUMN cell_hash). pytest 28, vitest 27, verify 6/6.
+
 ## 다음 단계 (Phase 0 검증 ①~⑥ 전부 통과 — Phase 1로)
 - Phase 0 6항목 PASS: ①~④(Stage A) + ⑤⑥(Stage B). 설계 유효성 확인 완료.
-- Phase 1(데몬 MVP)로: 멀티 세션, cell_hash·origin을 execute 경로에 정식 기록(현재 daemonClient는
-  origin 전송하나 데몬 _submit이 아직 미저장 — 저널 executions.cell_origin_uri/cell_range 연결),
-  실행 큐 가시화, 아티팩트 스토어 확장, systemd 패키징.
+- Phase 1(데몬 MVP)로: 멀티 세션, 실행 큐 가시화, 아티팩트 스토어 확장, systemd 패키징,
+  stale 배지/듀얼 뷰 UX.
 - ⑤ 통합 검증의 잔여: xvfb/디스플레이 있는 환경에서 @vscode/test-electron 실제 구동
   (현재는 jsdom 대체 — ADR-012).
 

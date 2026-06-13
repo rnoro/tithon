@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS executions(
   code            TEXT NOT NULL,
   cell_origin_uri TEXT,
   cell_range      TEXT,
+  cell_hash       TEXT,
   submitted_by    TEXT,
   status          TEXT NOT NULL,
   execution_count INTEGER,
@@ -87,6 +88,13 @@ class Journal:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive migrations for journals created by earlier daemon versions."""
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(executions)").fetchall()}
+        if "cell_hash" not in cols:  # added with output->cell attachment wiring
+            self.db.execute("ALTER TABLE executions ADD COLUMN cell_hash TEXT")
 
     # -- messages ----------------------------------------------------------
     def append_message(self, exec_id: str | None, msg_type: str, content: dict,
@@ -118,11 +126,16 @@ class Journal:
 
     # -- executions --------------------------------------------------------
     def insert_execution(self, exec_id: str, seq: int, code: str,
-                         submitted_by: str | None = None) -> None:
+                         submitted_by: str | None = None,
+                         origin: dict | None = None,
+                         cell_hash: str | None = None) -> None:
+        uri = origin.get("uri") if origin else None
+        rng = origin.get("range") if origin else None
+        cell_range = json.dumps(rng) if rng is not None else None
         self.db.execute(
-            "INSERT INTO executions(exec_id, session_id, seq, code, submitted_by, status)"
-            " VALUES(?,?,?,?,?, 'queued')",
-            (exec_id, self.session_id, seq, code, submitted_by),
+            "INSERT INTO executions(exec_id, session_id, seq, code, submitted_by, status,"
+            " cell_origin_uri, cell_range, cell_hash) VALUES(?,?,?,?,?, 'queued', ?,?,?)",
+            (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range, cell_hash),
         )
 
     def mark_started(self, exec_id: str) -> None:
@@ -147,9 +160,11 @@ class Journal:
         return cur.rowcount
 
     def executions(self) -> list[tuple]:
-        """Rows (exec_id, seq, code, status, execution_count, folded_json) by seq."""
+        """Rows by seq: (exec_id, seq, code, status, execution_count, folded_json,
+        cell_origin_uri, cell_range, cell_hash)."""
         return self.db.execute(
-            "SELECT exec_id, seq, code, status, execution_count, folded_json"
+            "SELECT exec_id, seq, code, status, execution_count, folded_json,"
+            " cell_origin_uri, cell_range, cell_hash"
             " FROM executions ORDER BY seq"
         ).fetchall()
 

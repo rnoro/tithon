@@ -47,6 +47,34 @@ export function computeCellHash(source: string): string {
   return createHash("sha256").update(source, "utf8").digest("hex");
 }
 
+/** One execution as it appears in the daemon's `snapshot.executions[]`. */
+export interface SnapshotExecution {
+  exec_id: string;
+  cell_hash?: string | null;
+  origin?: { uri?: string | null; range?: LineRange | null } | null;
+  outputs: unknown[];
+}
+
+/**
+ * Convert daemon snapshot executions into attachable journal executions. The
+ * daemon computes `cell_hash = sha256(code)` (matching {@link computeCellHash}),
+ * so this is the bridge between the live journal and {@link attachOutputs}.
+ * Executions without a cell_hash (none should occur post-wiring) are skipped.
+ */
+export function executionsFromSnapshot(execs: SnapshotExecution[]): JournalExecution[] {
+  const out: JournalExecution[] = [];
+  for (const e of execs) {
+    if (!e.cell_hash) continue;
+    out.push({
+      execId: e.exec_id,
+      cellHash: e.cell_hash,
+      range: e.origin?.range ?? { start: 0, end: 0 },
+      outputs: e.outputs,
+    });
+  }
+  return out;
+}
+
 /** Build doc-cell descriptors from a parsed notebook's cells. */
 export function docCellsFromParsed(cells: Cell[]): DocCell[] {
   const out: DocCell[] = [];

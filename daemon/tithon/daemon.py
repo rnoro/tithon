@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -231,10 +232,17 @@ class Daemon:
         for q in self._subs:
             q.put_nowait(event)
 
-    def _submit(self, code: str, submitted_by: str | None = None) -> str:
+    def _submit(self, code: str, submitted_by: str | None = None,
+                origin: dict | None = None) -> str:
         self._exec_counter += 1
         exec_id = f"e{self._exec_counter}"
-        self.journal.insert_execution(exec_id, self._exec_counter, code, submitted_by)
+        # cell_hash is computed daemon-side from the submitted code (authoritative,
+        # matches the extension's sha256(code)) so output<->cell attachment works
+        # even for CLI runs that send no origin (design.md §3.2).
+        cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+        self.journal.insert_execution(
+            exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
+        )
         self._folds[exec_id] = ExecutionFold()
         self._journal_lifecycle(exec_id, "tithon.queued", {"code": code})
         self._queue.put_nowait((exec_id, code))
@@ -242,12 +250,19 @@ class Daemon:
 
     def _snapshot(self) -> dict:
         execs = []
-        for exec_id, seq, code, status, execution_count, folded_json in self.journal.executions():
+        for (exec_id, seq, code, status, execution_count, folded_json,
+             cell_origin_uri, cell_range, cell_hash) in self.journal.executions():
             fold = self._folds.get(exec_id)
             if fold is not None:
                 outputs = fold.outputs()
             else:
                 outputs = json.loads(folded_json) if folded_json else []
+            origin = None
+            if cell_origin_uri is not None or cell_range is not None:
+                origin = {
+                    "uri": cell_origin_uri,
+                    "range": json.loads(cell_range) if cell_range else None,
+                }
             execs.append(
                 {
                     "exec_id": exec_id,
@@ -255,6 +270,8 @@ class Daemon:
                     "code": code,
                     "status": status,
                     "execution_count": execution_count,
+                    "cell_hash": cell_hash,
+                    "origin": origin,
                     "outputs": outputs,
                 }
             )
@@ -316,7 +333,9 @@ class Daemon:
                         pump = asyncio.create_task(self._sub_pump(ws, q, cutoff))
                     log.info("client attached last_seen_seq=%d cutoff=%d", last, cutoff)
                 elif op == "execute":
-                    exec_id = self._submit(msg.get("code", ""), msg.get("submitted_by"))
+                    exec_id = self._submit(
+                        msg.get("code", ""), msg.get("submitted_by"), msg.get("origin")
+                    )
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
                 elif op == "status":
                     await ws.send(json.dumps({"op": "status_reply", **self._status()}))

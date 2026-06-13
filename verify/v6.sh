@@ -26,7 +26,7 @@ if [ ! -d node_modules ]; then
 fi
 
 OUT="$(mktemp)"
-npx vitest run test/serializer.test.ts test/cellAttach.test.ts >"$OUT" 2>&1
+NO_COLOR=1 npx vitest run test/serializer.test.ts test/cellAttach.test.ts >"$OUT" 2>&1
 rc=$?
 cat "$OUT"
 

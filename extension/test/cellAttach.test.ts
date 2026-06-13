@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { parse } from "../src/serializer";
+import { parse, cellSource } from "../src/serializer";
 import {
   attachOutputs,
   computeCellHash,
   docCellsFromParsed,
+  executionsFromSnapshot,
   type JournalExecution,
+  type SnapshotExecution,
 } from "../src/cellAttach";
 
 const SRC = ["# %% a", "x = 1", "# %% b", "y = 2", "# %% c", "z = 3", ""].join("\n");
@@ -64,3 +66,38 @@ describe("output -> cell attachment", () => {
     expect(computeCellHash("x = 1\n")).not.toBe(computeCellHash("x = 2\n"));
   });
 });
+
+describe("daemon snapshot -> cell attachment (end-to-end bridge)", () => {
+  it("attaches outputs from a real-shaped daemon snapshot via cell_hash", () => {
+    const cells = docCells();
+    // The daemon computes cell_hash = sha256(code); the extension hashes the
+    // cell's verbatim source the same way, so these line up.
+    const snapshotExecs: SnapshotExecution[] = [
+      {
+        exec_id: "e1",
+        cell_hash: computeCellHash(cellAt(1)),
+        origin: { uri: "file:///w/n.py", range: { start: 2, end: 3 } },
+        outputs: ["from-daemon-B"],
+      },
+    ];
+    const execs = executionsFromSnapshot(snapshotExecs);
+    expect(execs).toHaveLength(1);
+    const att = attachOutputs(execs, cells);
+    expect(att.get(1)?.execId).toBe("e1");
+    expect(att.get(1)?.stale).toBe(false);
+    expect(att.get(1)?.outputs).toEqual(["from-daemon-B"]);
+  });
+
+  it("skips executions that carry no cell_hash", () => {
+    const execs = executionsFromSnapshot([
+      { exec_id: "e1", outputs: [] },
+      { exec_id: "e2", cell_hash: null, outputs: [] },
+    ]);
+    expect(execs).toHaveLength(0);
+  });
+});
+
+/** Verbatim source of the cell at index `i` in SRC (mirrors the daemon code). */
+function cellAt(i: number): string {
+  return cellSource(parse(SRC).cells[i]);
+}

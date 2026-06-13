@@ -38,7 +38,7 @@ echo "$SNAP" | "$PY" "$ROOT/verify/_check_v5.py" 50000 || fail "(1) widget mirro
 
 # (2) html-manager jsdom render of the mirror snapshot.
 echo "v5: html-manager jsdom render ---------------------------------------"
-(cd "$EXT" && timeout 180 npx vitest run test/widget.test.ts) || fail "(2) jsdom widget render failed"
+(cd "$EXT" && NO_COLOR=1 timeout 180 npx vitest run test/widget.test.ts) || fail "(2) jsdom widget render failed"
 
 # (3) Widget State Mirror unit tests (deterministic, incl. binary buffers).
 echo "v5: Widget State Mirror unit tests ----------------------------------"
