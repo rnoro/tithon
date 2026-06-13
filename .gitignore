@@ -1,0 +1,6 @@
+daemon/.venv/
+__pycache__/
+*.egg-info/
+.tithon/
+.pytest_cache/
+nohup.out
