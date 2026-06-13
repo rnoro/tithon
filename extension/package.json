@@ -1,0 +1,56 @@
+{
+  "name": "tithon-extension",
+  "displayName": "Tithon",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Tithon VSCode extension — percent Cell View + widget renderer (Phase 0 spike)",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "type": "commonjs",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "notebooks": [
+      {
+        "type": "tithon-py",
+        "displayName": "Tithon Cell View",
+        "selector": [
+          {
+            "filenamePattern": "*.py"
+          }
+        ]
+      }
+    ],
+    "notebookRenderer": [
+      {
+        "id": "tithon-widget",
+        "displayName": "Tithon ipywidget renderer",
+        "entrypoint": "./dist/widgetRendererEntry.js",
+        "mimeTypes": [
+          "application/vnd.jupyter.widget-view+json"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:serializer": "vitest run test/serializer.test.ts test/cellAttach.test.ts",
+    "test:widget": "vitest run test/widget.test.ts",
+    "build": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "fast-check": "^3.15.0",
+    "jsdom": "^24.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "@jupyter-widgets/base": "^6.0.11",
+    "@jupyter-widgets/controls": "^5.0.12",
+    "@jupyter-widgets/html-manager": "^1.0.14",
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.0"
+  }
+}

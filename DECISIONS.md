@@ -9,3 +9,7 @@
 - ADR-007: 커널 ZMQ는 127.0.0.1 TCP(jupyter 표준), 클라이언트 노출은 unix socket(0600) 전용 — TCP 금지 조항은 데몬 바인딩에 적용.
 - ADR-008: 이미지 base64는 저널 진입 전에 아티팩트 참조($tithon_artifact)로 치환 — "원본 보존"은 메시지 구조·순서 기준, 페이로드는 파일이 일급(§3.1 두 요구의 양립).
 - ADR-009: attach에 last_seen_seq=-1(라이브 전용) 확장 — run CLI가 스냅샷 비용 없이 자기 실행만 추적.
+- ADR-010: Widget State Mirror(§3.3) — iopub의 comm_open(target=jupyter.widget)/comm_msg(method update·echo_update)/comm_close를 해석해 widget-state+json 스냅샷을 상시 유지. 바이너리 버퍼는 JSON state에 넣지 않고 buffer_paths별 base64 항목으로 분리 보관(스키마 그대로 → html-manager put_buffers가 재주입). 재접속 비용 = update 횟수가 아니라 최종 상태 크기(tqdm 5만 update → 스냅샷은 막대 1개). 데몬 재시작 시 저널의 comm 메시지(_buffers_b64) 리플레이로 미러 재구성.
+- ADR-011: percent 라운드트립은 "구성에 의한 무손실" — parse가 입력을 물리 라인(정확한 종결자 보존) 단위로 분할해 모든 라인을 정확히 한 셀에 귀속시키고 serialize는 그대로 이어붙임. 마커 탐지는 문자열/괄호 인식형(삼중따옴표 문자열·열린 괄호 안의 `# %%`는 마커 아님)이며, 이는 셀 경계(의미)에만 영향, 바이트 충실도와 무관 → 임의 입력에도 0바이트 diff 보장.
+- ADR-012: v5의 @vscode/test-electron 통합은 본 환경에서 실행 불가(디스플레이/xvfb-run 부재). stage-b.md 단서 조항에 따라 대체 검증으로 인정 — html-manager가 미러 스냅샷을 jsdom에서 실제 ProgressView DOM(value==max==total, width 100%)으로 렌더(렌더러 에러 없음) + §3.3 폴백(최종 상태 텍스트) 경로 검증. 동일 렌더 로직이 VSCode 렌더러 엔트리(widgetRendererEntry)에 그대로 쓰임. (폴백 전환 근거 기록 조항 충족)
+- ADR-013: html-manager의 loadClass는 번들 base/controls와 CSS를 webpack식 require()로 로드 → ESM/jsdom(및 §3.3이 지목한 "렌더러 샌드박스" 제약)과 비호환. HTMLManager를 서브클래스해 @jupyter-widgets/base|controls를 ESM import로 해소(렌더 로직 불변), 그리고 AMD/CDN libembed 경로(__webpack_public_path__) 회피를 위해 HTMLManager를 lib 서브모듈에서 직접 import.

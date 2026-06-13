@@ -4,3 +4,9 @@ __pycache__/
 .tithon/
 .pytest_cache/
 nohup.out
+
+# node
+node_modules/
+dist/
+build/
+*.log

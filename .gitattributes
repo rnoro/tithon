@@ -1,0 +1,4 @@
+# The percent round-trip corpus is byte-exact by design (CRLF, no final
+# newline, trailing whitespace). Never let git normalize their line endings,
+# or verify/v6.sh's 0-byte-diff guarantee would break on checkout.
+verify/corpus/*.py -text

@@ -7,6 +7,7 @@ Single fixed session ("default"). WebSocket server on a unix domain socket
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from .artifacts import ArtifactStore
 from .folding import ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
+from .widgets import WidgetMirror, is_comm
 
 log = logging.getLogger("tithon.daemon")
 
@@ -38,6 +40,7 @@ class Daemon:
         self.kc = None
         self.kernel_status = "unknown"
         self._folds: dict[str, ExecutionFold] = {}
+        self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
         self._subs: set[asyncio.Queue] = set()
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -65,6 +68,14 @@ class Daemon:
                     fold.apply(msg_type, json.loads(content_json))
             self._folds[exec_id] = fold
 
+    def _rebuild_mirror(self) -> None:
+        """Replay journaled comm messages to restore widget state after restart."""
+        for _seq, _exec_id, msg_type, content_json in self.journal.messages_after(0):
+            if is_comm(msg_type):
+                content = json.loads(content_json)
+                buffers = [base64.b64decode(b) for b in content.pop("_buffers_b64", [])]
+                self._mirror.apply(msg_type, content, buffers)
+
     async def run(self) -> None:
         self._preflight()
         spawned = self.kernel.ensure()
@@ -75,6 +86,7 @@ class Daemon:
         if orphaned:
             log.info("marked %d in-flight executions as orphaned", orphaned)
         self._rebuild_folds()
+        self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
 
         loop = asyncio.get_running_loop()
@@ -149,6 +161,9 @@ class Daemon:
             self.kernel_status = content.get("execution_state", self.kernel_status)
         parent_id = (msg.get("parent_header") or {}).get("msg_id")
         exec_id = self._msgid_to_exec.get(parent_id)
+        if is_comm(msg_type):
+            self._handle_comm(exec_id, msg_type, content, msg.get("buffers") or [])
+            return
         if exec_id is None or msg_type not in JOURNALED_IOPUB:
             return
         artifact_ref = None
@@ -158,6 +173,27 @@ class Daemon:
         seq = self.journal.append_message(exec_id, msg_type, content, artifact_ref)
         self._folds[exec_id].apply(msg_type, content)
         self._broadcast(event_from_message(seq, exec_id, msg_type, content))
+
+    def _handle_comm(self, exec_id, msg_type: str, content: dict, buffers: list) -> None:
+        """Feed the Widget State Mirror; journal raw comm (buffers base64)."""
+        if not self._mirror.apply(msg_type, content, buffers):
+            return
+        stored = content
+        if buffers:
+            stored = {
+                **content,
+                "_buffers_b64": [base64.b64encode(bytes(b)).decode("ascii") for b in buffers],
+            }
+        seq = self.journal.append_message(exec_id, msg_type, stored)
+        self._broadcast(
+            {
+                "op": "event",
+                "seq": seq,
+                "exec_id": exec_id,
+                "kind": "widget",
+                "payload": {"msg_type": msg_type, "comm_id": content.get("comm_id")},
+            }
+        )
 
     async def _exec_worker(self) -> None:
         while True:
@@ -227,6 +263,7 @@ class Daemon:
             "kernel": {"status": self.kernel_status, "pid": self.kernel.pid},
             "queue_len": self._queue.qsize(),
             "executions": execs,
+            "widgets": self._mirror.snapshot(),
         }
 
     def _status(self) -> dict:
@@ -239,6 +276,7 @@ class Daemon:
             "queue_len": self._queue.qsize(),
             "max_seq": self.journal.max_seq(),
             "executions": len(self.journal.executions()),
+            "widget_models": len(self._mirror),
         }
 
     async def _handler(self, ws) -> None:
