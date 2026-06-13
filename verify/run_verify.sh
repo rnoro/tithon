@@ -7,8 +7,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-a}" in
   a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
   b) scripts="v5 v6"; label="VERIFY-B" ;;
-  all) scripts="v1 v2 v3 v4 v5 v6"; label="VERIFY" ;;
-  *) echo "usage: $0 a|b|all" >&2; exit 2 ;;
+  c) scripts="v7"; label="VERIFY-C" ;;
+  all) scripts="v1 v2 v3 v4 v5 v6 v7"; label="VERIFY" ;;
+  *) echo "usage: $0 a|b|c|all" >&2; exit 2 ;;
 esac
 
 declare -a results=()

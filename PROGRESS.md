@@ -1,7 +1,25 @@
 # PROGRESS
 
 ## 현재 상태 (2026-06-13)
-**Stage B 완료 — `make verify-b` 2/2 PASS (종료코드 0). vitest 25/25, pytest 25/25 통과.**
+**Phase 1 첫 조각 완료 — 재접속 출력 복원(클라이언트 구독 절반). `make verify` 7/7 PASS.**
+README가 지목했던 갭("데몬은 출력을 영속·복원하나 VSCode 클라이언트엔 구독→렌더 절반이 없다")을
+닫았다. 이제 클라이언트가 데몬 스트림을 구독·folding해 재접속 시 셀 출력을 복원·부착한다.
+
+### Phase 1 ⑦ 산출물 (재접속 복원)
+- extension/src/`outputFold.ts`: folding.py의 정확한 TS 포트(\r/\n/\b·clear_output(wait)·
+  update_display_data·execute_result/error). `seed()`로 스냅샷 folded outputs에서 이어 fold(ADR-015).
+- extension/src/`sessionClient.ts`: attach(last_seen_seq)로 snapshot+delta+live 소비, 실행별 fold
+  유지, `restoreInto(cells)`가 cellAttach로 셀 부착. `execute()`도 포함.
+- extension/src/`sessionController.ts`: NotebookController.replaceOutput로 복원 출력을 셀에 쓰는
+  VSCode 바인딩(스파이크, 실 VSCode 미구동 — ADR-012 기조). extension.ts에서 registerRestore로 등록,
+  package.json에 `tithon.restoreOutputs` 커맨드+노트북 툴바 메뉴.
+- test/`outputFold.test.ts`(8, 결정론) + test/`restore.test.ts`(2, **실데몬** E2E: 재접속 복원 +
+  client fold==daemon snapshot fold 동등성). verify/`v7.sh` + run_verify.sh `c`/`all` + Makefile verify-c.
+- 안티치팅: restore.test.ts는 소켓 없으면 skip(npm test 격리)이나 v7.sh는 데몬 가동 중 skip을 FAIL 처리.
+
+---
+
+## (이전) Stage B 완료 — `make verify-b` 2/2 PASS (종료코드 0). vitest 25/25, pytest 25/25 통과.
 (Stage A도 그대로 PASS 유지 — `make verify-a` 4/4.)
 
 ### Stage B 산출물
@@ -48,17 +66,19 @@
   `attachOutputs`로 셀 부착 → v6의 cell_hash 매핑이 실데이터로 연결(ADR-014). 구 저널은
   additive 마이그레이션(ALTER TABLE ADD COLUMN cell_hash). pytest 28, vitest 27, verify 6/6.
 
-## 다음 단계 (Phase 0 검증 ①~⑥ 전부 통과 — Phase 1로)
-- Phase 0 6항목 PASS: ①~④(Stage A) + ⑤⑥(Stage B). 설계 유효성 확인 완료.
-- Phase 1(데몬 MVP)로: 멀티 세션, 실행 큐 가시화, 아티팩트 스토어 확장, systemd 패키징,
-  stale 배지/듀얼 뷰 UX.
-- ⑤ 통합 검증의 잔여: xvfb/디스플레이 있는 환경에서 @vscode/test-electron 실제 구동
-  (현재는 jsdom 대체 — ADR-012).
+## 다음 단계 (Phase 1 진행 중)
+- ✅ Phase 0 6항목(①~⑥) + ⑦ 재접속 출력 복원(클라이언트 구독 절반) — verify 7/7.
+- 다음 후보:
+  - VSCode 실구동: sessionController(스파이크)를 실 VSCode/tunnel에서 검증(.vsix 패키징,
+    @vscode/test-electron, xvfb). 현재는 headless(v7)로만 검증 — ADR-012/015.
+  - 라이브 스트리밍 렌더: 재접속 1회 복원을 넘어, 실행 중 출력을 셀에 실시간 반영
+    (sessionClient.onChange → controller가 증분 replaceOutput). 위젯 미러 스냅샷도 동일 경로로.
+  - 데몬 MVP: 멀티 세션, 실행 큐 가시화, 아티팩트 스토어 확장, systemd 패키징, stale 배지/듀얼 뷰.
 
 ## 막힌 것
-- 없음. (Stage B 함정·대체: html-manager의 webpack require/CSS가 jsdom과 충돌 →
-  ESM loadClass 서브클래스 + lib 서브모듈 import로 해소(ADR-013). jsdom 부재 글로벌
-  (DragEvent/ResizeObserver/__webpack_public_path__)은 test/setup.ts에서 폴리필.)
+- 없음. (⑦ 함정: NotebookDocument엔 getText()/NotebookEdit.updateCellOutputs 없음 →
+  workspace.fs.readFile + NotebookController.createNotebookCellExecution().replaceOutput로 해소.
+  cell_hash는 snapshot에만 실리므로(queued 이벤트엔 없음) 재접속 복원은 fresh attach(0) 경로가 정답.)
 
 ## 환경 메모
 - uv는 ~/.local/bin/uv (PATH에 추가 필요). venv: daemon/.venv (Python 3.11.15).

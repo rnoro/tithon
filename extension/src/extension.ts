@@ -11,9 +11,14 @@ import * as vscode from "vscode";
 import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, type ExecOrigin } from "./daemonClient";
+import { registerRestore } from "./sessionController";
 
 export function activate(context: vscode.ExtensionContext): void {
   const client = new DaemonClient();
+
+  // The reconnect/restore half (subscribe -> fold -> restore -> attach),
+  // verified end-to-end against a real daemon by verify/v7.
+  registerRestore(context);
 
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(

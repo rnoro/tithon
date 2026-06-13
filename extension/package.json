@@ -30,7 +30,21 @@
           "application/vnd.jupyter.widget-view+json"
         ]
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "tithon.restoreOutputs",
+        "title": "Tithon: Restore Cell Outputs from Daemon"
+      }
+    ],
+    "menus": {
+      "notebook/toolbar": [
+        {
+          "command": "tithon.restoreOutputs",
+          "when": "notebookType == tithon-py"
+        }
+      ]
+    }
   },
   "scripts": {
     "test": "vitest run",
