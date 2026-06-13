@@ -22,11 +22,11 @@ current implementation maturity and the verification matrix, see
 - **Kernel persistence.** The kernel is spawned detached (`setsid`) and is not a
   child of the daemon, so it survives daemon restarts, crashes, and disconnects.
 - **Loss-free journal.** Every iopub/shell message is preserved verbatim in a
-  SQLite (WAL) journal, plus a per-execution *folded* snapshot (the current
+  SQLite (WAL) journal, plus a per-execution _folded_ snapshot (the current
   display state) for fast reconnects.
 - **Snapshot + delta sync.** Clients attach with a `last_seen_seq` and receive a
   snapshot followed by a monotonic-sequence delta stream — gapless and ordered.
-- **Live streaming with bounded cost.** Output streams to cells *as it runs*;
+- **Live streaming with bounded cost.** Output streams to cells _as it runs_;
   rendering is coalesced so a 50,000-iteration loop collapses to a handful of
   UI updates instead of melting the renderer.
 - **Outputs live in the journal, not the file.** A percent-format `.py` stays
@@ -45,17 +45,17 @@ current implementation maturity and the verification matrix, see
 ## How it works
 
 ```
-   VSCode / CLI client                      remote host
-  ┌────────────────────┐                ┌──────────────────────────────┐
-  │ subscribe(last_seq)│ ── unix sock ──│  tithon daemon               │
-  │ snapshot + delta   │ ◀───0600───────│   ├─ journal (SQLite WAL)     │
-  │ restore / live     │                │   ├─ folded snapshots         │
-  └────────────────────┘                │   └─ widget mirror            │
-                                        │            │ ZMQ (detached)   │
-                                        │      ┌─────┴───────┐          │
-                                        │      │  ipykernel  │ survives │
-                                        │      └─────────────┘ restarts │
-                                        └──────────────────────────────┘
+   VSCode / CLI client                    Remote Host
+  ┌────────────────────┐                 ┌───────────────────────────────┐
+  │ subscribe(last_seq)│ ── unix sock ── │  tithon daemon                │
+  │ snapshot + delta   │ ◀───0600─────  │   ├─ journal (SQLite WAL)     │
+  │ restore / live     │                 │   ├─ folded snapshots         │
+  └────────────────────┘                 │   └─ widget mirror            │
+                                         │            │ ZMQ (detached)   │
+                                         │      ┌─────┴───────┐          │
+                                         │      │  ipykernel  │ survives │
+                                         │      └─────────────┘ restarts │
+                                         └───────────────────────────────┘
 ```
 
 The daemon owns the kernel and journals everything it emits. Clients never talk
@@ -88,18 +88,21 @@ call `daemon/.venv/bin/tithon` directly.
 
 ### VSCode extension
 
-The extension is currently run from source (it is not yet published to the
-Marketplace):
+The extension is not yet on the Marketplace; build it from source and either run
+it in a development host or package it as a `.vsix`:
 
 ```bash
 cd extension
 npm install
 npm run build                    # tsc -> dist/
+npx vsce package                 # optional: -> tithon-extension-<version>.vsix
 ```
 
-Open `extension/` in VSCode and press **F5** to launch an Extension Development
-Host, or see [`docs/status.md`](docs/status.md) for the automated integration
-harness.
+Press **F5** in `extension/` to launch an Extension Development Host, or install
+the `.vsix` (Extensions panel ▸ "Install from VSIX…"). For the remote workflow
+this project is built for, see
+[Remote workflow (VSCode tunnel)](#remote-workflow-vscode-tunnel) below; the
+automated integration harness is described in [`docs/status.md`](docs/status.md).
 
 ---
 
@@ -138,14 +141,61 @@ tithon run -c 'print(x)'             # -> 42, kernel state intact
 
 ---
 
+## Remote workflow (VSCode tunnel)
+
+This is the workflow Tithon is built for: you edit from a laptop while the kernel
+runs on a remote GPU host and keeps running across your disconnects. With a
+VSCode **Tunnel** (or **Remote-SSH**) connection the VSCode *Extension Host* runs
+**on the remote host**, so the Tithon extension reaches the daemon's host-local
+unix socket directly — no port forwarding. Your laptop only renders the UI, so
+closing it never stops the work.
+
+**On the remote host** — install (see [Installation](#installation)) and:
+
+```bash
+# 1. Start the daemon. It binds $TITHON_HOME/daemon.sock on the host
+#    (default ~/.tithon/daemon.sock) and owns the kernel.
+tithon daemon &
+
+# 2. Make the extension available to the remote VSCode — package it once...
+cd extension && npm install && npx vsce package    # -> tithon-extension-<version>.vsix
+#    ...then install the .vsix into the remote VSCode (Extensions ▸ "Install from
+#    VSIX…", or `code --install-extension tithon-extension-<version>.vsix`).
+#    During development you can instead open extension/ and press F5.
+
+# 3. Expose the host to VSCode.
+code tunnel                                        # or connect via Remote-SSH
+```
+
+**From your laptop:**
+
+1. Connect to the host (VSCode ▸ *Connect to Tunnel…* or *Remote-SSH*) and open
+   your project folder.
+2. Open a percent-format `.py`. Run cells with the **Run Cell** CodeLens, then
+   run **Tithon: Start Live Output Sync** to stream output into the cells as it
+   is produced.
+3. Close the laptop or drop the connection — the daemon and kernel keep running
+   on the host.
+4. Reconnect later and run **Tithon: Restore Cell Outputs from Daemon** (or just
+   reopen the notebook): the outputs are back and resume streaming live.
+
+> **Note.** The daemon and the extension must share `TITHON_HOME` (both default
+> to `~/.tithon` for the same user on the host). Because the Extension Host runs
+> on the host, it uses the host-local socket — no manual forwarding. If you
+> instead run the extension on your laptop against a remote daemon, you must
+> forward the unix socket yourself (e.g. SSH `RemoteForward` or `socat`); that is
+> not the default path.
+
+---
+
 ## CLI reference
 
-| Command | Description |
-|---------|-------------|
-| `tithon daemon` | Run the daemon (foreground). Owns the kernel and serves clients. |
-| `tithon run -c CODE` | Submit code and stream its output. `--no-wait` prints the exec id and exits; `--timeout N` bounds the wait. |
-| `tithon attach` | Stream events as NDJSON. `--since N` sets the resume point; `--once` exits after the backlog sync; `--until-done` exits after the next completion. |
-| `tithon status` | Print session, queue, kernel, and widget-model status. |
+| Command              | Description                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tithon daemon`      | Run the daemon (foreground). Owns the kernel and serves clients.                                                                                   |
+| `tithon run -c CODE` | Submit code and stream its output. `--no-wait` prints the exec id and exits; `--timeout N` bounds the wait.                                        |
+| `tithon attach`      | Stream events as NDJSON. `--since N` sets the resume point; `--once` exits after the backlog sync; `--until-done` exits after the next completion. |
+| `tithon status`      | Print session, queue, kernel, and widget-model status.                                                                                             |
 
 `attach --since` is the reconnect knob:
 
@@ -160,11 +210,11 @@ tithon run -c 'print(x)'             # -> 42, kernel state intact
 The extension opens percent-format `.py` files as a notebook (`tithon-py`) and
 talks to the daemon over its unix socket. Commands:
 
-| Command | What it does |
-|---------|--------------|
+| Command                                                              | What it does                                                                |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `Tithon: Restore Cell Outputs from Daemon` (`tithon.restoreOutputs`) | Reconnect and restore the journal's folded outputs into the notebook cells. |
-| `Tithon: Start Live Output Sync` (`tithon.startLive`) | Keep a session open and stream output into cells in real time. |
-| `Run Cell` (CodeLens, `tithon.runCell`) | Submit a `# %%` cell's code to the daemon. |
+| `Tithon: Start Live Output Sync` (`tithon.startLive`)                | Keep a session open and stream output into cells in real time.              |
+| `Run Cell` (CodeLens, `tithon.runCell`)                              | Submit a `# %%` cell's code to the daemon.                                  |
 
 Outputs are matched to cells by content hash, so they survive edits and reopens;
 an output whose cell was edited since it ran is flagged stale.
@@ -175,14 +225,14 @@ an output whose cell was edited since it ran is flagged stale.
 
 Environment variables read by the daemon and CLI:
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `TITHON_HOME` | `~/.tithon` | Root for the socket, log, journal, and artifacts. |
-| `TITHON_SUB_QUEUE_MAX` | `10000` | Max queued events per client before it is dropped (backpressure). |
-| `TITHON_SEND_TIMEOUT` | `10.0` | Seconds a client may stall a send before being dropped. |
-| `TITHON_WRITE_BUFFER_HIGH` | `1048576` | Per-connection send-buffer high-water mark (bounds daemon memory). |
-| `TITHON_SOCK_SNDBUF` | `1048576` | Per-connection kernel socket send buffer. |
-| `TITHON_SUB_POLL` | `0.5` | Interval at which a blocked sender re-checks for drop. |
+| Variable                   | Default     | Purpose                                                            |
+| -------------------------- | ----------- | ------------------------------------------------------------------ |
+| `TITHON_HOME`              | `~/.tithon` | Root for the socket, log, journal, and artifacts.                  |
+| `TITHON_SUB_QUEUE_MAX`     | `10000`     | Max queued events per client before it is dropped (backpressure).  |
+| `TITHON_SEND_TIMEOUT`      | `10.0`      | Seconds a client may stall a send before being dropped.            |
+| `TITHON_WRITE_BUFFER_HIGH` | `1048576`   | Per-connection send-buffer high-water mark (bounds daemon memory). |
+| `TITHON_SOCK_SNDBUF`       | `1048576`   | Per-connection kernel socket send buffer.                          |
+| `TITHON_SUB_POLL`          | `0.5`       | Interval at which a blocked sender re-checks for drop.             |
 
 **Where outputs are stored.** A percent `.py` never holds outputs. They live in
 `$TITHON_HOME/sessions/default/journal.db` (raw messages + folded snapshots),

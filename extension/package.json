@@ -78,6 +78,7 @@
     "@jupyter-widgets/controls": "^5.0.12",
     "@jupyter-widgets/html-manager": "^1.0.14",
     "@types/ws": "^8.18.1",
+    "vsce": "^2.15.0",
     "ws": "^8.21.0"
   }
 }

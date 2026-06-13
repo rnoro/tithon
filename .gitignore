@@ -12,3 +12,5 @@ out-int/
 .vscode-test/
 build/
 *.log
+# extension package artifacts
+*.vsix
