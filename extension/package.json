@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "publisher": "tithon",
   "repository": {

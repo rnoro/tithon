@@ -17,3 +17,7 @@ verify:
 
 test:
 	daemon/.venv/bin/python -m pytest daemon/tests -q
+
+shot:
+	bash verify/shot.sh reconnect
+	bash verify/shot.sh screenshot

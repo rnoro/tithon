@@ -33,6 +33,13 @@
 - 확장 버전 0.0.1→0.0.2(강제 재로드)→0.0.3(메모리 매핑)→0.0.4(인덱스 갱신). vsix 재패키징+재설치 필요.
 - 트레일링 개행 함정: 디스크 cellSource는 끝 \n O, 방금 타이핑한 셀 getText()는 \n X → 0.0.2 디스크 매핑이
   깨졌던 이유. 0.0.3 메모리 매핑(getText 그대로 해시)이 근본 해결.
+- **#6 중간 재접속 시 이전 출력 미복원** (ADR-023): startLive가 실시간만 그리고 재접속 이전 출력을 빠뜨림.
+  attach(0) 직후 동기로 각 exec의 folded 출력을 `seedCell()`로 렌더 + streamOut 등록 → 라이브 delta가
+  같은 블록에 이어붙어 연속 스트림. 검증 v15(루프 중 재접속→0~29 전체) + 스크린샷. 0.0.5.
+- **렌더 스크린샷 검증 표준화** (ADR-024): `verify/shot.sh <suite>` — 실 VSCode를 Xvfb에서 띄워 여러 프레임
+  캡처→최대 렌더 프레임 보관, std-dev>0.02 blank 차단(verify/shots/, gitignore). `make shot`. 앞으로 확장
+  변경 시 모델 단언 + 픽셀 렌더 확인 병행.
+- verify-d = v8 v10 v11 v12 v13 v14 v15 (7/7). 확장 0.0.5.
 
 ### Phase 1 ⑨⑩ 산출물 (라이브 동기화 · 최적화 · 백프레셔)
 - extension/src/`liveSync.ts`: `LiveOutputSync` — throttle/coalesce(주입 Scheduler) + run-merge +

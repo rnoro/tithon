@@ -131,6 +131,33 @@ class VSCodeCellSink implements CellSink {
     }
   }
 
+  /**
+   * Seed a cell with already-folded output captured from the snapshot at attach
+   * time (mid-run reconnect). Renders the prior output AND registers each stream
+   * block in `streamOut`, so subsequent live {@link appendStream} deltas continue
+   * the SAME stdout/stderr block — the cell reads as one continuous stream, as if
+   * the client had been attached from the start (design.md §3.1; ADR-023).
+   */
+  seedCell(idx: number, items: OutputItem[], terminal: boolean): void {
+    const e = this.ensureExec(idx); // creates the proxy execution + clears
+    if (!e) return;
+    for (const item of items) {
+      if (item.output_type === "stream") {
+        const mime = item.name === "stderr" ? STDERR_MIME : STDOUT_MIME;
+        const out = new vscode.NotebookCellOutput([
+          vscode.NotebookCellOutputItem.text(item.text, mime),
+        ]);
+        this.streamOut.set(`${idx}:${item.name}`, out);
+        void e.appendOutput(out);
+      } else {
+        void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
+      }
+    }
+    // A completed execution gets ended now; a still-running one stays "running"
+    // until its live `done` event arrives.
+    if (terminal) this.status(idx, "done");
+  }
+
   appendOutput(idx: number, item: OutputItem): void {
     const e = this.ensureExec(idx);
     if (!e) return;
@@ -289,7 +316,21 @@ export class TithonNotebookController {
       sink,
       new ThrottleScheduler(50),
     );
-    live.seed(client.executions().map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
+    const execs = client.executions();
+    live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
+    // Mid-run reconnect: paint the prior folded output into the cells NOW, before
+    // wiring live events, so a still-running execution shows what was produced
+    // before we attached and then keeps streaming seamlessly (ADR-023). This runs
+    // synchronously after attach() resolved — no live event can slip in between
+    // capturing the fold and wiring onEvent, so there's no gap or duplication.
+    for (const ex of execs) {
+      const idx = live.cellOf(ex.execId);
+      if (idx === undefined) continue;
+      const prior = client.outputsOf(ex.execId);
+      if (prior.length > 0) {
+        sink.seedCell(idx, prior, ex.status === "done" || ex.status === "error");
+      }
+    }
     const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
     // Keep the index current as cells are added/edited after live started
     // (ADR-022) — otherwise a new cell's execution maps to nothing.

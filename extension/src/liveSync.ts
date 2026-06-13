@@ -110,6 +110,11 @@ export class LiveOutputSync {
     }
   }
 
+  /** Cell index an execution maps to (after {@link seed}), or undefined. */
+  cellOf(execId: string): number | undefined {
+    return this.execToCell.get(execId);
+  }
+
   /** Feed one wire event. Cheap: folds into pending ops + schedules a flush. */
   onEvent(ev: LiveEvent): void {
     this.stats.events += 1;
