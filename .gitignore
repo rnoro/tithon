@@ -8,5 +8,7 @@ nohup.out
 # node
 node_modules/
 dist/
+out-int/
+.vscode-test/
 build/
 *.log

@@ -8,8 +8,9 @@ case "${1:-a}" in
   a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
   b) scripts="v5 v6"; label="VERIFY-B" ;;
   c) scripts="v7"; label="VERIFY-C" ;;
+  d) scripts="v8"; label="VERIFY-D" ;;   # real VSCode host (network + xvfb)
   all) scripts="v1 v2 v3 v4 v5 v6 v7"; label="VERIFY" ;;
-  *) echo "usage: $0 a|b|c|all" >&2; exit 2 ;;
+  *) echo "usage: $0 a|b|c|d|all" >&2; exit 2 ;;
 esac
 
 declare -a results=()
