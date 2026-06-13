@@ -7,9 +7,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-a}" in
   a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
   b) scripts="v5 v6"; label="VERIFY-B" ;;
-  c) scripts="v7"; label="VERIFY-C" ;;
-  d) scripts="v8"; label="VERIFY-D" ;;   # real VSCode host (network + xvfb)
-  all) scripts="v1 v2 v3 v4 v5 v6 v7"; label="VERIFY" ;;
+  c) scripts="v7 v9"; label="VERIFY-C" ;;   # client restore + daemon backpressure (hermetic)
+  d) scripts="v8 v10"; label="VERIFY-D" ;;  # real VSCode host: restore + live (network + xvfb)
+  all) scripts="v1 v2 v3 v4 v5 v6 v7 v9"; label="VERIFY" ;;
   *) echo "usage: $0 a|b|c|d|all" >&2; exit 2 ;;
 esac
 

@@ -58,6 +58,7 @@ echo "v8: daemon up (pid $(daemon_pid)); seeding executions from $FIX"
 # Launch a real VSCode Extension Host under xvfb and run the in-host suite.
 export TITHON_FIXTURE="$FIX"
 export TITHON_WORKSPACE="$WORK"
+export TITHON_SUITE="restore"
 echo "v8: launching VSCode (@vscode/test-electron) under xvfb ----------------"
 OUT="$(mktemp)"
 (cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1

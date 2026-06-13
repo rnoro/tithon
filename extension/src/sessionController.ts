@@ -13,6 +13,7 @@ import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
 import { parse } from "./serializer";
 import type { OutputItem } from "./outputFold";
+import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
 
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
 const STDERR_MIME = "application/vnd.code.notebook.stderr";
@@ -48,6 +49,95 @@ function toCellOutput(outputs: OutputItem[], stale: boolean): vscode.NotebookCel
   // Surface the §3.2 "stale" badge: the cell was edited since this run.
   if (stale) out.metadata = { tithonStale: true };
   return out;
+}
+
+/**
+ * Live sink: turns coalesced {@link LiveOutputSync} ops into VSCode cell output
+ * via proxy cell executions (the cell runs on the daemon; we mirror its state).
+ * Stream deltas are appended (not resent) so a long loop stays cheap; `\r`
+ * collapsing is left to the stdout renderer.
+ */
+class VSCodeCellSink implements CellSink {
+  private readonly execs = new Map<number, vscode.NotebookCellExecution>();
+  private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
+
+  constructor(
+    private readonly controller: vscode.NotebookController,
+    private readonly notebook: vscode.NotebookDocument,
+  ) {}
+
+  private cell(idx: number): vscode.NotebookCell | undefined {
+    try {
+      return this.notebook.cellAt(idx);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private ensureExec(idx: number): vscode.NotebookCellExecution | undefined {
+    let e = this.execs.get(idx);
+    if (!e) {
+      const c = this.cell(idx);
+      if (!c) return undefined;
+      e = this.controller.createNotebookCellExecution(c);
+      e.start(Date.now());
+      void e.clearOutput();
+      this.execs.set(idx, e);
+    }
+    return e;
+  }
+
+  private forgetStreams(idx: number): void {
+    for (const k of [...this.streamOut.keys()]) {
+      if (k.startsWith(`${idx}:`)) this.streamOut.delete(k);
+    }
+  }
+
+  appendStream(idx: number, name: string, text: string): void {
+    const e = this.ensureExec(idx);
+    if (!e) return;
+    const mime = name === "stderr" ? STDERR_MIME : STDOUT_MIME;
+    const item = vscode.NotebookCellOutputItem.text(text, mime);
+    const key = `${idx}:${name}`;
+    const out = this.streamOut.get(key);
+    if (!out) {
+      const fresh = new vscode.NotebookCellOutput([item]);
+      this.streamOut.set(key, fresh);
+      void e.appendOutput(fresh); // append the delta only — never the whole buffer
+    } else {
+      void e.appendOutputItems(item, out);
+    }
+  }
+
+  appendOutput(idx: number, item: OutputItem): void {
+    const e = this.ensureExec(idx);
+    if (!e) return;
+    void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
+  }
+
+  updateDisplay(idx: number, _displayId: string, item: OutputItem): void {
+    this.appendOutput(idx, item); // spike: append (no in-place display update yet)
+  }
+
+  clear(idx: number): void {
+    const e = this.ensureExec(idx);
+    if (!e) return;
+    void e.clearOutput();
+    this.forgetStreams(idx);
+  }
+
+  status(idx: number, status: string): void {
+    if (status === "running") {
+      this.ensureExec(idx);
+      return;
+    }
+    const e = this.execs.get(idx);
+    if (e) {
+      e.end(status === "done", Date.now());
+      this.execs.delete(idx);
+      this.forgetStreams(idx);
+    }
+  }
 }
 
 /**
@@ -97,13 +187,33 @@ export class TithonNotebookController {
       client.close();
     }
   }
+
+  /**
+   * Start *live* sync: keep a session open and mirror the daemon's output stream
+   * into the notebook's cells in real time, with bounded render cost (coalesced
+   * by {@link LiveOutputSync}). Returns a Disposable that stops the session.
+   */
+  async startLive(notebook: vscode.NotebookDocument): Promise<vscode.Disposable> {
+    const bytes = await vscode.workspace.fs.readFile(notebook.uri);
+    const cells = parse(new TextDecoder().decode(bytes)).cells;
+
+    const client = new SessionClient();
+    await client.attach(0); // catch up on any prior state, then stream live
+    const sink = new VSCodeCellSink(this.controller, notebook);
+    const live = new LiveOutputSync(cells, sink, new ThrottleScheduler(50));
+    live.seed(client.executions().map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
+    client.onEvent((ev) => live.onEvent(ev));
+    return new vscode.Disposable(() => client.close());
+  }
 }
 
-/** Register the controller + "restore outputs" command for the Cell View. */
+/** Register the controller + restore/live commands for the Cell View. */
 export function registerRestore(context: vscode.ExtensionContext): void {
   const controller = new TithonNotebookController();
+  const liveSessions: vscode.Disposable[] = [];
   context.subscriptions.push(
     controller,
+    new vscode.Disposable(() => liveSessions.forEach((d) => d.dispose())),
     vscode.commands.registerCommand("tithon.restoreOutputs", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (!nb) {
@@ -115,6 +225,20 @@ export function registerRestore(context: vscode.ExtensionContext): void {
         vscode.window.setStatusBarMessage("Tithon: outputs restored from daemon", 3000);
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon restore: ${String(err)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon.startLive", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb) {
+        vscode.window.showInformationMessage("Tithon: no active notebook for live sync");
+        return;
+      }
+      try {
+        const session = await controller.startLive(nb);
+        liveSessions.push(session);
+        vscode.window.setStatusBarMessage("Tithon: live output sync started", 3000);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon live: ${String(err)}`);
       }
     }),
   );

@@ -42,6 +42,14 @@ export interface ExecOrigin {
   cell_hash: string;
 }
 
+/** A wire `event` op as delivered to {@link SessionClient.onEvent}. */
+export interface LiveEvent {
+  seq: number;
+  exec_id: string | null;
+  kind: string;
+  payload: any;
+}
+
 /** Live state the client tracks per execution. */
 export interface ExecState {
   execId: string;
@@ -69,6 +77,7 @@ export class SessionClient {
   private readonly execs = new Map<string, ExecState>();
   private order: string[] = [];
   private onChangeCb: (() => void) | null = null;
+  private onEventCb: ((ev: LiveEvent) => void) | null = null;
   /** Highest seq the daemon told us about (snapshot.max_seq or last sync). */
   syncSeq = 0;
 
@@ -76,6 +85,11 @@ export class SessionClient {
 
   onChange(cb: () => void): void {
     this.onChangeCb = cb;
+  }
+
+  /** Raw per-event hook (fires for every `event` op) — used by LiveOutputSync. */
+  onEvent(cb: (ev: LiveEvent) => void): void {
+    this.onEventCb = cb;
   }
 
   /** Executions in submission order. */
@@ -152,6 +166,7 @@ export class SessionClient {
         break;
       case "event":
         this.applyEvent(m);
+        this.onEventCb?.(m as LiveEvent);
         break;
       // "sync" handled by the caller; status_reply/execute_ack ignored here.
     }

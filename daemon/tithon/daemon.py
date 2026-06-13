@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import signal
+import socket
 from pathlib import Path
 
 from websockets.asyncio.server import unix_serve
@@ -26,6 +27,33 @@ from .widgets import WidgetMirror, is_comm
 log = logging.getLogger("tithon.daemon")
 
 SESSION = "default"
+
+# Backpressure (host-memory protection): a client that cannot keep up must not
+# grow the daemon's memory without bound. We cap each subscriber's backlog and
+# drop a client that overflows it or stalls on send; the client can reconnect and
+# catch up cheaply via snapshot+delta (folding makes a fresh snapshot small).
+# The cap/timeout are env-tunable so verification can force the bound quickly;
+# the defaults are the production values.
+SUB_QUEUE_MAX = int(os.environ.get("TITHON_SUB_QUEUE_MAX", "10000"))  # max queued events/sub
+SUB_POLL = float(os.environ.get("TITHON_SUB_POLL", "0.5"))            # dropped-flag recheck (s)
+SEND_TIMEOUT = float(os.environ.get("TITHON_SEND_TIMEOUT", "10.0"))   # max stall on send (s)
+# Cap each connection's send buffer (websockets `write_limit`) so a slow client
+# makes ws.send apply backpressure instead of buffering unboundedly in daemon
+# memory. With the bounded queue, host memory per subscriber is ~queue + this.
+WRITE_BUFFER_HIGH = int(os.environ.get("TITHON_WRITE_BUFFER_HIGH", str(1 << 20)))  # bytes
+# Cap the kernel socket send buffer per connection too (the kernel can otherwise
+# hold tens of MB of undelivered data for a stalled client). Bounds host memory.
+SOCK_SNDBUF = int(os.environ.get("TITHON_SOCK_SNDBUF", str(1 << 20)))  # bytes
+
+
+class Subscriber:
+    """One attached client's event queue + a 'too slow, drop me' flag."""
+
+    __slots__ = ("queue", "dropped")
+
+    def __init__(self, queue: "asyncio.Queue") -> None:
+        self.queue = queue
+        self.dropped = False
 
 
 class Daemon:
@@ -43,7 +71,7 @@ class Daemon:
         self._folds: dict[str, ExecutionFold] = {}
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
-        self._subs: set[asyncio.Queue] = set()
+        self._subs: set[Subscriber] = set()
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
         self._stop = asyncio.Event()
@@ -98,7 +126,11 @@ class Daemon:
             asyncio.create_task(self._iopub_pump(), name="iopub-pump"),
             asyncio.create_task(self._exec_worker(), name="exec-worker"),
         ]
-        async with unix_serve(self._handler, path=str(self.sock_path)):
+        # write_limit caps each connection's send buffer so a slow client makes
+        # ws.send apply backpressure instead of growing daemon memory unbounded.
+        async with unix_serve(
+            self._handler, path=str(self.sock_path), write_limit=WRITE_BUFFER_HIGH
+        ):
             os.chmod(self.sock_path, 0o600)
             self.pid_file.write_text(str(os.getpid()))
             log.info(
@@ -229,8 +261,15 @@ class Daemon:
         self._broadcast(event_from_message(seq, exec_id, msg_type, payload))
 
     def _broadcast(self, event: dict) -> None:
-        for q in self._subs:
-            q.put_nowait(event)
+        for sub in self._subs:
+            if sub.dropped:
+                continue
+            try:
+                sub.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # Slow client: cap memory by dropping it (it can reconnect).
+                sub.dropped = True
+                log.warning("subscriber overflow (>%d queued) — dropping client", SUB_QUEUE_MAX)
 
     def _submit(self, code: str, submitted_by: str | None = None,
                 origin: dict | None = None) -> str:
@@ -297,7 +336,7 @@ class Daemon:
         }
 
     async def _handler(self, ws) -> None:
-        q: asyncio.Queue | None = None
+        sub: Subscriber | None = None
         pump: asyncio.Task | None = None
         try:
             async for raw in ws:
@@ -307,9 +346,17 @@ class Daemon:
                     continue
                 op = msg.get("op")
                 if op == "attach":
-                    if q is None:
-                        q = asyncio.Queue()
-                        self._subs.add(q)  # buffer live events from this instant
+                    if sub is None:
+                        sub = Subscriber(asyncio.Queue(maxsize=SUB_QUEUE_MAX))
+                        self._subs.add(sub)  # buffer live events from this instant
+                        # Bound the kernel send buffer for this connection so a
+                        # stalled client cannot park tens of MB in kernel memory.
+                        try:
+                            s = ws.transport.get_extra_info("socket")
+                            if s is not None:
+                                s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCK_SNDBUF)
+                        except Exception:  # pragma: no cover - transport may vary
+                            pass
                     last = int(msg.get("last_seen_seq", 0))
                     # NOTE: no await between subscribing and computing the
                     # backlog/cutoff — atomicity within the event loop is what
@@ -330,7 +377,7 @@ class Daemon:
                         await ws.send(json.dumps(item))
                     await ws.send(json.dumps({"op": "sync", "seq": cutoff}))
                     if pump is None:
-                        pump = asyncio.create_task(self._sub_pump(ws, q, cutoff))
+                        pump = asyncio.create_task(self._sub_pump(ws, sub, cutoff))
                     log.info("client attached last_seen_seq=%d cutoff=%d", last, cutoff)
                 elif op == "execute":
                     exec_id = self._submit(
@@ -342,13 +389,37 @@ class Daemon:
         finally:
             if pump is not None:
                 pump.cancel()
-            if q is not None:
-                self._subs.discard(q)
+            if sub is not None:
+                self._subs.discard(sub)
 
-    @staticmethod
-    async def _sub_pump(ws, q: asyncio.Queue, cutoff: int) -> None:
+    async def _sub_pump(self, ws, sub: Subscriber, cutoff: int) -> None:
         while True:
-            event = await q.get()
+            try:
+                event = await asyncio.wait_for(sub.queue.get(), SUB_POLL)
+            except (asyncio.TimeoutError, TimeoutError):
+                if sub.dropped:
+                    return await self._notify_overflow(ws)
+                continue
+            if sub.dropped:
+                return await self._notify_overflow(ws)
             if event.get("seq", 0) <= cutoff:
                 continue  # already covered by snapshot/delta replay
-            await ws.send(json.dumps(event))
+            try:
+                await asyncio.wait_for(ws.send(json.dumps(event)), SEND_TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                # Client stalled accepting data: drop it (host stays healthy).
+                sub.dropped = True
+                log.warning("subscriber send stalled >%.0fs — dropping client", SEND_TIMEOUT)
+                return await self._notify_overflow(ws)
+
+    @staticmethod
+    async def _notify_overflow(ws) -> None:
+        """Best-effort: tell the client to reconnect+resync, then close."""
+        try:
+            await asyncio.wait_for(ws.send(json.dumps({"op": "overflow"})), 2.0)
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass

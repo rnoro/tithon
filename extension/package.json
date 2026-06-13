@@ -40,6 +40,10 @@
       {
         "command": "tithon.restoreOutputs",
         "title": "Tithon: Restore Cell Outputs from Daemon"
+      },
+      {
+        "command": "tithon.startLive",
+        "title": "Tithon: Start Live Output Sync"
       }
     ],
     "menus": {

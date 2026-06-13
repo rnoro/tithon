@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     extensionTestsEnv: {
       TITHON_HOME: process.env.TITHON_HOME ?? "",
       TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
+      TITHON_SUITE: process.env.TITHON_SUITE ?? "",
     },
   });
 }

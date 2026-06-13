@@ -1,7 +1,7 @@
 [project]
 name = "tithon"
 version = "0.0.1"
-description = "Tithon — persistent remote interactive Python sessions (Phase 0 PoC)"
+description = "Tithon — persistent remote interactive Python sessions"
 requires-python = ">=3.11"
 dependencies = [
     "jupyter_client>=8",
