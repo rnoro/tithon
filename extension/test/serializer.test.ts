@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as fc from "fast-check";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { parse, serialize, countMarkers } from "../src/serializer";
+import { parse, serialize, countMarkers, bodyLinesFromText } from "../src/serializer";
 
 const CORPUS_DIR = join(__dirname, "..", "..", "verify", "corpus");
 
@@ -156,5 +156,41 @@ describe("percent serializer — property: random percent files", () => {
       }),
       { numRuns: 1000 },
     );
+  });
+});
+
+describe("Cell View added cells — synthesize -> serialize -> parse (ADR-019 / glue bug)", () => {
+  // A cell added via the Cell View has no line terminators. Each synthesized
+  // cell body must end with "\n" so the next `# %%` marker stays on its own line.
+  function synthCell(value: string) {
+    return {
+      kind: "code" as const,
+      hasMarker: true,
+      markerLine: { text: "# %%", terminator: "\n" },
+      body: bodyLinesFromText(value),
+    };
+  }
+
+  it("does not glue the next marker onto the previous code line", () => {
+    const cells = [
+      synthCell('for i in range(5):\n    print(f"Iteration {i}")'),
+      synthCell('print("Hello")'),
+      synthCell('print("Loop completed.")'),
+    ];
+    const out = serialize({ cells });
+    // No `# %%` should ever follow non-newline characters on the same line.
+    expect(out).not.toMatch(/[^\n]# %%/);
+    // And it round-trips to THREE cells, not one.
+    const reparsed = parse(out).cells;
+    expect(reparsed.length).toBe(3);
+    expect(reparsed[0].body.map((l) => l.text).join("\n")).toContain("range(5)");
+    expect(reparsed[1].body.map((l) => l.text).join("\n")).toContain('print("Hello")');
+    expect(reparsed[2].body.map((l) => l.text).join("\n")).toContain("Loop completed");
+  });
+
+  it("normalizes a trailing newline to exactly one (no double blank)", () => {
+    const out = serialize({ cells: [synthCell('print("x")\n'), synthCell('print("y")')] });
+    expect(out).toBe('# %%\nprint("x")\n# %%\nprint("y")\n');
+    expect(parse(out).cells.length).toBe(2);
   });
 });

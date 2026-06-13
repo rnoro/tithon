@@ -11,8 +11,10 @@
  */
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
+import { DaemonClient } from "./daemonClient";
 import { parse } from "./serializer";
 import type { OutputItem } from "./outputFold";
+import { computeCellHash, docCellsFromParsed } from "./cellAttach";
 import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
 
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
@@ -147,18 +149,67 @@ class VSCodeCellSink implements CellSink {
  */
 export class TithonNotebookController {
   private readonly controller: vscode.NotebookController;
+  private readonly daemon: DaemonClient;
+  private readonly liveSessions = new Map<string, vscode.Disposable>();
 
-  constructor() {
+  constructor(sockPath?: string) {
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
     this.controller.supportsExecutionOrder = false;
-    // Cell execution itself is submitted to the daemon via the CodeLens path;
-    // this controller exists so we can attach restored outputs to cells.
-    this.controller.executeHandler = () => undefined;
+    this.daemon = new DaemonClient(sockPath);
+    // Native cell play button: start live sync then submit each cell to the daemon.
+    this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
+  }
+
+  private async _executeHandler(
+    cells: vscode.NotebookCell[],
+    notebook: vscode.NotebookDocument,
+  ): Promise<void> {
+    try {
+      await this.ensureLive(notebook);
+      // Submit with the cell's *line* range (matching the CodeLens path and the
+      // doc-cell ranges restore uses), not a cell-index range — see ADR-019.
+      const ranges = await this.cellLineRanges(notebook);
+      for (const cell of cells) {
+        const code = cell.document.getText();
+        await this.daemon.execute(code, {
+          uri: notebook.uri.toString(),
+          range: ranges[cell.index] ?? { start: cell.index, end: cell.index },
+          cell_hash: computeCellHash(code),
+        });
+      }
+    } catch (err) {
+      vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
+    }
+  }
+
+  /** Line range of each cell (by index) in the on-disk percent file. */
+  private async cellLineRanges(
+    notebook: vscode.NotebookDocument,
+  ): Promise<Array<{ start: number; end: number }>> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(notebook.uri);
+      const cells = parse(new TextDecoder().decode(bytes)).cells;
+      return docCellsFromParsed(cells).map((dc) => dc.range);
+    } catch {
+      return [];
+    }
   }
 
   dispose(): void {
+    for (const s of this.liveSessions.values()) s.dispose();
     this.controller.dispose();
+  }
+
+  /**
+   * Ensure live output sync is running for this notebook. Idempotent: if sync
+   * is already active for the notebook URI, this is a no-op.
+   */
+  async ensureLive(notebook: vscode.NotebookDocument): Promise<void> {
+    const key = notebook.uri.toString();
+    if (this.liveSessions.has(key)) return;
+    const session = await this.startLive(notebook);
+    this.liveSessions.set(key, session);
   }
 
   /** Attach a session, restore folded outputs, and write them into the cells. */
@@ -170,7 +221,7 @@ export class TithonNotebookController {
     const client = new SessionClient();
     await client.attach(0);
     try {
-      const attachments = client.restoreInto(cells);
+      const attachments = client.restoreInto(cells, notebook.uri.toString());
       for (const [cellIndex, att] of attachments) {
         let cell: vscode.NotebookCell;
         try {
@@ -208,12 +259,10 @@ export class TithonNotebookController {
 }
 
 /** Register the controller + restore/live commands for the Cell View. */
-export function registerRestore(context: vscode.ExtensionContext): void {
+export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
   const controller = new TithonNotebookController();
-  const liveSessions: vscode.Disposable[] = [];
   context.subscriptions.push(
     controller,
-    new vscode.Disposable(() => liveSessions.forEach((d) => d.dispose())),
     vscode.commands.registerCommand("tithon.restoreOutputs", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (!nb) {
@@ -234,12 +283,12 @@ export function registerRestore(context: vscode.ExtensionContext): void {
         return;
       }
       try {
-        const session = await controller.startLive(nb);
-        liveSessions.push(session);
+        await controller.ensureLive(nb);
         vscode.window.setStatusBarMessage("Tithon: live output sync started", 3000);
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon live: ${String(err)}`);
       }
     }),
   );
+  return controller;
 }

@@ -7,7 +7,7 @@
  * 0-byte diff (the Phase 0 ⑥ guarantee, verified by verify/v6.sh).
  */
 import * as vscode from "vscode";
-import { parse, serialize, cellSource, type Cell } from "./serializer";
+import { parse, serialize, cellSource, bodyLinesFromText, type Cell } from "./serializer";
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -55,10 +55,10 @@ export class PercentNotebookSerializer implements vscode.NotebookSerializer {
 
 function synthesizeCell(c: vscode.NotebookCellData): Cell {
   const isMarkup = c.kind === vscode.NotebookCellKind.Markup;
-  const body = c.value.split("\n").map((line, i, arr) => ({
-    text: line,
-    terminator: i === arr.length - 1 ? "" : "\n",
-  }));
+  // A cell added via the Cell View carries no line terminators; bodyLinesFromText
+  // ensures each line ends with "\n" so the next `# %%` marker isn't glued onto
+  // the last code line (which would collapse the file back to one cell).
+  const body = bodyLinesFromText(c.value);
   return {
     kind: isMarkup ? "markdown" : "code",
     hasMarker: true,

@@ -1,10 +1,27 @@
 # PROGRESS
 
 ## 현재 상태 (2026-06-13)
-**Phase 1 — 라이브 출력 동기화 + 성능 최적화 + 데몬 백프레셔. `make verify` 8/8 + `make verify-d` 2/2 PASS.**
+**Phase 1 + 실 tunnel 사용자 버그(#1/#2) 수정. `make verify` 8/8 + `make verify-d` 4/4 PASS.**
 재접속 1회 복원(v7/v8)을 넘어 **실행 중 출력을 실 VSCode 셀에 라이브 스트리밍**(v10)하고,
 렌더 비용을 coalescing으로 상한 지었으며(5만 이벤트→1 sink 호출), 느린 클라이언트로부터
 **GPU 호스트를 보호**하는 백프레셔(v9 + pytest)를 추가했다.
+
+### 실 tunnel 사용자 버그 수정 (ADR-019, v11/v12)
+실제 VSCode tunnel 사용에서 보고된 두 버그를 재현·수정:
+- **#1 셀 실행해도 출력 안 보임** (restoreOutputs 수동 실행해야 보임): DaemonClient.execute가
+  ack 직후 소켓 close → 출력 도착 전 구독자 없음. 네이티브 play의 executeHandler는 무동작이었음.
+  → executeHandler/CodeLens가 제출 전 `ensureLive()`로 영속 구독자 attach. **실 VSCode v11**로 검증.
+- **#2 모두 실행 시 마지막 셀 출력만 맨 위 셀에 표시**: restore의 `attachOutputs` proximity 폴백이
+  전역/영속 저널의 hash 불일치 실행들을 range {0,0}/cell-index로 비교해 전부 cell 0에 collapse.
+  → `attachOutputs`를 **정확 cell_hash 일치 전용**(불일치 skip)으로, `restoreInto(cells, fileUri)`로
+  **현재 파일 uri 스코프**, executeHandler origin.range를 **line range로 통일**. 회귀: cellAttach.test
+  (collapse→0 부착) + **실 VSCode v12**(blank-line 멀티셀 각자 셀 매핑).
+- verify-d = v8 v10 v11 v12 (run_verify.sh `d`). integration/suite에 runcell/multicell 추가.
+- **#3 +Code로 추가한 셀 저장 시 마커 glue** (`print("x")# %%` → 재오픈 시 3셀이 1셀로 붕괴):
+  synthesizeCell이 마지막 줄 terminator를 ""로 둔 탓. serializer.ts `bodyLinesFromText()`(순수,
+  모든 줄 "\n" 종결+끝개행 1개 정규화)로 수정, synthesizeCell이 사용. 기존 셀 verbatim 불변(ADR-011).
+  회귀: serializer.test.ts(glue 금지 + 3셀 라운드트립). ADR-020.
+- ⚠ 이 수정들은 소스에만 있음 — 사용자는 **vsix 재패키징(`npx vsce package`) + 재설치** 후에야 적용됨.
 
 ### Phase 1 ⑨⑩ 산출물 (라이브 동기화 · 최적화 · 백프레셔)
 - extension/src/`liveSync.ts`: `LiveOutputSync` — throttle/coalesce(주입 Scheduler) + run-merge +

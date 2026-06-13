@@ -215,11 +215,17 @@ export class SessionClient {
     return this.execs.get(execId)?.fold.outputs() ?? [];
   }
 
-  /** Convert tracked executions into the attach model (cell_hash carries the key). */
-  journalExecutions(): JournalExecution[] {
+  /**
+   * Convert tracked executions into the attach model (cell_hash carries the key).
+   * When `fileUri` is given, only executions that originated from that file are
+   * returned — the daemon journal is global/persistent, so this keeps a prior
+   * file's runs from bleeding into the notebook being restored (see ADR-019).
+   */
+  journalExecutions(fileUri?: string): JournalExecution[] {
     const out: JournalExecution[] = [];
     for (const st of this.executions()) {
       if (!st.cellHash) continue;
+      if (fileUri !== undefined && st.origin?.uri !== fileUri) continue;
       out.push({
         execId: st.execId,
         cellHash: st.cellHash,
@@ -232,11 +238,12 @@ export class SessionClient {
 
   /**
    * Attach restored outputs to the cells of a parsed percent document. This is
-   * the end product a notebook controller renders: `Map<cellIndex, Attachment>`
-   * with folded outputs and a `stale` flag when the cell was edited since the run.
+   * the end product a notebook controller renders: `Map<cellIndex, Attachment>`.
+   * Pass `fileUri` to scope restore to this file's runs (recommended; ADR-019).
+   * Mapping is by exact cell_hash — a cell edited since its run restores nothing.
    */
-  restoreInto(cells: Cell[]): Map<number, Attachment> {
-    return attachOutputs(this.journalExecutions(), docCellsFromParsed(cells));
+  restoreInto(cells: Cell[], fileUri?: string): Map<number, Attachment> {
+    return attachOutputs(this.journalExecutions(fileUri), docCellsFromParsed(cells));
   }
 
   /** Submit code (live-only sub first, like DaemonClient). Returns exec_id. */

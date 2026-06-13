@@ -32,10 +32,11 @@ describe("output -> cell attachment", () => {
     expect(att.has(2)).toBe(false);
   });
 
-  it("falls back to range proximity and marks the output stale when the cell was edited", () => {
+  it("SKIPS an execution whose hash matches no cell (no proximity collapse) — ADR-019", () => {
     const cells = docCells();
-    // execution whose code no longer matches any cell (hash changed), but its
-    // recorded range is closest to cell "c".
+    // execution whose code no longer matches any cell (edited since the run).
+    // Old behavior collapsed it onto a nearby cell; now it is dropped so it can
+    // never land on the wrong cell.
     const execs: JournalExecution[] = [
       {
         execId: "e9",
@@ -45,8 +46,22 @@ describe("output -> cell attachment", () => {
       },
     ];
     const att = attachOutputs(execs, cells);
-    expect(att.get(2)?.execId).toBe("e9");
-    expect(att.get(2)?.stale).toBe(true);
+    expect(att.size).toBe(0);
+  });
+
+  it("does not collapse several non-matching executions onto cell 0 — ADR-019 (#2 repro)", () => {
+    const cells = docCells();
+    // Three executions, none matching the current file (e.g. a global/persistent
+    // journal from another file). Previously all three piled onto cell 0 and the
+    // last won; now every one is skipped.
+    const execs: JournalExecution[] = [
+      { execId: "e1", cellHash: "stale-a", range: { start: 0, end: 0 }, outputs: ["A"] },
+      { execId: "e2", cellHash: "stale-b", range: { start: 0, end: 0 }, outputs: ["B"] },
+      { execId: "e3", cellHash: "stale-c", range: { start: 0, end: 0 }, outputs: ["C"] },
+    ];
+    const att = attachOutputs(execs, cells);
+    expect(att.size).toBe(0);
+    expect(att.has(0)).toBe(false);
   });
 
   it("lets the later execution win when several target the same cell", () => {

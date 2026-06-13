@@ -191,7 +191,10 @@ class Daemon:
         msg_type = msg["header"]["msg_type"]
         content = msg.get("content", {})
         if msg_type == "status":
-            self.kernel_status = content.get("execution_state", self.kernel_status)
+            new_state = content.get("execution_state", self.kernel_status)
+            if new_state != self.kernel_status:
+                log.debug("kernel status: %s → %s", self.kernel_status, new_state)
+            self.kernel_status = new_state
         parent_id = (msg.get("parent_header") or {}).get("msg_id")
         exec_id = self._msgid_to_exec.get(parent_id)
         if is_comm(msg_type):
@@ -199,6 +202,7 @@ class Daemon:
             return
         if exec_id is None or msg_type not in JOURNALED_IOPUB:
             return
+        log.debug("iopub exec=%s type=%s", exec_id, msg_type)
         artifact_ref = None
         if msg_type in ("display_data", "execute_result", "update_display_data"):
             refs = self.artifacts.extract(exec_id, content)
@@ -338,6 +342,7 @@ class Daemon:
     async def _handler(self, ws) -> None:
         sub: Subscriber | None = None
         pump: asyncio.Task | None = None
+        log.info("client connected (subscribers=%d)", len(self._subs) + 1)
         try:
             async for raw in ws:
                 try:
@@ -378,11 +383,18 @@ class Daemon:
                     await ws.send(json.dumps({"op": "sync", "seq": cutoff}))
                     if pump is None:
                         pump = asyncio.create_task(self._sub_pump(ws, sub, cutoff))
-                    log.info("client attached last_seen_seq=%d cutoff=%d", last, cutoff)
-                elif op == "execute":
-                    exec_id = self._submit(
-                        msg.get("code", ""), msg.get("submitted_by"), msg.get("origin")
+                    log.info(
+                        "client attached last_seen_seq=%d cutoff=%d backlog=%d subscribers=%d",
+                        last, cutoff, len(backlog), len(self._subs),
                     )
+                elif op == "execute":
+                    code = msg.get("code", "")
+                    preview = code[:80].replace("\n", "↵")
+                    exec_id = self._submit(
+                        code, msg.get("submitted_by"), msg.get("origin")
+                    )
+                    log.info("execute queued exec_id=%s queue_len=%d code=%r",
+                             exec_id, self._queue.qsize(), preview)
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
                 elif op == "status":
                     await ws.send(json.dumps({"op": "status_reply", **self._status()}))
@@ -391,6 +403,7 @@ class Daemon:
                 pump.cancel()
             if sub is not None:
                 self._subs.discard(sub)
+            log.info("client disconnected (subscribers=%d)", len(self._subs))
 
     async def _sub_pump(self, ws, sub: Subscriber, cutoff: int) -> None:
         while True:

@@ -213,6 +213,21 @@ export function cellSource(cell: Cell): string {
   return cell.body.map((l) => l.text + l.terminator).join("");
 }
 
+/**
+ * Body lines for a cell synthesized from plain text (a cell added in the Cell
+ * View, which carries no terminators). Every line — including the last — ends
+ * with "\n" so a following `# %%` marker starts on its own line instead of
+ * gluing onto the last code line (which would make parse() miss the marker and
+ * collapse the file back to one cell). A trailing newline in `value` is
+ * normalized so the cell ends with exactly one.
+ */
+export function bodyLinesFromText(value: string): PhysicalLine[] {
+  const v = value.endsWith("\n") ? value : value + "\n";
+  const lines = v.split("\n");
+  lines.pop(); // drop the trailing "" produced by the final "\n"
+  return lines.map((text) => ({ text, terminator: "\n" }));
+}
+
 /** Number of top-level cell markers in the source (for structural checks). */
 export function countMarkers(text: string): number {
   const lines = splitPhysicalLines(text);

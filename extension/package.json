@@ -4,6 +4,10 @@
   "version": "0.0.1",
   "private": true,
   "publisher": "tithon",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rnoro/tithon.git"
+  },
   "description": "Tithon VSCode extension — percent Cell View + widget renderer + output restore",
   "engines": {
     "vscode": "^1.85.0"
@@ -12,7 +16,8 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onNotebook:tithon-py",
-    "onCommand:tithon.restoreOutputs"
+    "onCommand:tithon.restoreOutputs",
+    "onCommand:tithon.runCell"
   ],
   "contributes": {
     "notebooks": [

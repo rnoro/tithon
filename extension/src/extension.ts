@@ -13,12 +13,20 @@ import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, type ExecOrigin } from "./daemonClient";
 import { registerRestore } from "./sessionController";
 
+/** Find a tithon-py notebook document that corresponds to the given file URI. */
+function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
+  return vscode.workspace.notebookDocuments.find(
+    (n) => n.uri.fsPath === fileUri.fsPath,
+  );
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const client = new DaemonClient();
 
   // The reconnect/restore half (subscribe -> fold -> restore -> attach),
   // verified end-to-end against a real daemon by verify/v7.
-  registerRestore(context);
+  // Also owns the executeHandler so the native cell play button works.
+  const notebookCtrl = registerRestore(context);
 
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(
@@ -33,6 +41,16 @@ export function activate(context: vscode.ExtensionContext): void {
       RUN_CELL_COMMAND,
       async (arg: { code: string; origin: ExecOrigin }) => {
         try {
+          // Auto-start live sync so output appears without a manual step.
+          // Active notebook editor takes priority; fall back to any open notebook
+          // for the same file (covers the text-editor CodeLens path).
+          const nb =
+            vscode.window.activeNotebookEditor?.notebook ??
+            (vscode.window.activeTextEditor
+              ? findNotebook(vscode.window.activeTextEditor.document.uri)
+              : undefined);
+          if (nb) await notebookCtrl.ensureLive(nb);
+
           const execId = await client.execute(arg.code, arg.origin);
           vscode.window.setStatusBarMessage(`Tithon: submitted ${execId}`, 3000);
         } catch (err) {

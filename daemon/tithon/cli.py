@@ -27,11 +27,18 @@ async def _connect():
 def cmd_daemon(args) -> int:
     home = get_home()
     home.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(home / "daemon.log"),
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    level = getattr(logging, args.log_level.upper())
+    fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Always write to daemon.log for post-mortem analysis.
+    fh = logging.FileHandler(str(home / "daemon.log"))
+    fh.setFormatter(logging.Formatter(fmt))
+    root.addHandler(fh)
+    # Always echo to stderr so `tithon daemon` shows live activity in the terminal.
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter(fmt))
+    root.addHandler(sh)
     from .daemon import Daemon
 
     asyncio.run(Daemon(home, Path.cwd()).run())
@@ -147,6 +154,12 @@ def main(argv=None) -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("daemon", help="run the tithon daemon (foreground)")
+    sp.add_argument(
+        "--log-level",
+        default="INFO",
+        metavar="LEVEL",
+        help="logging verbosity: DEBUG|INFO|WARNING|ERROR (default: INFO)",
+    )
     sp.set_defaults(fn=cmd_daemon)
 
     sp = sub.add_parser("run", help="execute code in the session")
