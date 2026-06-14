@@ -36,9 +36,11 @@ describe("Tithon daemon auto-start (v23)", () => {
     assert.ok(!fs.existsSync(pidFile), "precondition: daemon must NOT be running yet");
 
     await ext().activate();
-    // Point auto-start at the venv's tithon (it isn't on the test PATH).
+    // Use the interpreter path (Jupyter-style `<python> -m tithon`) — no venv
+    // activation, no `tithon` on PATH. daemonCommand stays default "tithon"
+    // (absent here) to prove the interpreter candidate is what starts it.
     await vscode.workspace.getConfiguration("tithon")
-      .update("daemonCommand", process.env.TITHON_DAEMON_CMD!, vscode.ConfigurationTarget.Global);
+      .update("pythonPath", process.env.TITHON_PYTHON!, vscode.ConfigurationTarget.Global);
 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);

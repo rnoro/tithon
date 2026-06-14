@@ -24,9 +24,10 @@ print("AUTO_OK", flush=True)
 PY
 
 # NOTE: deliberately NOT calling start_daemon — the extension must auto-start it.
-echo "v23: NO daemon started; extension must auto-start it (xvfb)"
+echo "v23: NO daemon started; extension must auto-start it via <python> -m tithon (xvfb)"
 export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK" TITHON_SUITE="autostart"
-export TITHON_DAEMON_CMD="$TITHON"   # venv tithon (not on the test PATH)
+# Interpreter path (Jupyter-style): venv python, no activation, tithon NOT on PATH.
+export TITHON_PYTHON="$PY"
 OUT="$(mktemp)"
 (cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?

@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": true,
   "publisher": "tithon",
   "repository": {
@@ -69,6 +69,11 @@
           "type": "string",
           "default": "tithon",
           "description": "Command used to launch the daemon (run as `<command> daemon`). Set to an absolute path if `tithon` is not on PATH."
+        },
+        "tithon.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter to run the daemon as `<python> -m tithon daemon` (works without activating the venv). Leave empty to use the interpreter selected by the Python extension."
         }
       }
     },
