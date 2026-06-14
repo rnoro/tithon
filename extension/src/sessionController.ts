@@ -12,7 +12,7 @@
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
 import { DaemonClient, defaultSocketPath } from "./daemonClient";
-import { ensureDaemon } from "./daemonProcess";
+import { ensureDaemon, waitForDaemonStop, listPythonEnvironments } from "./daemonProcess";
 import { parse, type Cell } from "./serializer";
 import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
@@ -259,9 +259,15 @@ export class TithonNotebookController {
   >();
 
   private readonly selectionSub: vscode.Disposable;
+  /** Clickable status-bar indicator showing/selecting the kernel's Python. */
+  readonly pyStatus: vscode.StatusBarItem;
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
+    this.pyStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    this.pyStatus.command = "tithon.selectInterpreter";
+    this.pyStatus.text = "$(snake) Tithon";
+    this.pyStatus.tooltip = "Tithon: select Python interpreter";
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
     this.controller.supportsExecutionOrder = false;
@@ -280,8 +286,12 @@ export class TithonNotebookController {
     // of selection and the restore silently fails). On reopen VSCode re-selects
     // the remembered kernel, so the user gets restore+live with NO command (#3/#4).
     this.selectionSub = this.controller.onDidChangeSelectedNotebooks((e) => {
-      if (e.selected) void this.ensureLive(e.notebook).catch(() => undefined);
-      else this.disposeLive(e.notebook.uri);
+      if (e.selected) {
+        this.pyStatus.show();
+        void this.ensureLive(e.notebook).catch(() => undefined);
+      } else {
+        this.disposeLive(e.notebook.uri);
+      }
     });
   }
 
@@ -312,12 +322,76 @@ export class TithonNotebookController {
     }
   }
 
-  /** Show the kernel's Python version on the controller label + description. */
+  /** Show the kernel's Python version on the controller label + status bar. */
   private applyKernelLabel(python: string | null): void {
+    if (python) {
+      this.pyStatus.text = `$(snake) Tithon: Python ${python}`;
+      this.pyStatus.tooltip = `Tithon kernel: Python ${python} — click to change interpreter`;
+    }
     if (!python || this.labelledPython) return;
     this.controller.label = `Tithon · Python ${python}`;
     this.controller.description = `Python ${python}`;
     this.labelledPython = true;
+  }
+
+  /**
+   * Restart the WHOLE daemon (all kernels) — used after changing the interpreter,
+   * since every kernel runs under the daemon's Python. Tears down live sessions,
+   * shuts the daemon down, relaunches it (with the current tithon.pythonPath),
+   * and re-attaches live for any open Tithon notebooks.
+   */
+  async restartDaemon(): Promise<void> {
+    for (const s of this.liveSessions.values()) s.dispose();
+    this.liveSessions.clear();
+    this.labelledPython = false;
+    await this.daemon.shutdown(true); // kill kernels so new daemon spawns fresh under the new interpreter
+    await waitForDaemonStop(this.sockPath);
+    await ensureDaemon(this.sockPath); // relaunches with the (possibly new) interpreter
+    for (const nb of vscode.workspace.notebookDocuments) {
+      if (nb.notebookType === "tithon-py") await this.ensureLive(nb).catch(() => undefined);
+    }
+  }
+
+  /** Pick a Python interpreter (sets tithon.pythonPath); restart the daemon to
+   *  apply it (the interpreter is daemon-wide). */
+  async selectInterpreter(): Promise<void> {
+    const envs = await listPythonEnvironments();
+    type Item = vscode.QuickPickItem & { path: string };
+    const items: Item[] = [
+      { label: "$(check) Use the Python extension's interpreter", description: "default", path: "" },
+      ...envs.map((e) => ({
+        label: `$(snake) Python ${e.version ?? "?"}`,
+        description: e.label ? `${e.label} — ${e.path}` : e.path,
+        path: e.path,
+      })),
+      { label: "$(edit) Enter interpreter path…", path: "__manual__" },
+    ];
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: "Select the Python interpreter for the Tithon daemon/kernels",
+    });
+    if (!pick) return;
+    let chosen = pick.path;
+    if (chosen === "__manual__") {
+      chosen = (await vscode.window.showInputBox({
+        prompt: "Absolute path to the Python interpreter (it must have `tithon` installed)",
+        value: this.sockPath, // hint; user replaces
+      })) ?? "";
+      if (!chosen) return;
+    }
+    await vscode.workspace.getConfiguration("tithon")
+      .update("pythonPath", chosen, vscode.ConfigurationTarget.Global);
+
+    // The interpreter is daemon-wide, so applying it means restarting the daemon.
+    const answer = await vscode.window.showWarningMessage(
+      "Changing the interpreter restarts the Tithon daemon — all running kernels and cells will stop. Restart now?",
+      { modal: true },
+      "Restart now",
+      "Later",
+    );
+    if (answer === "Restart now") {
+      await this.restartDaemon();
+      vscode.window.setStatusBarMessage("Tithon: daemon restarted with the selected interpreter", 4000);
+    }
   }
 
   /** Line range of each cell (by index) in the on-disk percent file. */
@@ -335,6 +409,7 @@ export class TithonNotebookController {
 
   dispose(): void {
     this.selectionSub.dispose();
+    this.pyStatus.dispose();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
     this.controller.dispose();
@@ -508,6 +583,21 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         vscode.window.setStatusBarMessage("Tithon: live output sync started", 3000);
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon live: ${String(err)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon.selectInterpreter", async () => {
+      try {
+        await controller.selectInterpreter();
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon interpreter: ${String(err)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon.restartDaemon", async () => {
+      try {
+        await controller.restartDaemon();
+        vscode.window.setStatusBarMessage("Tithon: daemon restarted", 3000);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon daemon restart: ${String(err)}`);
       }
     }),
   );

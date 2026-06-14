@@ -81,6 +81,24 @@ export class DaemonClient {
     }
   }
 
+  /** Stop the whole daemon. `killKernels` also terminates kernels (fresh start,
+   *  e.g. an interpreter switch); otherwise kernels stay detached for re-attach.
+   *  No-op if the daemon isn't running. */
+  async shutdown(killKernels = false): Promise<void> {
+    let ws: WebSocket;
+    try {
+      ws = await this.open();
+    } catch {
+      return; // not running
+    }
+    try {
+      ws.send(JSON.stringify({ op: "shutdown", kill_kernels: killKernels }));
+      await this.waitFor(ws, (m) => m.op === "shutting_down").catch(() => undefined);
+    } finally {
+      ws.close();
+    }
+  }
+
   async status(): Promise<any> {
     const ws = await this.open();
     try {

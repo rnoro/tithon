@@ -145,12 +145,17 @@ class Session:
                 log.exception("[%s] task teardown error", self.session_id)
         self._tasks = []
 
-    async def stop(self) -> None:
+    async def stop(self, kill_kernel: bool = False) -> None:
         await self._stop_tasks()
         try:
             self.kc.stop_channels()
         except Exception:  # pragma: no cover - defensive
             pass
+        # Normally the kernel is left running (detached) so the next daemon
+        # re-attaches. For a deliberate interpreter switch we kill it so the new
+        # daemon spawns a fresh kernel under the new Python.
+        if kill_kernel:
+            self.kernel.kill()
 
     async def restart_kernel(self) -> int:
         """Kill this session's kernel and spawn a fresh one (new namespace).
@@ -482,6 +487,7 @@ class Daemon:
         self._sessions: dict[str, Session] = {}
         self._sessions_lock = asyncio.Lock()
         self._stop = asyncio.Event()
+        self._kill_kernels_on_stop = False  # set by an explicit kill shutdown
 
     # -- lifecycle -----------------------------------------------------------
     def _preflight(self) -> None:
@@ -522,7 +528,7 @@ class Daemon:
                      os.getpid(), self.sock_path)
             await self._stop.wait()
         for s in list(self._sessions.values()):
-            await s.stop()
+            await s.stop(kill_kernel=self._kill_kernels_on_stop)
         self.pid_file.unlink(missing_ok=True)
         self.sock_path.unlink(missing_ok=True)
         log.info("daemon stopped")
@@ -550,6 +556,14 @@ class Daemon:
                 if op == "status" and "session" not in msg:
                     await ws.send(json.dumps(self._global_status()))
                     continue
+                # Shutdown the whole daemon (daemon-wide; used to relaunch under a
+                # different Python interpreter). Stops every session's kernel.
+                if op == "shutdown":
+                    self._kill_kernels_on_stop = bool(msg.get("kill_kernels", False))
+                    await ws.send(json.dumps({"op": "shutting_down"}))
+                    log.info("shutdown requested (kill_kernels=%s)", self._kill_kernels_on_stop)
+                    self._stop.set()
+                    return
                 # A connection is bound to one session, fixed on the first op.
                 if session is None:
                     session = await self._get_session(msg.get("session", DEFAULT_SESSION))

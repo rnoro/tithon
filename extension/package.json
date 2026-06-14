@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "private": true,
   "publisher": "tithon",
   "repository": {
@@ -69,6 +69,17 @@
         "title": "Tithon: Open as Text Editor",
         "category": "Tithon",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "tithon.selectInterpreter",
+        "title": "Tithon: Select Python Interpreter",
+        "category": "Tithon",
+        "icon": "$(snake)"
+      },
+      {
+        "command": "tithon.restartDaemon",
+        "title": "Tithon: Restart Daemon",
+        "category": "Tithon"
       }
     ],
     "configuration": {
@@ -111,9 +122,14 @@
           "group": "navigation/execute@2"
         },
         {
-          "command": "tithon.openAsText",
+          "command": "tithon.selectInterpreter",
           "when": "notebookType == tithon-py",
           "group": "navigation/view@1"
+        },
+        {
+          "command": "tithon.openAsText",
+          "when": "notebookType == tithon-py",
+          "group": "navigation/view@2"
         }
       ]
     }

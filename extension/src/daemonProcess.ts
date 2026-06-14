@@ -156,6 +156,47 @@ function tryStart(cmdline: string, sockPath: string, logPath: string, cwd?: stri
   });
 }
 
+/**
+ * Wait until the daemon has FULLY shut down. The daemon closes its socket early
+ * but only removes its pid file AFTER stopping sessions (killing kernels), so the
+ * pid file is the authoritative "fully exited" signal — waiting on the socket
+ * alone returns too soon and the relaunch's preflight sees the old pid still
+ * running ("already running") and aborts.
+ */
+export async function waitForDaemonStop(sockPath: string, timeoutMs = 15000): Promise<void> {
+  const pidFile = path.join(path.dirname(sockPath), "daemon.pid");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const sockDown = !(await canConnect(sockPath));
+    if (sockDown && !fs.existsSync(pidFile)) return;
+    await sleep(150);
+  }
+}
+
+export interface PyEnv { path: string; version?: string; label?: string }
+
+/** Discovered Python interpreters from the Python extension (for the picker). */
+export async function listPythonEnvironments(): Promise<PyEnv[]> {
+  const out: PyEnv[] = [];
+  try {
+    const ext = vscode.extensions.getExtension("ms-python.python");
+    if (!ext) return out;
+    if (!ext.isActive) await ext.activate();
+    const api = ext.exports as any;
+    const known: any[] = api?.environments?.known ?? [];
+    for (const e of known) {
+      const path: string | undefined = e?.executable?.uri?.fsPath ?? e?.path;
+      if (!path) continue;
+      const v = e?.version ? `${e.version.major}.${e.version.minor}.${e.version.micro ?? ""}` : undefined;
+      const label: string | undefined = e?.environment?.name || e?.environment?.folderUri?.fsPath || undefined;
+      out.push({ path, version: v, label });
+    }
+  } catch {
+    /* Python extension absent or API shape changed */
+  }
+  return out;
+}
+
 function readTail(logPath: string, lines = 12): string {
   try {
     const text = fs.readFileSync(logPath, "utf8").trimEnd();

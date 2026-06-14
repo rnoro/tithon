@@ -169,6 +169,21 @@ def cmd_interrupt(args) -> int:
     return asyncio.run(_kernel_op("interrupt", args.session))
 
 
+async def _shutdown(kill_kernels: bool) -> int:
+    async with await _connect() as ws:
+        await ws.send(json.dumps({"op": "shutdown", "kill_kernels": kill_kernels}))
+        try:
+            m = json.loads(await ws.recv())
+            print(json.dumps(m, indent=2))
+        except Exception:
+            pass
+    return 0
+
+
+def cmd_shutdown(args) -> int:
+    return asyncio.run(_shutdown(args.kill_kernels))
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="tithon")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -207,6 +222,11 @@ def main(argv=None) -> None:
     sp = sub.add_parser("interrupt", help="interrupt the running cell (SIGINT)")
     sp.add_argument("--session", default="default", help="session id (file uri)")
     sp.set_defaults(fn=cmd_interrupt)
+
+    sp = sub.add_parser("shutdown", help="stop the daemon (kernels stay detached unless --kill-kernels)")
+    sp.add_argument("--kill-kernels", action="store_true",
+                    help="also kill kernels (fresh start, e.g. interpreter switch)")
+    sp.set_defaults(fn=cmd_shutdown)
 
     args = p.parse_args(argv)
     try:
