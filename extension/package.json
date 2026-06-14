@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "private": true,
   "publisher": "tithon",
   "repository": {
@@ -67,6 +67,21 @@
         "category": "Tithon"
       }
     ],
+    "configuration": {
+      "title": "Tithon",
+      "properties": {
+        "tithon.autoStartDaemon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the Tithon daemon on the host when it isn't already running (spawned detached, so it survives reconnects)."
+        },
+        "tithon.daemonCommand": {
+          "type": "string",
+          "default": "tithon",
+          "description": "Command used to launch the daemon (run as `<command> daemon`). Set to an absolute path if `tithon` is not on PATH."
+        }
+      }
+    },
     "menus": {
       "notebook/toolbar": [
         {

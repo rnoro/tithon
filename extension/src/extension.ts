@@ -10,7 +10,8 @@
 import * as vscode from "vscode";
 import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
-import { DaemonClient, type ExecOrigin } from "./daemonClient";
+import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
+import { ensureDaemon } from "./daemonProcess";
 import { registerRestore } from "./sessionController";
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
@@ -66,6 +67,7 @@ export function activate(context: vscode.ExtensionContext): void {
             (vscode.window.activeTextEditor
               ? findNotebook(vscode.window.activeTextEditor.document.uri)
               : undefined);
+          await ensureDaemon(defaultSocketPath()); // auto-start host daemon if down
           if (nb) {
             await notebookCtrl.ensureLive(nb);
             notebookCtrl.refreshLive(nb); // pick up cells added since live started (ADR-022)

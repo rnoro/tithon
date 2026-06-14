@@ -1,8 +1,15 @@
 # PROGRESS
 
 ## 현재 상태 (2026-06-14)
-**파일별 커널/세션(Jupyter 모델) 전환 + 2차 실 tunnel 사용자 버그(#1~#6) 수정 (ext 0.0.7).**
-`make verify` 8/8 + `make verify-c` 3/3 + `make verify-d` 13/13 PASS, vitest 50, daemon pytest 32.
+**파일별 커널/세션 + 2차 사용자 버그(#1~#6) + 데몬 자동시작·커널 Python 버전 라벨 (ext 0.0.8).**
+`make verify` 8/8 + `make verify-c` 3/3 + `make verify-d` 14/14 PASS, vitest 50, daemon pytest 32.
+
+### 데몬 자동시작 + 커널 Python 버전 (ADR-028, v23)
+- **데몬 자동시작**: `daemonProcess.ts` ensureDaemon이 소켓 연결 실패 시 `tithon daemon`을 detached
+  spawn(설정 `tithon.autoStartDaemon`/`tithon.daemonCommand`). 커널 선택만 해도 자동 기동 → 사용자는
+  데몬을 직접 띄울 필요 없음(남은 수동단계: 파일당 최초 1회 커널 선택, VSCode 모델상 불가피).
+- **커널 라벨**: Session이 kernel_info로 Python 버전 캡처 → snapshot.kernel.python → 컨트롤러 라벨
+  "Tithon · Python 3.11.15"(이전엔 "Tithon"만). 검증 v23 + 스크린샷.
 
 ### 2차 실 tunnel 사용자 버그 수정 (ADR-026/027, v17~v22)
 사용자가 원격에서 직접 테스트하며 보고한 문제들:
@@ -145,9 +152,8 @@
   additive 마이그레이션(ALTER TABLE ADD COLUMN cell_hash). pytest 28, vitest 27, verify 6/6.
 
 ## 다음 단계 (Phase 1 진행 중)
-- ✅ ①~⑩ + 1차 사용자버그(#1~#7) + 2차 사용자버그(#1~#6, 파일별 커널) — verify 8/8 + verify-c 3/3 + verify-d 13/13.
+- ✅ ①~⑩ + 1차(#1~#7) + 2차(#1~#6 파일별 커널) + 데몬 자동시작·Python 라벨 — verify 8/8 + verify-c 3/3 + verify-d 14/14.
 - 다음 후보:
-  - 데몬 자동 시작(pip install 후 셀 실행/접속 시 호스트 데몬 detached 자동 기동) — 사용자 요청, 미착수.
   - 위젯 라이브: tqdm 위젯 미러 스냅샷을 라이브 경로로 렌더(현재 stream/result/error 렌더; 위젯은 복원만).
   - update_display_data 인플레이스 갱신(현재 sessionController는 append 스파이크) — 매칭 출력 교체.
   - 세션 GC: 닫힌 파일의 커널 수명 정책(현재 커널은 detached로 계속 생존; idle 종료/명시 종료 UI 필요).

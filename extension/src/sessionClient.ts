@@ -85,6 +85,7 @@ export class SessionClient {
   private order: string[] = [];
   private onChangeCb: (() => void) | null = null;
   private onEventCb: ((ev: LiveEvent) => void) | null = null;
+  private kernelInfoData: { status?: string; pid?: number | null; python?: string | null } | null = null;
   /** Highest seq the daemon told us about (snapshot.max_seq or last sync). */
   syncSeq = 0;
 
@@ -109,6 +110,11 @@ export class SessionClient {
   /** Executions in submission order. */
   executions(): ExecState[] {
     return this.order.map((id) => this.execs.get(id)!).filter(Boolean);
+  }
+
+  /** Kernel info from the snapshot (status/pid/python), or null pre-attach. */
+  kernelInfo(): { status?: string; pid?: number | null; python?: string | null } | null {
+    return this.kernelInfoData;
   }
 
   private ensureExec(execId: string, seq: number): ExecState {
@@ -188,8 +194,13 @@ export class SessionClient {
     }
   }
 
-  private applySnapshot(snap: { max_seq?: number; executions?: SnapshotExecWire[] }): void {
+  private applySnapshot(snap: {
+    max_seq?: number;
+    executions?: SnapshotExecWire[];
+    kernel?: { status?: string; pid?: number | null; python?: string | null };
+  }): void {
     this.syncSeq = snap.max_seq ?? this.syncSeq;
+    if (snap.kernel) this.kernelInfoData = snap.kernel;
     for (const e of snap.executions ?? []) {
       const st = this.ensureExec(e.exec_id, e.seq);
       st.seq = e.seq;

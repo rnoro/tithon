@@ -11,7 +11,8 @@
  */
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
-import { DaemonClient } from "./daemonClient";
+import { DaemonClient, defaultSocketPath } from "./daemonClient";
+import { ensureDaemon } from "./daemonProcess";
 import { parse, type Cell } from "./serializer";
 import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
@@ -250,6 +251,8 @@ class VSCodeCellSink implements CellSink {
 export class TithonNotebookController {
   private readonly controller: vscode.NotebookController;
   private readonly daemon: DaemonClient;
+  private readonly sockPath: string;
+  private labelledPython = false; // set the "Python x.y" label only once
   private readonly liveSessions = new Map<
     string,
     { dispose: () => void; refresh: () => void }
@@ -258,6 +261,7 @@ export class TithonNotebookController {
   private readonly selectionSub: vscode.Disposable;
 
   constructor(sockPath?: string) {
+    this.sockPath = sockPath ?? defaultSocketPath();
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
     this.controller.supportsExecutionOrder = false;
@@ -280,6 +284,7 @@ export class TithonNotebookController {
     notebook: vscode.NotebookDocument,
   ): Promise<void> {
     try {
+      await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
       await this.ensureLive(notebook);
       // Cells may have been added/edited since live sync started; refresh the
       // index so this run's cell maps (ADR-022).
@@ -299,6 +304,14 @@ export class TithonNotebookController {
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
     }
+  }
+
+  /** Show the kernel's Python version on the controller label + description. */
+  private applyKernelLabel(python: string | null): void {
+    if (!python || this.labelledPython) return;
+    this.controller.label = `Tithon · Python ${python}`;
+    this.controller.description = `Python ${python}`;
+    this.labelledPython = true;
   }
 
   /** Line range of each cell (by index) in the on-disk percent file. */
@@ -354,6 +367,7 @@ export class TithonNotebookController {
 
   /** Restart a file's kernel (fresh namespace), then resync the live view. */
   async restartKernel(notebook: vscode.NotebookDocument): Promise<void> {
+    await ensureDaemon(this.sockPath);
     this.disposeLive(notebook.uri);
     await this.daemon.restartKernel(notebook.uri.toString());
     await this.ensureLive(notebook); // re-attach: clears spinners, re-seeds state
@@ -361,6 +375,7 @@ export class TithonNotebookController {
 
   /** Interrupt the running cell of a file's kernel. */
   async interruptKernel(notebook: vscode.NotebookDocument): Promise<void> {
+    await ensureDaemon(this.sockPath);
     await this.daemon.interrupt(notebook.uri.toString());
   }
 
@@ -377,6 +392,7 @@ export class TithonNotebookController {
   async restore(notebook: vscode.NotebookDocument): Promise<void> {
     const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
 
+    await ensureDaemon(this.sockPath);
     const client = new SessionClient(undefined, notebook.uri.toString());
     await client.attach(0);
     try {
@@ -407,8 +423,12 @@ export class TithonNotebookController {
   async startLive(
     notebook: vscode.NotebookDocument,
   ): Promise<{ dispose: () => void; refresh: () => void }> {
+    await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     const client = new SessionClient(undefined, notebook.uri.toString());
     await client.attach(0); // catch up on any prior state, then stream live
+    // Surface the kernel's Python version on the controller (the picker/indicator
+    // showed only "Tithon"; now "Tithon · Python 3.11.5").
+    this.applyKernelLabel(client.kernelInfo()?.python ?? null);
     const sink = new VSCodeCellSink(this.controller, notebook);
     const live = new LiveOutputSync(
       cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)

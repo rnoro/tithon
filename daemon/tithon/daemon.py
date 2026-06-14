@@ -97,6 +97,7 @@ class Session:
         self.artifacts = ArtifactStore(workdir, self.journal)
         self.kc = None
         self.kernel_status = "unknown"
+        self.kernel_pyversion: str | None = None  # e.g. "3.11.5"
         self._folds: dict[str, ExecutionFold] = {}
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
@@ -111,6 +112,9 @@ class Session:
         self.kc = self.kernel.make_client()
         if spawned:
             await self._wait_kernel_ready(timeout=120)
+        # Capture the kernel's Python version (before the exec worker contends on
+        # the shell channel) so the client can label the kernel "Python 3.x.y".
+        await self._capture_kernel_info()
         orphaned = self.journal.orphan_inflight()
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
@@ -221,6 +225,30 @@ class Session:
             if loop.time() > deadline:
                 raise RuntimeError("kernel did not become ready in time")
             await asyncio.sleep(0.2)
+
+    async def _capture_kernel_info(self) -> None:
+        """One kernel_info round-trip to record the kernel's Python version.
+
+        Runs before the exec worker so there is no shell-channel contention.
+        Works for both freshly-spawned and re-attached kernels.
+        """
+        try:
+            msg_id = self.kc.kernel_info()
+            for _ in range(15):
+                try:
+                    reply = await asyncio.wait_for(self.kc.shell_channel.get_msg(), 2.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    continue
+                if (
+                    reply["header"]["msg_type"] == "kernel_info_reply"
+                    and (reply.get("parent_header") or {}).get("msg_id") == msg_id
+                ):
+                    li = reply["content"].get("language_info") or {}
+                    self.kernel_pyversion = li.get("version")
+                    log.info("[%s] kernel python %s", self.session_id, self.kernel_pyversion)
+                    return
+        except Exception:  # pragma: no cover - best effort, label is cosmetic
+            log.exception("[%s] kernel_info capture failed", self.session_id)
 
     # -- kernel message flow ---------------------------------------------------
     async def _iopub_pump(self) -> None:
@@ -386,7 +414,11 @@ class Session:
         return {
             "session": self.session_id,
             "max_seq": self.journal.max_seq(),
-            "kernel": {"status": self.kernel_status, "pid": self.kernel.pid},
+            "kernel": {
+                "status": self.kernel_status,
+                "pid": self.kernel.pid,
+                "python": self.kernel_pyversion,
+            },
             "queue_len": self._queue.qsize(),
             "executions": execs,
             "widgets": self._mirror.snapshot(),
@@ -397,6 +429,7 @@ class Session:
             "session": self.session_id,
             "kernel_pid": self.kernel.pid,
             "kernel_status": self.kernel_status,
+            "kernel_python": self.kernel_pyversion,
             "kernel_reattached": self.kernel.reattached,
             "queue_len": self._queue.qsize(),
             "max_seq": self.journal.max_seq(),
