@@ -268,6 +268,12 @@ export class TithonNotebookController {
     this.daemon = new DaemonClient(sockPath);
     // Native cell play button: start live sync then submit each cell to the daemon.
     this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
+    // Cell STOP button (and Interrupt): the cell runs on the daemon's kernel, not
+    // a VSCode-managed execution, so there's no cancellation token to honor —
+    // wire interruptHandler so the ⏹ button SIGINTs the kernel. The running cell
+    // raises KeyboardInterrupt -> errors -> the live sink ends it; the kernel
+    // stays alive so the cell can be re-run.
+    this.controller.interruptHandler = (nb) => this.interruptKernel(nb);
     // Auto restore + live sync exactly when OUR kernel becomes the notebook's
     // selected kernel — this is the right moment (createNotebookCellExecution
     // requires the controller be selected, so starting on raw open races ahead
