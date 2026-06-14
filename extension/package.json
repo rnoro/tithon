@@ -15,6 +15,8 @@
   "type": "commonjs",
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:python",
     "onNotebook:tithon-py",
     "onCommand:tithon.restoreOutputs",
     "onCommand:tithon.restartKernel",
@@ -55,6 +57,18 @@
         "command": "tithon.startLive",
         "title": "Tithon: Start Live Output Sync",
         "category": "Tithon"
+      },
+      {
+        "command": "tithon.openAsCellView",
+        "title": "Tithon: Open as Cell View",
+        "category": "Tithon",
+        "icon": "$(notebook)"
+      },
+      {
+        "command": "tithon.openAsText",
+        "title": "Tithon: Open as Text Editor",
+        "category": "Tithon",
+        "icon": "$(file-code)"
       }
     ],
     "configuration": {
@@ -78,6 +92,13 @@
       }
     },
     "menus": {
+      "editor/title": [
+        {
+          "command": "tithon.openAsCellView",
+          "when": "resourceExtname == .py && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation"
+        }
+      ],
       "notebook/toolbar": [
         {
           "command": "tithon.interruptKernel",
@@ -88,6 +109,11 @@
           "command": "tithon.restartKernel",
           "when": "notebookType == tithon-py",
           "group": "navigation/execute@2"
+        },
+        {
+          "command": "tithon.openAsText",
+          "when": "notebookType == tithon-py",
+          "group": "navigation/view@1"
         }
       ]
     }

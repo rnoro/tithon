@@ -26,8 +26,37 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
   return nb.notebookType === "tithon-py";
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+/**
+ * Make .py open as TEXT by default. The tithon-py notebook needs a `*.py`
+ * selector so `Open as Cell View` (vscode.openWith) works, but a notebook
+ * selector also makes it the DEFAULT editor for .py — which the user does not
+ * want. So we yield the default back to the text editor via editorAssociations,
+ * leaving the Cell View available on demand (openWith / Reopen With). Guarded:
+ * we only set it when the user has no `*.py` association, so an explicit user
+ * choice (incl. "notebook as default") is never overwritten.
+ */
+async function ensureTextDefaultForPy(): Promise<void> {
+  try {
+    const cfg = vscode.workspace.getConfiguration();
+    const assoc = cfg.get<Record<string, string>>("workbench.editorAssociations") ?? {};
+    if (!("*.py" in assoc)) {
+      await cfg.update(
+        "workbench.editorAssociations",
+        { ...assoc, "*.py": "default" },
+        vscode.ConfigurationTarget.Global,
+      );
+    }
+  } catch {
+    /* settings may be read-only in some hosts; the opt-in command still works */
+  }
+}
+
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const client = new DaemonClient();
+
+  // .py opens as a plain text editor by default; Cell View is opt-in. Awaited so
+  // the association is in place before the user opens a .py (activates on startup).
+  await ensureTextDefaultForPy();
 
   // The reconnect/restore half (subscribe -> fold -> restore -> attach),
   // verified end-to-end against a real daemon by verify/v7.
@@ -91,6 +120,23 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon restart: ${String(err)}`);
       }
+    }),
+    // Open the active .py (or a given uri) as the Tithon Cell View notebook.
+    // .py opens as TEXT by default now (no *.py notebook selector); this is the
+    // explicit opt-in. VSCode remembers the choice per file via "keep" too.
+    vscode.commands.registerCommand("tithon.openAsCellView", async (arg?: vscode.Uri) => {
+      const uri = arg ?? vscode.window.activeTextEditor?.document.uri;
+      if (!uri) {
+        vscode.window.showInformationMessage("Tithon: open a .py file first");
+        return;
+      }
+      await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
+    }),
+    // Reopen the active Tithon notebook as a plain text editor.
+    vscode.commands.registerCommand("tithon.openAsText", async (arg?: vscode.Uri) => {
+      const uri = arg ?? vscode.window.activeNotebookEditor?.notebook.uri;
+      if (!uri) return;
+      await vscode.commands.executeCommand("vscode.openWith", uri, "default");
     }),
     vscode.commands.registerCommand("tithon.interruptKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;

@@ -13,6 +13,15 @@ export class PercentCodeLensProvider implements vscode.CodeLensProvider {
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     const nb = parse(document.getText());
     const lenses: vscode.CodeLens[] = [];
+    // Top-of-file affordance: .py opens as text by default, so offer the opt-in
+    // Cell View here (discoverable next to the cell "Run Cell" lenses).
+    lenses.push(
+      new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
+        title: "$(notebook) Open as Tithon Cell View",
+        command: "tithon.openAsCellView",
+        arguments: [document.uri],
+      }),
+    );
     let line = 0;
     // index counts ALL cells (code + markup) so it aligns with notebook.cellAt(i)
     // and docCellsFromParsed — the authoritative cell identity for output mapping.
