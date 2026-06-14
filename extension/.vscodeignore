@@ -1,0 +1,8 @@
+# Ship only the self-contained bundle (dist/extension.js, produced by esbuild via
+# vscode:prepublish). Everything the extension needs at runtime is inlined there,
+# so node_modules and source are excluded — keeps the vsix tiny and avoids the
+# "missing 'ws' module" activation failure that shipping raw tsc output caused.
+**
+!package.json
+!README.md
+!dist/extension.js

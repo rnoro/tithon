@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": true,
   "publisher": "tithon",
   "repository": {
@@ -30,16 +30,6 @@
           {
             "filenamePattern": "*.py"
           }
-        ]
-      }
-    ],
-    "notebookRenderer": [
-      {
-        "id": "tithon-widget",
-        "displayName": "Tithon ipywidget renderer",
-        "entrypoint": "./dist/widgetRendererEntry.js",
-        "mimeTypes": [
-          "application/vnd.jupyter.widget-view+json"
         ]
       }
     ],
@@ -101,7 +91,9 @@
     "test": "vitest run",
     "test:serializer": "vitest run test/serializer.test.ts test/cellAttach.test.ts",
     "test:widget": "vitest run test/widget.test.ts",
-    "build": "tsc -p ./"
+    "build": "tsc -p ./",
+    "bundle": "node esbuild.mjs",
+    "vscode:prepublish": "node esbuild.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
