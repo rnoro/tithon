@@ -14,6 +14,9 @@ export class PercentCodeLensProvider implements vscode.CodeLensProvider {
     const nb = parse(document.getText());
     const lenses: vscode.CodeLens[] = [];
     let line = 0;
+    // index counts ALL cells (code + markup) so it aligns with notebook.cellAt(i)
+    // and docCellsFromParsed — the authoritative cell identity for output mapping.
+    let index = 0;
     for (const cell of nb.cells) {
       const span = (cell.hasMarker ? 1 : 0) + cell.body.length;
       if (cell.kind === "code") {
@@ -31,6 +34,7 @@ export class PercentCodeLensProvider implements vscode.CodeLensProvider {
                   uri: document.uri.toString(),
                   range: { start: line, end: Math.max(line, line + span - 1) },
                   cell_hash: computeCellHash(code),
+                  index,
                 },
               },
             ],
@@ -38,6 +42,7 @@ export class PercentCodeLensProvider implements vscode.CodeLensProvider {
         );
       }
       line += span;
+      index += 1;
     }
     return lenses;
   }

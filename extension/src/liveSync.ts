@@ -76,6 +76,7 @@ export interface LiveStats {
 
 export class LiveOutputSync {
   private readonly hashIndex = new Map<string, number>();
+  private readonly cellIndices = new Set<number>();
   private readonly execToCell = new Map<string, number>();
   private readonly pending = new Map<number, PendingOp[]>();
   private readonly pendingClear = new Set<string>(); // execIds with deferred clear
@@ -100,17 +101,29 @@ export class LiveOutputSync {
    */
   refreshCells(cells: Cell[]): void {
     this.hashIndex.clear();
+    this.cellIndices.clear();
     const docCells: DocCell[] = docCellsFromParsed(cells);
     for (const dc of docCells) {
+      this.cellIndices.add(dc.index);
       if (!this.hashIndex.has(dc.cellHash)) this.hashIndex.set(dc.cellHash, dc.index);
     }
   }
 
-  /** Seed exec->cell mappings from a snapshot (executions already carry cell_hash). */
-  seed(execs: Array<{ execId: string; cellHash: string | null }>): void {
+  /**
+   * Resolve an execution's cell: by recorded `index` first (authoritative —
+   * distinguishes identical-code cells, the duplicate-cell bug ADR-026), then by
+   * cell_hash. Returns undefined if neither maps to a present cell.
+   */
+  private resolveCell(index: number | null | undefined, cellHash: string | null | undefined): number | undefined {
+    if (index != null && this.cellIndices.has(index)) return index;
+    if (cellHash) return this.hashIndex.get(cellHash);
+    return undefined;
+  }
+
+  /** Seed exec->cell mappings from a snapshot (executions carry index + cell_hash). */
+  seed(execs: Array<{ execId: string; cellHash: string | null; index?: number | null }>): void {
     for (const e of execs) {
-      if (!e.cellHash) continue;
-      const idx = this.hashIndex.get(e.cellHash);
+      const idx = this.resolveCell(e.index, e.cellHash);
       if (idx !== undefined) this.execToCell.set(e.execId, idx);
     }
   }
@@ -127,12 +140,12 @@ export class LiveOutputSync {
     if (!execId) return;
 
     if (ev.kind === "queued") {
-      // Learn this execution's cell from its code (hash matches the doc cell).
+      // Learn this execution's cell: prefer the recorded cell index (handles two
+      // cells with identical code — duplicate-cell bug ADR-026), else hash the code.
       const code = ev.payload?.code;
-      if (typeof code === "string") {
-        const idx = this.hashIndex.get(computeCellHash(code));
-        if (idx !== undefined) this.execToCell.set(execId, idx);
-      }
+      const hash = typeof code === "string" ? computeCellHash(code) : null;
+      const idx = this.resolveCell(ev.payload?.origin?.index, hash);
+      if (idx !== undefined) this.execToCell.set(execId, idx);
       // Reconnect restores the queued (pending) state via seedCell; for a fresh
       // live run the cell flips to "started" almost immediately, so we keep
       // queued map-only here (no extra sink op, preserves coalescing bounds).
@@ -146,7 +159,10 @@ export class LiveOutputSync {
     if (ev.kind === "started") {
       this.queue(idx, { t: "status", status: "running", tsMs });
     } else if (ev.kind === "done") {
-      this.queue(idx, { t: "status", status: ev.payload?.status ?? "done", tsMs });
+      // The daemon reports kernel status "ok" on success; normalize to the
+      // sink's vocabulary ("done"/"error") so a successful cell shows ✓, not ✗.
+      const ok = (ev.payload?.status ?? "ok") === "ok";
+      this.queue(idx, { t: "status", status: ok ? "done" : "error", tsMs });
     } else if (ev.kind === "output") {
       this.handleOutput(execId, idx, ev.payload?.msg_type, ev.payload?.content ?? {});
     }

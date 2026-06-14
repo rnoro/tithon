@@ -1,7 +1,7 @@
 {
   "name": "tithon-extension",
   "displayName": "Tithon",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "private": true,
   "publisher": "tithon",
   "repository": {
@@ -17,6 +17,8 @@
   "activationEvents": [
     "onNotebook:tithon-py",
     "onCommand:tithon.restoreOutputs",
+    "onCommand:tithon.restartKernel",
+    "onCommand:tithon.interruptKernel",
     "onCommand:tithon.runCell"
   ],
   "contributes": {
@@ -43,19 +45,39 @@
     ],
     "commands": [
       {
+        "command": "tithon.restartKernel",
+        "title": "Tithon: Restart Kernel",
+        "category": "Tithon",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "tithon.interruptKernel",
+        "title": "Tithon: Interrupt Kernel",
+        "category": "Tithon",
+        "icon": "$(debug-stop)"
+      },
+      {
         "command": "tithon.restoreOutputs",
-        "title": "Tithon: Restore Cell Outputs from Daemon"
+        "title": "Tithon: Resync Outputs from Daemon",
+        "category": "Tithon"
       },
       {
         "command": "tithon.startLive",
-        "title": "Tithon: Start Live Output Sync"
+        "title": "Tithon: Start Live Output Sync",
+        "category": "Tithon"
       }
     ],
     "menus": {
       "notebook/toolbar": [
         {
-          "command": "tithon.restoreOutputs",
-          "when": "notebookType == tithon-py"
+          "command": "tithon.interruptKernel",
+          "when": "notebookType == tithon-py",
+          "group": "navigation/execute@1"
+        },
+        {
+          "command": "tithon.restartKernel",
+          "when": "notebookType == tithon-py",
+          "group": "navigation/execute@2"
         }
       ]
     }

@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS executions(
   cell_origin_uri TEXT,
   cell_range      TEXT,
   cell_hash       TEXT,
+  cell_index      INTEGER,
   submitted_by    TEXT,
   status          TEXT NOT NULL,
   execution_count INTEGER,
@@ -95,6 +96,8 @@ class Journal:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(executions)").fetchall()}
         if "cell_hash" not in cols:  # added with output->cell attachment wiring
             self.db.execute("ALTER TABLE executions ADD COLUMN cell_hash TEXT")
+        if "cell_index" not in cols:  # added with per-cell identity (duplicate-code fix)
+            self.db.execute("ALTER TABLE executions ADD COLUMN cell_index INTEGER")
 
     # -- messages ----------------------------------------------------------
     def append_message(self, exec_id: str | None, msg_type: str, content: dict,
@@ -131,11 +134,14 @@ class Journal:
                          cell_hash: str | None = None) -> None:
         uri = origin.get("uri") if origin else None
         rng = origin.get("range") if origin else None
+        idx = origin.get("index") if origin else None
         cell_range = json.dumps(rng) if rng is not None else None
         self.db.execute(
             "INSERT INTO executions(exec_id, session_id, seq, code, submitted_by, status,"
-            " cell_origin_uri, cell_range, cell_hash) VALUES(?,?,?,?,?, 'queued', ?,?,?)",
-            (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range, cell_hash),
+            " cell_origin_uri, cell_range, cell_hash, cell_index)"
+            " VALUES(?,?,?,?,?, 'queued', ?,?,?,?)",
+            (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range,
+             cell_hash, idx),
         )
 
     def mark_started(self, exec_id: str) -> float:
@@ -165,10 +171,11 @@ class Journal:
 
     def executions(self) -> list[tuple]:
         """Rows by seq: (exec_id, seq, code, status, execution_count, folded_json,
-        cell_origin_uri, cell_range, cell_hash, started_at, finished_at)."""
+        cell_origin_uri, cell_range, cell_hash, cell_index, started_at,
+        finished_at)."""
         return self.db.execute(
             "SELECT exec_id, seq, code, status, execution_count, folded_json,"
-            " cell_origin_uri, cell_range, cell_hash, started_at, finished_at"
+            " cell_origin_uri, cell_range, cell_hash, cell_index, started_at, finished_at"
             " FROM executions ORDER BY seq"
         ).fetchall()
 

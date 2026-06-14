@@ -40,6 +40,8 @@ export interface ExecOrigin {
   uri: string;
   range: LineRange;
   cell_hash: string;
+  /** 0-based cell index — disambiguates identical-code cells (duplicate-cell bug). */
+  index?: number;
 }
 
 /** A wire `event` op as delivered to {@link SessionClient.onEvent}. */
@@ -57,7 +59,7 @@ export interface ExecState {
   code: string;
   status: string;
   cellHash: string | null;
-  origin: { uri?: string | null; range?: LineRange | null } | null;
+  origin: { uri?: string | null; range?: LineRange | null; index?: number | null } | null;
   fold: ExecutionFold;
   /** Daemon-side wall-clock seconds (epoch); null until known. */
   startedAt: number | null;
@@ -71,7 +73,7 @@ interface SnapshotExecWire {
   status: string;
   execution_count: number | null;
   cell_hash: string | null;
-  origin: { uri?: string | null; range?: LineRange | null } | null;
+  origin: { uri?: string | null; range?: LineRange | null; index?: number | null } | null;
   outputs: OutputItem[];
   started_at: number | null;
   finished_at: number | null;
@@ -86,7 +88,14 @@ export class SessionClient {
   /** Highest seq the daemon told us about (snapshot.max_seq or last sync). */
   syncSeq = 0;
 
-  constructor(private readonly sockPath: string = defaultSocketPath()) {}
+  /**
+   * `session` is the file uri — one kernel + journal per file (like Jupyter).
+   * Defaults to "default" (the CLI/REPL session) when omitted.
+   */
+  constructor(
+    private readonly sockPath: string = defaultSocketPath(),
+    private readonly session: string = "default",
+  ) {}
 
   onChange(cb: () => void): void {
     this.onChangeCb = cb;
@@ -133,7 +142,7 @@ export class SessionClient {
       this.ws = ws;
       let synced = false;
       ws.once("open", () => {
-        ws.send(JSON.stringify({ op: "attach", last_seen_seq: lastSeenSeq }));
+        ws.send(JSON.stringify({ op: "attach", last_seen_seq: lastSeenSeq, session: this.session }));
       });
       ws.on("message", (raw: WebSocket.RawData) => {
         let m: any;
@@ -204,6 +213,7 @@ export class SessionClient {
     switch (ev.kind) {
       case "queued":
         st.code = ev.payload?.code ?? st.code;
+        st.origin = ev.payload?.origin ?? st.origin;
         st.status = "queued";
         break;
       case "started":
@@ -241,6 +251,7 @@ export class SessionClient {
         execId: st.execId,
         cellHash: st.cellHash,
         range: st.origin?.range ?? { start: 0, end: 0 },
+        index: st.origin?.index ?? null,
         outputs: st.fold.outputs(),
       });
     }
@@ -269,14 +280,15 @@ export class SessionClient {
           return;
         }
         if (m.op === "sync") {
-          ws.send(JSON.stringify({ op: "execute", code, origin }));
+          ws.send(JSON.stringify({ op: "execute", code, origin, session: this.session }));
         } else if (m.op === "execute_ack") {
           ws.off("message", onMsg);
           ws.close();
           resolve(m.exec_id as string);
         }
       };
-      ws.once("open", () => ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1 })));
+      ws.once("open", () =>
+        ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session: this.session })));
       ws.on("message", onMsg);
       ws.once("error", reject);
     });

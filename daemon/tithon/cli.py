@@ -70,12 +70,12 @@ def _render_output(payload: dict) -> None:
 
 async def _run(args) -> int:
     async with await _connect() as ws:
-        await ws.send(json.dumps({"op": "attach", "last_seen_seq": -1}))
+        await ws.send(json.dumps({"op": "attach", "last_seen_seq": -1, "session": args.session}))
         while True:
             m = json.loads(await ws.recv())
             if m.get("op") == "sync":
                 break
-        await ws.send(json.dumps({"op": "execute", "code": args.code}))
+        await ws.send(json.dumps({"op": "execute", "code": args.code, "session": args.session}))
         exec_id = None
         buffered: list[dict] = []
 
@@ -121,7 +121,8 @@ def cmd_run(args) -> int:
 
 async def _attach(args) -> int:
     async with await _connect() as ws:
-        await ws.send(json.dumps({"op": "attach", "last_seen_seq": args.since}))
+        await ws.send(json.dumps(
+            {"op": "attach", "last_seen_seq": args.since, "session": args.session}))
         async for raw in ws:
             text = raw if isinstance(raw, str) else raw.decode()
             print(text, flush=True)
@@ -137,16 +138,35 @@ def cmd_attach(args) -> int:
     return asyncio.run(_attach(args))
 
 
-async def _status() -> int:
+async def _status(args) -> int:
     async with await _connect() as ws:
-        await ws.send(json.dumps({"op": "status"}))
+        op = {"op": "status"}
+        if args.session is not None:
+            op["session"] = args.session
+        await ws.send(json.dumps(op))
         m = json.loads(await ws.recv())
         print(json.dumps(m, indent=2))
     return 0
 
 
 def cmd_status(args) -> int:
-    return asyncio.run(_status())
+    return asyncio.run(_status(args))
+
+
+async def _kernel_op(op: str, session: str) -> int:
+    async with await _connect() as ws:
+        await ws.send(json.dumps({"op": op, "session": session}))
+        m = json.loads(await ws.recv())
+        print(json.dumps(m, indent=2))
+    return 0
+
+
+def cmd_restart(args) -> int:
+    return asyncio.run(_kernel_op("restart_kernel", args.session))
+
+
+def cmd_interrupt(args) -> int:
+    return asyncio.run(_kernel_op("interrupt", args.session))
 
 
 def main(argv=None) -> None:
@@ -162,20 +182,31 @@ def main(argv=None) -> None:
     )
     sp.set_defaults(fn=cmd_daemon)
 
-    sp = sub.add_parser("run", help="execute code in the session")
+    sp = sub.add_parser("run", help="execute code in a session")
     sp.add_argument("-c", "--code", required=True)
+    sp.add_argument("--session", default="default", help="session id (file uri); per-file kernel")
     sp.add_argument("--no-wait", action="store_true", help="submit and exit (prints exec_id)")
     sp.add_argument("--timeout", type=float, default=0.0)
     sp.set_defaults(fn=cmd_run)
 
     sp = sub.add_parser("attach", help="attach and stream events as NDJSON")
+    sp.add_argument("--session", default="default", help="session id (file uri); per-file kernel")
     sp.add_argument("--since", type=int, default=0, help="last seen seq (0=full snapshot)")
     sp.add_argument("--once", action="store_true", help="exit after backlog sync")
     sp.add_argument("--until-done", action="store_true", help="exit after a done event")
     sp.set_defaults(fn=cmd_attach)
 
-    sp = sub.add_parser("status", help="print daemon/session status")
+    sp = sub.add_parser("status", help="print daemon status (all sessions) or one session")
+    sp.add_argument("--session", default=None, help="session id; omit for all-sessions status")
     sp.set_defaults(fn=cmd_status)
+
+    sp = sub.add_parser("restart", help="restart a session's kernel (fresh namespace)")
+    sp.add_argument("--session", default="default", help="session id (file uri)")
+    sp.set_defaults(fn=cmd_restart)
+
+    sp = sub.add_parser("interrupt", help="interrupt the running cell (SIGINT)")
+    sp.add_argument("--session", default="default", help="session id (file uri)")
+    sp.set_defaults(fn=cmd_interrupt)
 
     args = p.parse_args(argv)
     try:

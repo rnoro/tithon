@@ -8,19 +8,19 @@ import json
 import pytest
 
 from tithon import daemon as daemon_mod
-from tithon.daemon import Daemon, Subscriber
+from tithon.daemon import Session, Subscriber
 
 
-def make_daemon(tmp_path) -> Daemon:
-    # __init__ wires Journal/KernelHandle/ArtifactStore but does NOT spawn a kernel.
-    home = tmp_path / "home"
+def make_session(tmp_path) -> Session:
+    # __init__ wires Journal/KernelHandle/ArtifactStore but does NOT spawn a kernel
+    # (that happens in Session.start()). Backpressure lives on the Session.
     work = tmp_path / "work"
     work.mkdir(parents=True, exist_ok=True)
-    return Daemon(home, work)
+    return Session("default", tmp_path / "sess", work)
 
 
 def test_broadcast_caps_queue_and_drops_overflowing_client(tmp_path):
-    d = make_daemon(tmp_path)
+    d = make_session(tmp_path)
     sub = Subscriber(asyncio.Queue(maxsize=5))
     d._subs.add(sub)
 
@@ -32,7 +32,7 @@ def test_broadcast_caps_queue_and_drops_overflowing_client(tmp_path):
 
 
 def test_broadcast_delivers_in_full_within_capacity(tmp_path):
-    d = make_daemon(tmp_path)
+    d = make_session(tmp_path)
     sub = Subscriber(asyncio.Queue(maxsize=1000))
     d._subs.add(sub)
 
@@ -44,7 +44,7 @@ def test_broadcast_delivers_in_full_within_capacity(tmp_path):
 
 
 def test_dropped_subscriber_is_skipped_by_broadcast(tmp_path):
-    d = make_daemon(tmp_path)
+    d = make_session(tmp_path)
     sub = Subscriber(asyncio.Queue(maxsize=5))
     sub.dropped = True
     d._subs.add(sub)
@@ -72,14 +72,14 @@ class _StalledWS:
 
 def test_sub_pump_drops_a_client_that_stalls_on_send(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon_mod, "SEND_TIMEOUT", 0.2)
-    d = make_daemon(tmp_path)
+    d = make_session(tmp_path)
     sub = Subscriber(asyncio.Queue(maxsize=100))
     sub.queue.put_nowait({"op": "event", "seq": 1})  # seq > cutoff(0)
     ws = _StalledWS()
 
     async def run():
         # Should return (drop) within ~SEND_TIMEOUT, not hang.
-        await asyncio.wait_for(d._sub_pump(ws, sub, cutoff=0), timeout=3.0)
+        await asyncio.wait_for(d.sub_pump(ws, sub, cutoff=0), timeout=3.0)
 
     asyncio.run(run())
     assert sub.dropped is True

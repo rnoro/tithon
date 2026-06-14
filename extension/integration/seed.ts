@@ -15,23 +15,30 @@ async function main(): Promise<void> {
   const text = readFileSync(file, "utf8");
   const cells = parse(text).cells;
 
-  const client = new SessionClient();
+  // The session is the file uri — must match what the extension opens
+  // (vscode.Uri.file(file).toString()) so the seeded kernel IS the one the
+  // extension attaches to (per-file kernels).
+  const sessionUri = `file://${file}`;
+  const client = new SessionClient(undefined, sessionUri);
   await client.attach(0);
 
   let line = 0;
+  let index = 0;
   const ids: string[] = [];
   for (const cell of cells) {
     const span = (cell.hasMarker ? 1 : 0) + cell.body.length;
     if (cell.kind === "code") {
       const src = cellSource(cell);
       const id = await client.execute(src, {
-        uri: `file://${file}`,
+        uri: sessionUri,
         range: { start: line, end: line + span - 1 },
         cell_hash: computeCellHash(src),
+        index,
       });
       ids.push(id);
     }
     line += span;
+    index += 1;
   }
 
   await new Promise<void>((resolve, reject) => {

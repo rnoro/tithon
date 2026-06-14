@@ -45,13 +45,13 @@ describe("Tithon reconnect restores cell execution STATE (v16)", () => {
     const A = code("DONE_CELL"), B = code("range(40)"), C = code("QUEUED_CELL");
 
     // Submit A, B, C in order — daemon FIFO => A runs, B runs, C waits.
-    const driver = new SessionClient();
+    const driver = new SessionClient(undefined, uri.toString());
     for (const x of [A, B, C]) {
-      await driver.execute(x.src, { uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(x.src) });
+      await driver.execute(x.src, { uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(x.src), index: x.i });
     }
 
     // Wait for the A-done / B-running / C-queued window via a watcher client.
-    const w = new SessionClient(); await w.attach(0);
+    const w = new SessionClient(undefined, uri.toString()); await w.attach(0);
     const status = (src: string) => w.executions().find((e) => e.cellHash === computeCellHash(src))?.status;
     const outOf = (src: string) => {
       const ex = w.executions().find((e) => e.cellHash === computeCellHash(src));

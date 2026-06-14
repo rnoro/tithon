@@ -25,6 +25,9 @@ export interface JournalExecution {
   execId: string;
   cellHash: string;
   range: LineRange;
+  /** 0-based cell index recorded at submit time — authoritative cell identity
+   *  (distinguishes two cells with identical code). Null for legacy/CLI runs. */
+  index?: number | null;
   outputs: unknown[];
 }
 
@@ -51,7 +54,7 @@ export function computeCellHash(source: string): string {
 export interface SnapshotExecution {
   exec_id: string;
   cell_hash?: string | null;
-  origin?: { uri?: string | null; range?: LineRange | null } | null;
+  origin?: { uri?: string | null; range?: LineRange | null; index?: number | null } | null;
   outputs: unknown[];
 }
 
@@ -69,6 +72,7 @@ export function executionsFromSnapshot(execs: SnapshotExecution[]): JournalExecu
       execId: e.exec_id,
       cellHash: e.cell_hash,
       range: e.origin?.range ?? { start: 0, end: 0 },
+      index: e.origin?.index ?? null,
       outputs: e.outputs,
     });
   }
@@ -98,44 +102,54 @@ function proximity(a: LineRange, b: LineRange): number {
 }
 
 /**
- * Attach each execution's outputs to a document cell, by EXACT cell_hash only.
+ * Attach each execution's outputs to a document cell.
  *
- * An execution whose `cell_hash` does not match any current cell is SKIPPED, not
- * collapsed onto a nearby cell. The earlier range-proximity fallback caused
- * mismatched executions (a persistent/global journal, or any whitespace drift)
- * to pile onto cell 0 — see DECISIONS ADR-019. With exact-match-only, a cell
- * edited since its run simply restores nothing (no wrong-cell output). Callers
- * should also scope `executions` to the current file's uri (see
- * {@link SessionClient.restoreInto}) so unrelated runs never bleed in.
+ * Identity is resolved in priority order:
+ *   1. the recorded `index` (authoritative — captured at submit time, so two
+ *      cells with IDENTICAL code map to the right one; the duplicate-cell bug,
+ *      DECISIONS ADR-026), then
+ *   2. EXACT cell_hash match (covers legacy/CLI runs that carry no index).
  *
- * When several executions hash to the same cell, the later one (by array order)
- * wins. Range proximity is used only to disambiguate genuine duplicate cells
- * (identical source in two places), never as a fallback.
+ * An execution that matches neither is SKIPPED, not collapsed onto a nearby
+ * cell. The old range-proximity fallback piled mismatched runs onto cell 0
+ * (ADR-019); with index-or-exact-hash only, a cell edited since its run simply
+ * restores nothing rather than the wrong output. Callers should also scope
+ * `executions` to the current file's uri (see {@link SessionClient.restoreInto}).
+ *
+ * When several executions resolve to the same cell, the later one (array order)
+ * wins. Range proximity only tiebreaks genuine duplicate-hash cells with no
+ * index.
  */
 export function attachOutputs(
   executions: JournalExecution[],
   docCells: DocCell[],
 ): Map<number, Attachment> {
   const byCell = new Map<number, Attachment>();
+  const byIndex = new Map<number, DocCell>();
   const byHash = new Map<string, DocCell[]>();
   for (const dc of docCells) {
+    byIndex.set(dc.index, dc);
     const list = byHash.get(dc.cellHash);
     if (list) list.push(dc);
     else byHash.set(dc.cellHash, [dc]);
   }
 
   for (const ex of executions) {
-    const hashMatches = byHash.get(ex.cellHash);
-    if (!hashMatches || hashMatches.length === 0) continue; // no exact match -> skip
-    // Among identical-hash (duplicate) cells, prefer the closest by range, then
-    // earliest index. For the common 1:1 case this just picks that one cell.
-    const target = hashMatches
-      .slice()
-      .sort(
-        (a, b) =>
-          proximity(a.range, ex.range) - proximity(b.range, ex.range) ||
-          a.index - b.index,
-      )[0];
+    let target: DocCell | undefined;
+    if (ex.index != null) target = byIndex.get(ex.index); // authoritative
+    if (!target) {
+      const hashMatches = byHash.get(ex.cellHash);
+      if (!hashMatches || hashMatches.length === 0) continue; // no match -> skip
+      // Among identical-hash (duplicate) cells, prefer the closest by range,
+      // then earliest index. For the common 1:1 case this picks that one cell.
+      target = hashMatches
+        .slice()
+        .sort(
+          (a, b) =>
+            proximity(a.range, ex.range) - proximity(b.range, ex.range) ||
+            a.index - b.index,
+        )[0];
+    }
     byCell.set(target.index, {
       cellIndex: target.index,
       execId: ex.execId,

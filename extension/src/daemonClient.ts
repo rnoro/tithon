@@ -11,6 +11,14 @@ export interface ExecOrigin {
   uri: string;
   range: { start: number; end: number };
   cell_hash: string;
+  /** 0-based cell index in the file — disambiguates two cells with identical
+   *  code (the duplicate-cell bug), which share a cell_hash. */
+  index?: number;
+}
+
+/** The session id is the file uri: one kernel + journal per file (like Jupyter). */
+function sessionOf(origin?: ExecOrigin): string {
+  return origin?.uri ?? "default";
 }
 
 export function defaultSocketPath(): string {
@@ -34,16 +42,40 @@ export class DaemonClient {
     });
   }
 
-  /** Submit code for execution; resolves with the assigned exec_id. */
+  /** Submit code for execution; resolves with the assigned exec_id. The session
+   *  (per-file kernel) is the origin's file uri. */
   async execute(code: string, origin?: ExecOrigin): Promise<string> {
+    const session = sessionOf(origin);
     const ws = await this.open();
     try {
       // attach live-only first so the daemon is ready to stream our events.
-      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1 }));
+      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session }));
       await this.waitFor(ws, (m) => m.op === "sync");
-      ws.send(JSON.stringify({ op: "execute", code, origin }));
+      ws.send(JSON.stringify({ op: "execute", code, origin, session }));
       const ack = await this.waitFor(ws, (m) => m.op === "execute_ack");
       return ack.exec_id as string;
+    } finally {
+      ws.close();
+    }
+  }
+
+  /** Restart a file's kernel (fresh namespace). `session` is the file uri. */
+  async restartKernel(session: string): Promise<void> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "restart_kernel", session }));
+      await this.waitFor(ws, (m) => m.op === "kernel_restarted");
+    } finally {
+      ws.close();
+    }
+  }
+
+  /** Interrupt the running cell of a file's kernel. `session` is the file uri. */
+  async interrupt(session: string): Promise<void> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "interrupt", session }));
+      await this.waitFor(ws, (m) => m.op === "interrupted");
     } finally {
       ws.close();
     }

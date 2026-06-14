@@ -54,11 +54,11 @@ describe("Tithon mid-run reconnect: restore prior + continue live (v15)", () => 
     const src = cellSource(cells[loopIdx]);
 
     // 1) A separate client starts the long loop; the kernel runs independently.
-    const driver = new SessionClient();
+    const driver = new SessionClient(undefined, uri.toString());
     await driver.execute(src, { uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(src) });
 
     // 2) Let it run partway so there is real pre-reconnect output to restore.
-    const watcher = new SessionClient();
+    const watcher = new SessionClient(undefined, uri.toString());
     await watcher.attach(0);
     await waitFor(() => {
       const ex = watcher.executions().find((e) => e.cellHash === computeCellHash(src));

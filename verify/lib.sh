@@ -30,8 +30,13 @@ start_daemon() {
 daemon_pid() { cat "$TITHON_HOME/daemon.pid" 2>/dev/null || true; }
 kernel_pid_file() { cat "$TITHON_HOME/sessions/default/kernel.pid" 2>/dev/null || true; }
 
-status_field() { # $1 = json field name; from live daemon
-  timeout 10 "$TITHON" status | "$PY" -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"
+status_field() { # $1 = json field name; from the DEFAULT session's status.
+  # Kernel fields (kernel_pid/kernel_status/kernel_reattached/widget_models) are
+  # now per-session (per-file kernels); the global `status` only lists sessions.
+  # Querying a session lazily creates/re-attaches it — which is exactly how a
+  # restarted daemon re-attaches to its detached kernel (v4).
+  timeout 10 "$TITHON" status --session default \
+    | "$PY" -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"
 }
 
 cleanup_procs() {

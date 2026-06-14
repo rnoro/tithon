@@ -76,6 +76,34 @@ describe("output -> cell attachment", () => {
     expect(att.get(0)?.outputs).toEqual(["new"]);
   });
 
+  it("maps duplicate-code cells by recorded index, not hash — ADR-026 (#2 repro)", () => {
+    // Two cells with IDENTICAL code share a cell_hash. The output of the SECOND
+    // cell must land on the second cell, not collapse onto the first.
+    const dupSrc = ["# %% a", 'print("dup")', "# %% b", 'print("dup")', ""].join("\n");
+    const cells = docCellsFromParsed(parse(dupSrc).cells);
+    const h = cells[0].cellHash;
+    expect(cells[1].cellHash).toBe(h); // same code => same hash
+    const execs: JournalExecution[] = [
+      { execId: "e0", cellHash: h, index: 0, range: { start: 0, end: 1 }, outputs: ["first"] },
+      { execId: "e1", cellHash: h, index: 1, range: { start: 2, end: 3 }, outputs: ["second"] },
+    ];
+    const att = attachOutputs(execs, cells);
+    expect(att.get(0)?.execId).toBe("e0");
+    expect(att.get(0)?.outputs).toEqual(["first"]);
+    expect(att.get(1)?.execId).toBe("e1");
+    expect(att.get(1)?.outputs).toEqual(["second"]); // NOT collapsed onto cell 0
+  });
+
+  it("falls back to cell_hash when no index is recorded (legacy/CLI runs)", () => {
+    const cells = docCells();
+    const cHash = cells[2].cellHash;
+    const execs: JournalExecution[] = [
+      { execId: "e1", cellHash: cHash, range: { start: 4, end: 5 }, outputs: ["C"] },
+    ];
+    const att = attachOutputs(execs, cells);
+    expect(att.get(2)?.execId).toBe("e1");
+  });
+
   it("computes a stable, content-addressed cell hash", () => {
     expect(computeCellHash("x = 1\n")).toBe(computeCellHash("x = 1\n"));
     expect(computeCellHash("x = 1\n")).not.toBe(computeCellHash("x = 2\n"));

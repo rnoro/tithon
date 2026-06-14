@@ -1,7 +1,24 @@
 # PROGRESS
 
-## 현재 상태 (2026-06-13)
-**Phase 1 + 실 tunnel 사용자 버그(#1/#2) 수정. `make verify` 8/8 + `make verify-d` 4/4 PASS.**
+## 현재 상태 (2026-06-14)
+**파일별 커널/세션(Jupyter 모델) 전환 + 2차 실 tunnel 사용자 버그(#1~#6) 수정 (ext 0.0.7).**
+`make verify` 8/8 + `make verify-c` 3/3 + `make verify-d` 13/13 PASS, vitest 50, daemon pytest 32.
+
+### 2차 실 tunnel 사용자 버그 수정 (ADR-026/027, v17~v22)
+사용자가 원격에서 직접 테스트하며 보고한 문제들:
+- **#1 닫았다 열기/다른 파일 실행 시 먹통**: liveSession이 uri 키로 닫혀도 안 지워져 stale 세션
+  재사용 → onDidCloseNotebookDocument→disposeLive + 파일별 세션 격리로 해소(v18 close+reopen 재실행).
+- **#2 동일 코드 두 셀 → 첫 셀에 출력**: cell_hash 단독 정체성의 한계. origin.index(제출 시점 셀
+  인덱스)를 권위 키로(journal cell_index 컬럼) → index 우선·hash 폴백(v20 + 단위테스트).
+- **#3/#4 창 재시작 후 자동 동기화 안 됨/명령어 불필요**: controller.onDidChangeSelectedNotebooks로
+  커널 선택 시점에 자동 복원+라이브(재오픈 시 VSCode가 커널 자동 재선택) → 명령 없이 동작(v22).
+  혼란스럽던 restoreOutputs/startLive 툴바 버튼 제거.
+- **#5 커널 재시작 UI 없음**: 데몬 restart_kernel/interrupt op + 툴바 명령(Restart/Interrupt Kernel)(v21).
+- **#6 파일별 커널**: 데몬을 SessionManager+Session으로 분리, 파일(uri)별 커널·저널·격리(v17/v19).
+- 부가: 라이브 done(status:ok)→✓ 정규화(스크린샷으로 발견), 통합 런처 per-suite --user-data-dir
+  (배치 실행 격리), verify status_field per-session 적응.
+
+### (이전) Phase 1 + 1차 사용자 버그(#1~#7) — verify 8/8 + verify-d 8/8(v8/v10~v16)
 재접속 1회 복원(v7/v8)을 넘어 **실행 중 출력을 실 VSCode 셀에 라이브 스트리밍**(v10)하고,
 렌더 비용을 coalescing으로 상한 지었으며(5만 이벤트→1 sink 호출), 느린 클라이언트로부터
 **GPU 호스트를 보호**하는 백프레셔(v9 + pytest)를 추가했다.
@@ -128,12 +145,13 @@
   additive 마이그레이션(ALTER TABLE ADD COLUMN cell_hash). pytest 28, vitest 27, verify 6/6.
 
 ## 다음 단계 (Phase 1 진행 중)
-- ✅ ①~⑥ + ⑦ 재접속 복원 + ⑧ 실 VSCode + ⑨ 데몬 백프레셔 + ⑩ 라이브 스트리밍 — verify 8/8 + verify-d 2/2.
+- ✅ ①~⑩ + 1차 사용자버그(#1~#7) + 2차 사용자버그(#1~#6, 파일별 커널) — verify 8/8 + verify-c 3/3 + verify-d 13/13.
 - 다음 후보:
+  - 데몬 자동 시작(pip install 후 셀 실행/접속 시 호스트 데몬 detached 자동 기동) — 사용자 요청, 미착수.
   - 위젯 라이브: tqdm 위젯 미러 스냅샷을 라이브 경로로 렌더(현재 stream/result/error 렌더; 위젯은 복원만).
   - update_display_data 인플레이스 갱신(현재 sessionController는 append 스파이크) — 매칭 출력 교체.
-  - .vsix 패키징(vsce) + tunnel 시나리오 문서화.
-  - 데몬 MVP: 멀티 세션, 실행 큐 가시화, 아티팩트 스토어 확장, systemd 패키징, stale 배지/듀얼 뷰.
+  - 세션 GC: 닫힌 파일의 커널 수명 정책(현재 커널은 detached로 계속 생존; idle 종료/명시 종료 UI 필요).
+  - tunnel 시나리오 문서화 갱신(파일별 커널 + 커널 재시작/인터럽트 UI).
 
 ## 막힌 것
 - 없음. (⑦ 함정: NotebookDocument엔 getText()/NotebookEdit.updateCellOutputs 없음 →

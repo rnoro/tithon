@@ -20,6 +20,11 @@ function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined 
   );
 }
 
+/** True for a notebook backed by Tithon's Cell View. */
+function isTithon(nb: vscode.NotebookDocument): boolean {
+  return nb.notebookType === "tithon-py";
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const client = new DaemonClient();
 
@@ -27,6 +32,18 @@ export function activate(context: vscode.ExtensionContext): void {
   // verified end-to-end against a real daemon by verify/v7.
   // Also owns the executeHandler so the native cell play button works.
   const notebookCtrl = registerRestore(context);
+
+  // Auto-restore + live sync is driven by the controller's kernel-selection
+  // event (see TithonNotebookController): when the Tithon kernel becomes the
+  // notebook's selected kernel — which VSCode does automatically on reopen by
+  // remembering the last kernel — it attach(0)s, restores folded output + cell
+  // state, and continues live. The user runs NO command (the "it should just
+  // work" feedback #3/#4). Here we only need to tear down on close as a belt:
+  context.subscriptions.push(
+    vscode.workspace.onDidCloseNotebookDocument((nb) => {
+      if (isTithon(nb)) notebookCtrl.disposeLive(nb.uri);
+    }),
+  );
 
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(
@@ -61,6 +78,28 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       },
     ),
+    // Kernel control (Jupyter parity): restart gives a fresh namespace, interrupt
+    // stops a runaway cell. Both act on the active notebook's per-file kernel.
+    vscode.commands.registerCommand("tithon.restartKernel", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb) return;
+      try {
+        await notebookCtrl.restartKernel(nb);
+        vscode.window.setStatusBarMessage("Tithon: kernel restarted", 3000);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon restart: ${String(err)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon.interruptKernel", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb) return;
+      try {
+        await notebookCtrl.interruptKernel(nb);
+        vscode.window.setStatusBarMessage("Tithon: interrupt sent", 3000);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon interrupt: ${String(err)}`);
+      }
+    }),
   );
 }
 

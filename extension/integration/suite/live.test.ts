@@ -69,7 +69,7 @@ describe("Tithon live output sync inside a real VSCode host (v10)", () => {
     assert.ok(loopIdx >= 0, "fixture must have the loop cell");
     const src = cellSource(cells[loopIdx]);
 
-    const driver = new SessionClient();
+    const driver = new SessionClient(undefined, uri.toString());
     await driver.execute(src, {
       uri: uri.toString(),
       range: { start: 0, end: 0 },

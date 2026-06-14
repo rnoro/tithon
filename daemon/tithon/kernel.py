@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from jupyter_client.asynchronous import AsyncKernelClient
@@ -83,3 +85,37 @@ class KernelHandle:
         kc.load_connection_file(str(self.conn_file))
         kc.start_channels()
         return kc
+
+    def interrupt(self) -> bool:
+        """Send SIGINT to the kernel (Jupyter 'interrupt'). True if delivered."""
+        if self.pid is None:
+            return False
+        try:
+            os.kill(self.pid, signal.SIGINT)
+            log.info("interrupted kernel pid=%d", self.pid)
+            return True
+        except OSError:
+            return False
+
+    def kill(self) -> None:
+        """Terminate the current kernel process (best effort: TERM then KILL)."""
+        if self.pid is None:
+            return
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(self.pid, sig)
+            except OSError:
+                return  # already gone
+            for _ in range(20):  # up to ~1s for it to exit between TERM and KILL
+                try:
+                    os.kill(self.pid, 0)
+                except OSError:
+                    log.info("killed kernel pid=%d", self.pid)
+                    return
+                time.sleep(0.05)
+        log.warning("kernel pid=%s did not exit after SIGKILL", self.pid)
+
+    def restart(self) -> None:
+        """Kill the running kernel and spawn a fresh one (new namespace)."""
+        self.kill()
+        self._spawn()

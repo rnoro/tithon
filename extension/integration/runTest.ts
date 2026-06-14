@@ -14,6 +14,13 @@ async function main(): Promise<void> {
   const workspace = process.env.TITHON_WORKSPACE;
   if (!workspace) throw new Error("TITHON_WORKSPACE not set");
 
+  // A FRESH per-run user-data-dir (under the per-suite TITHON_HOME) — otherwise
+  // sequential suites share VSCode's default profile and it restores the PREVIOUS
+  // suite's editors (whose fixture files were already deleted), corrupting
+  // activeNotebookEditor and making batch runs fail though each passes alone.
+  const home = process.env.TITHON_HOME;
+  const userDataDir = home ? path.join(home, "vscode-user") : undefined;
+
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
@@ -28,6 +35,7 @@ async function main(): Promise<void> {
       "--disable-workspace-trust",
       // keep other installed extensions out; our dev extension still loads.
       "--disable-extensions",
+      ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
     ],
     extensionTestsEnv: {
       TITHON_HOME: process.env.TITHON_HOME ?? "",

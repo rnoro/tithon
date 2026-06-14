@@ -165,6 +165,49 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     sched.tick();
     expect(sink.ops).toEqual([{ op: "appendStream", idx: 1, name: "stdout", text: "hello" }]);
   });
+
+  it("normalizes a done(status:ok) event to 'done' so the cell shows ✓ not ✗", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    // daemon reports success as status "ok".
+    live.onEvent({ seq: 3, exec_id: "e1", kind: "done", payload: { status: "ok" } });
+    sched.tick();
+    const st = sink.ops.filter((o) => o.op === "status").map((o) => o.status);
+    expect(st).toContain("done");
+    expect(st).not.toContain("ok"); // must not leak the raw kernel status
+
+    // an error result maps to "error".
+    const sink2 = new TestSink();
+    const live2 = new LiveOutputSync(cells, sink2, sched);
+    live2.onEvent(queued("e2", src(1)));
+    live2.onEvent({ seq: 3, exec_id: "e2", kind: "done", payload: { status: "error" } });
+    sched.tick();
+    expect(sink2.ops.filter((o) => o.op === "status").map((o) => o.status)).toContain("error");
+  });
+
+  it("routes duplicate-code cells by recorded index, not hash — ADR-026 (#2 repro)", () => {
+    // Two cells with IDENTICAL code. The second cell's output must NOT collapse
+    // onto the first; the queued event's origin.index disambiguates them.
+    const dupDoc = ["# %% a", "print(1)", "# %% b", "print(1)", ""].join("\n");
+    const dupCells = parse(dupDoc).cells;
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(dupCells, sink, sched);
+
+    const qIdx = (execId: string, code: string, index: number): LiveEvent => ({
+      seq: 1, exec_id: execId, kind: "queued", payload: { code, origin: { index } },
+    });
+    live.onEvent(qIdx("e0", cellSource(dupCells[0]), 0));
+    live.onEvent(qIdx("e1", cellSource(dupCells[1]), 1));
+    live.onEvent(stream("e0", "first\n"));
+    live.onEvent(stream("e1", "second\n"));
+    sched.tick();
+
+    expect(sink.visibleStdout(0)).toBe("first\n");
+    expect(sink.visibleStdout(1)).toBe("second\n"); // not collapsed onto cell 0
+  });
 });
 
 describe("LiveOutputSync — refreshCells (ADR-022: cell added after live started)", () => {

@@ -255,6 +255,8 @@ export class TithonNotebookController {
     { dispose: () => void; refresh: () => void }
   >();
 
+  private readonly selectionSub: vscode.Disposable;
+
   constructor(sockPath?: string) {
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
@@ -262,6 +264,15 @@ export class TithonNotebookController {
     this.daemon = new DaemonClient(sockPath);
     // Native cell play button: start live sync then submit each cell to the daemon.
     this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
+    // Auto restore + live sync exactly when OUR kernel becomes the notebook's
+    // selected kernel — this is the right moment (createNotebookCellExecution
+    // requires the controller be selected, so starting on raw open races ahead
+    // of selection and the restore silently fails). On reopen VSCode re-selects
+    // the remembered kernel, so the user gets restore+live with NO command (#3/#4).
+    this.selectionSub = this.controller.onDidChangeSelectedNotebooks((e) => {
+      if (e.selected) void this.ensureLive(e.notebook).catch(() => undefined);
+      else this.disposeLive(e.notebook.uri);
+    });
   }
 
   private async _executeHandler(
@@ -282,6 +293,7 @@ export class TithonNotebookController {
           uri: notebook.uri.toString(),
           range: ranges[cell.index] ?? { start: cell.index, end: cell.index },
           cell_hash: computeCellHash(code),
+          index: cell.index, // authoritative cell identity (duplicate-code fix)
         });
       }
     } catch (err) {
@@ -303,7 +315,9 @@ export class TithonNotebookController {
   }
 
   dispose(): void {
+    this.selectionSub.dispose();
     for (const s of this.liveSessions.values()) s.dispose();
+    this.liveSessions.clear();
     this.controller.dispose();
   }
 
@@ -315,7 +329,39 @@ export class TithonNotebookController {
     const key = notebook.uri.toString();
     if (this.liveSessions.has(key)) return;
     const session = await this.startLive(notebook);
+    // A concurrent ensureLive (e.g. auto-open + executeHandler racing) may have
+    // populated the map while we awaited startLive — keep the first, drop ours.
+    if (this.liveSessions.has(key)) {
+      session.dispose();
+      return;
+    }
     this.liveSessions.set(key, session);
+  }
+
+  /**
+   * Stop and forget live sync for a closed notebook. WITHOUT this, reopening the
+   * same file found a stale (closed-document) session and silently dropped its
+   * output — the "after closing+reopening, cells stop working" bug.
+   */
+  disposeLive(uri: vscode.Uri): void {
+    const key = uri.toString();
+    const s = this.liveSessions.get(key);
+    if (s) {
+      s.dispose();
+      this.liveSessions.delete(key);
+    }
+  }
+
+  /** Restart a file's kernel (fresh namespace), then resync the live view. */
+  async restartKernel(notebook: vscode.NotebookDocument): Promise<void> {
+    this.disposeLive(notebook.uri);
+    await this.daemon.restartKernel(notebook.uri.toString());
+    await this.ensureLive(notebook); // re-attach: clears spinners, re-seeds state
+  }
+
+  /** Interrupt the running cell of a file's kernel. */
+  async interruptKernel(notebook: vscode.NotebookDocument): Promise<void> {
+    await this.daemon.interrupt(notebook.uri.toString());
   }
 
   /**
@@ -331,7 +377,7 @@ export class TithonNotebookController {
   async restore(notebook: vscode.NotebookDocument): Promise<void> {
     const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
 
-    const client = new SessionClient();
+    const client = new SessionClient(undefined, notebook.uri.toString());
     await client.attach(0);
     try {
       const attachments = client.restoreInto(cells, notebook.uri.toString());
@@ -361,7 +407,7 @@ export class TithonNotebookController {
   async startLive(
     notebook: vscode.NotebookDocument,
   ): Promise<{ dispose: () => void; refresh: () => void }> {
-    const client = new SessionClient();
+    const client = new SessionClient(undefined, notebook.uri.toString());
     await client.attach(0); // catch up on any prior state, then stream live
     const sink = new VSCodeCellSink(this.controller, notebook);
     const live = new LiveOutputSync(
@@ -370,7 +416,7 @@ export class TithonNotebookController {
       new ThrottleScheduler(50),
     );
     const execs = client.executions();
-    live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
+    live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));
     // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
     // STATE+timing into the cell NOW, before wiring live events — a done cell
     // shows ✓ with its real duration, a running cell shows the spinner started at

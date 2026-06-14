@@ -36,6 +36,8 @@ case "$SUITE" in
     printf '# %%%% training loop\nimport time\nfor i in range(30):\n    print(i, flush=True)\n    time.sleep(0.5)\n' >"$FIX" ;;
   reconnectstates)
     printf '# %%%% A\nprint("DONE_CELL")\n\n# %%%% B\nimport time\nfor i in range(40):\n    print(i, flush=True)\n    time.sleep(0.5)\n\n# %%%% C\nprint("QUEUED_CELL")\n' >"$FIX" ;;
+  dupcode)
+    printf '# %%%% one\nprint("SAME", flush=True)\n\n# %%%% two\nprint("SAME", flush=True)\n' >"$FIX" ;;
   *)
     printf '# %%%%\nprint("hello from cell 1")\n\n# %%%%\nfor i in range(5):\n    print(f"Iteration {i}")\n\n# %%%%\nprint("Loop completed.")\n' >"$FIX" ;;
 esac

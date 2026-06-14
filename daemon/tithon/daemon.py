@@ -1,8 +1,16 @@
-"""Tithon daemon: kernel ownership, journaling, multi-client sync server.
+"""Tithon daemon: per-file kernel ownership, journaling, multi-client sync.
 
-Single fixed session ("default"). WebSocket server on a unix domain socket
-(0600) only — no TCP (design.md §4 security). All events carry a monotonic
-``seq``; clients attach with ``last_seen_seq`` and receive snapshot+delta.
+Each editor file (``session`` id = the file uri) gets its OWN ipykernel and
+its OWN journal — like Jupyter, where every notebook has its own kernel, so
+variables never leak between files and one file's runs never bleed into
+another's view. A single WebSocket server on a unix domain socket (0600) only
+— no TCP (design.md §4 security) — routes every op to its session by the
+``session`` field. Sessions are created lazily on first attach/execute and the
+kernel is spawned detached (setsid), so it survives daemon restarts and the
+next client to touch that file re-attaches to the running kernel.
+
+All events carry a monotonic per-session ``seq``; clients attach with
+``last_seen_seq`` and receive snapshot+delta.
 """
 from __future__ import annotations
 
@@ -26,7 +34,8 @@ from .widgets import WidgetMirror, is_comm
 
 log = logging.getLogger("tithon.daemon")
 
-SESSION = "default"
+#: Session id used when a client sends no ``session`` (the CLI / legacy clients).
+DEFAULT_SESSION = "default"
 
 # Backpressure (host-memory protection): a client that cannot keep up must not
 # grow the daemon's memory without bound. We cap each subscriber's backlog and
@@ -46,6 +55,18 @@ WRITE_BUFFER_HIGH = int(os.environ.get("TITHON_WRITE_BUFFER_HIGH", str(1 << 20))
 SOCK_SNDBUF = int(os.environ.get("TITHON_SOCK_SNDBUF", str(1 << 20)))  # bytes
 
 
+def _session_dir_name(session_id: str) -> str:
+    """Filesystem-safe directory name for a session.
+
+    The default session keeps its historical ``default`` directory; every other
+    session (a file uri) is hashed so any uri maps to a stable, safe path that
+    the next daemon can re-attach to.
+    """
+    if session_id == DEFAULT_SESSION:
+        return DEFAULT_SESSION
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+
+
 class Subscriber:
     """One attached client's event queue + a 'too slow, drop me' flag."""
 
@@ -56,15 +77,23 @@ class Subscriber:
         self.dropped = False
 
 
-class Daemon:
-    def __init__(self, home: Path, workdir: Path):
-        self.home = home
-        self.workdir = workdir
-        self.sock_path = home / "daemon.sock"
-        self.pid_file = home / "daemon.pid"
-        session_dir = home / "sessions" / SESSION
-        self.journal = Journal(session_dir / "journal.db", SESSION)
-        self.kernel = KernelHandle(session_dir, workdir, home / "kernel.log")
+class Session:
+    """One file's kernel + journal + folded state + subscribers.
+
+    Owns the iopub pump and the execute worker for its kernel. This is the unit
+    that used to be the whole daemon; the daemon now holds a dict of these,
+    keyed by session id (the file uri).
+    """
+
+    def __init__(self, session_id: str, session_dir: Path, workdir: Path):
+        self.session_id = session_id
+        self.session_dir = session_dir
+        session_dir.mkdir(parents=True, exist_ok=True)
+        # Persist the human-readable session id (file uri) next to the kernel so
+        # `tithon status` and post-mortems can map the hashed dir back to a file.
+        (session_dir / "meta.json").write_text(json.dumps({"session_id": session_id}))
+        self.journal = Journal(session_dir / "journal.db", session_id)
+        self.kernel = KernelHandle(session_dir, workdir, session_dir / "kernel.log")
         self.artifacts = ArtifactStore(workdir, self.journal)
         self.kc = None
         self.kernel_status = "unknown"
@@ -74,19 +103,81 @@ class Daemon:
         self._subs: set[Subscriber] = set()
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
-        self._stop = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
 
     # -- lifecycle -----------------------------------------------------------
-    def _preflight(self) -> None:
+    async def start(self) -> None:
+        spawned = self.kernel.ensure()
+        self.kc = self.kernel.make_client()
+        if spawned:
+            await self._wait_kernel_ready(timeout=120)
+        orphaned = self.journal.orphan_inflight()
+        if orphaned:
+            log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
+        self._rebuild_folds()
+        self._rebuild_mirror()
+        self._exec_counter = self.journal.max_exec_seq()
+        self._start_tasks()
+        log.info(
+            "session ready id=%s kernel_pid=%s reattached=%s dir=%s",
+            self.session_id, self.kernel.pid, self.kernel.reattached, self.session_dir,
+        )
+
+    def _start_tasks(self) -> None:
+        self._tasks = [
+            asyncio.create_task(self._iopub_pump(), name=f"iopub-{self.session_id}"),
+            asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
+        ]
+
+    async def _stop_tasks(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        for t in self._tasks:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # pragma: no cover - defensive
+                log.exception("[%s] task teardown error", self.session_id)
+        self._tasks = []
+
+    async def stop(self) -> None:
+        await self._stop_tasks()
         try:
-            pid = int(self.pid_file.read_text().strip())
-            os.kill(pid, 0)
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode()
-            if "tithon" in cmdline:
-                raise SystemExit(f"tithon daemon already running (pid {pid})")
-        except (OSError, ValueError):
-            pass  # stale or absent pid file
-        self.sock_path.unlink(missing_ok=True)
+            self.kc.stop_channels()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    async def restart_kernel(self) -> int:
+        """Kill this session's kernel and spawn a fresh one (new namespace).
+
+        Jupyter-style restart: outputs/history stay in the journal, but the
+        running namespace is gone. In-flight executions are orphaned and a
+        ``tithon.kernel`` event tells clients to reset (clear spinners).
+        """
+        await self._stop_tasks()
+        try:
+            self.kc.stop_channels()
+        except Exception:  # pragma: no cover - defensive
+            pass
+        self.journal.orphan_inflight()
+        self.kernel.restart()
+        self.kc = self.kernel.make_client()
+        await self._wait_kernel_ready(timeout=120)
+        self.kernel_status = "starting"
+        self._msgid_to_exec.clear()
+        self._start_tasks()
+        self._journal_lifecycle(
+            None, "tithon.kernel", {"status": "restarted", "pid": self.kernel.pid}
+        )
+        log.info("[%s] kernel restarted pid=%s", self.session_id, self.kernel.pid)
+        return self.kernel.pid
+
+    def interrupt(self) -> bool:
+        """Interrupt the running cell (SIGINT to the kernel)."""
+        ok = self.kernel.interrupt()
+        self._journal_lifecycle(None, "tithon.kernel", {"status": "interrupted"})
+        return ok
 
     def _rebuild_folds(self) -> None:
         """Recompute in-memory folded snapshots from raw journal messages."""
@@ -104,46 +195,6 @@ class Daemon:
                 content = json.loads(content_json)
                 buffers = [base64.b64decode(b) for b in content.pop("_buffers_b64", [])]
                 self._mirror.apply(msg_type, content, buffers)
-
-    async def run(self) -> None:
-        self._preflight()
-        spawned = self.kernel.ensure()
-        self.kc = self.kernel.make_client()
-        if spawned:
-            await self._wait_kernel_ready(timeout=120)
-        orphaned = self.journal.orphan_inflight()
-        if orphaned:
-            log.info("marked %d in-flight executions as orphaned", orphaned)
-        self._rebuild_folds()
-        self._rebuild_mirror()
-        self._exec_counter = self.journal.max_exec_seq()
-
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self._stop.set)
-
-        tasks = [
-            asyncio.create_task(self._iopub_pump(), name="iopub-pump"),
-            asyncio.create_task(self._exec_worker(), name="exec-worker"),
-        ]
-        # write_limit caps each connection's send buffer so a slow client makes
-        # ws.send apply backpressure instead of growing daemon memory unbounded.
-        async with unix_serve(
-            self._handler, path=str(self.sock_path), write_limit=WRITE_BUFFER_HIGH
-        ):
-            os.chmod(self.sock_path, 0o600)
-            self.pid_file.write_text(str(os.getpid()))
-            log.info(
-                "daemon ready pid=%d kernel_pid=%s reattached=%s sock=%s",
-                os.getpid(), self.kernel.pid, self.kernel.reattached, self.sock_path,
-            )
-            await self._stop.wait()
-        for t in tasks:
-            t.cancel()
-        self.kc.stop_channels()
-        self.pid_file.unlink(missing_ok=True)
-        self.sock_path.unlink(missing_ok=True)
-        log.info("daemon stopped")
 
     async def _wait_kernel_ready(self, timeout: float = 120.0) -> None:
         """Poll kernel_info until the kernel replies.
@@ -165,7 +216,7 @@ class Daemon:
                 and reply["header"]["msg_type"] == "kernel_info_reply"
                 and (reply.get("parent_header") or {}).get("msg_id") == msg_id
             ):
-                log.info("kernel ready")
+                log.info("[%s] kernel ready", self.session_id)
                 return
             if loop.time() > deadline:
                 raise RuntimeError("kernel did not become ready in time")
@@ -179,13 +230,13 @@ class Daemon:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("iopub recv failed")
+                log.exception("[%s] iopub recv failed", self.session_id)
                 await asyncio.sleep(0.2)
                 continue
             try:
                 self._handle_iopub(msg)
             except Exception:
-                log.exception("iopub handling failed: %s", msg.get("header"))
+                log.exception("[%s] iopub handling failed: %s", self.session_id, msg.get("header"))
 
     def _handle_iopub(self, msg: dict) -> None:
         msg_type = msg["header"]["msg_type"]
@@ -193,7 +244,7 @@ class Daemon:
         if msg_type == "status":
             new_state = content.get("execution_state", self.kernel_status)
             if new_state != self.kernel_status:
-                log.debug("kernel status: %s → %s", self.kernel_status, new_state)
+                log.debug("[%s] kernel status: %s → %s", self.session_id, self.kernel_status, new_state)
             self.kernel_status = new_state
         parent_id = (msg.get("parent_header") or {}).get("msg_id")
         exec_id = self._msgid_to_exec.get(parent_id)
@@ -202,7 +253,7 @@ class Daemon:
             return
         if exec_id is None or msg_type not in JOURNALED_IOPUB:
             return
-        log.debug("iopub exec=%s type=%s", exec_id, msg_type)
+        log.debug("[%s] iopub exec=%s type=%s", self.session_id, exec_id, msg_type)
         artifact_ref = None
         if msg_type in ("display_data", "execute_result", "update_display_data"):
             refs = self.artifacts.extract(exec_id, content)
@@ -239,7 +290,7 @@ class Daemon:
             self._msgid_to_exec[msg_id] = exec_id
             started_at = self.journal.mark_started(exec_id)
             self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
-            log.info("exec %s started (msg_id=%s)", exec_id, msg_id)
+            log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
             while True:
                 reply = await self.kc.shell_channel.get_msg()
                 if (
@@ -261,10 +312,10 @@ class Daemon:
                 "tithon.done",
                 {"status": status, "execution_count": ec, "ts": finished_at},
             )
-            log.info("exec %s done status=%s", exec_id, status)
+            log.info("[%s] exec %s done status=%s", self.session_id, exec_id, status)
 
-    # -- protocol ---------------------------------------------------------------
-    def _journal_lifecycle(self, exec_id: str, msg_type: str, payload: dict) -> None:
+    # -- protocol helpers ------------------------------------------------------
+    def _journal_lifecycle(self, exec_id, msg_type: str, payload: dict) -> None:
         seq = self.journal.append_message(exec_id, msg_type, payload)
         self._broadcast(event_from_message(seq, exec_id, msg_type, payload))
 
@@ -277,10 +328,13 @@ class Daemon:
             except asyncio.QueueFull:
                 # Slow client: cap memory by dropping it (it can reconnect).
                 sub.dropped = True
-                log.warning("subscriber overflow (>%d queued) — dropping client", SUB_QUEUE_MAX)
+                log.warning(
+                    "[%s] subscriber overflow (>%d queued) — dropping client",
+                    self.session_id, SUB_QUEUE_MAX,
+                )
 
-    def _submit(self, code: str, submitted_by: str | None = None,
-                origin: dict | None = None) -> str:
+    def submit(self, code: str, submitted_by: str | None = None,
+               origin: dict | None = None) -> str:
         self._exec_counter += 1
         exec_id = f"e{self._exec_counter}"
         # cell_hash is computed daemon-side from the submitted code (authoritative,
@@ -291,14 +345,17 @@ class Daemon:
             exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
         )
         self._folds[exec_id] = ExecutionFold()
-        self._journal_lifecycle(exec_id, "tithon.queued", {"code": code})
+        # The queued event carries the origin so a live client can map this
+        # execution to the right cell by index — not by code hash, which is
+        # ambiguous when two cells hold identical code (duplicate-cell bug).
+        self._journal_lifecycle(exec_id, "tithon.queued", {"code": code, "origin": origin})
         self._queue.put_nowait((exec_id, code))
         return exec_id
 
-    def _snapshot(self) -> dict:
+    def snapshot(self) -> dict:
         execs = []
         for (exec_id, seq, code, status, execution_count, folded_json,
-             cell_origin_uri, cell_range, cell_hash,
+             cell_origin_uri, cell_range, cell_hash, cell_index,
              started_at, finished_at) in self.journal.executions():
             fold = self._folds.get(exec_id)
             if fold is not None:
@@ -306,10 +363,11 @@ class Daemon:
             else:
                 outputs = json.loads(folded_json) if folded_json else []
             origin = None
-            if cell_origin_uri is not None or cell_range is not None:
+            if cell_origin_uri is not None or cell_range is not None or cell_index is not None:
                 origin = {
                     "uri": cell_origin_uri,
                     "range": json.loads(cell_range) if cell_range else None,
+                    "index": cell_index,
                 }
             execs.append(
                 {
@@ -326,6 +384,7 @@ class Daemon:
                 }
             )
         return {
+            "session": self.session_id,
             "max_seq": self.journal.max_seq(),
             "kernel": {"status": self.kernel_status, "pid": self.kernel.pid},
             "queue_len": self._queue.qsize(),
@@ -333,10 +392,9 @@ class Daemon:
             "widgets": self._mirror.snapshot(),
         }
 
-    def _status(self) -> dict:
+    def status(self) -> dict:
         return {
-            "session": SESSION,
-            "daemon_pid": os.getpid(),
+            "session": self.session_id,
             "kernel_pid": self.kernel.pid,
             "kernel_status": self.kernel_status,
             "kernel_reattached": self.kernel.reattached,
@@ -346,10 +404,108 @@ class Daemon:
             "widget_models": len(self._mirror),
         }
 
+    async def sub_pump(self, ws, sub: Subscriber, cutoff: int) -> None:
+        while True:
+            try:
+                event = await asyncio.wait_for(sub.queue.get(), SUB_POLL)
+            except (asyncio.TimeoutError, TimeoutError):
+                if sub.dropped:
+                    return await _notify_overflow(ws)
+                continue
+            if sub.dropped:
+                return await _notify_overflow(ws)
+            if event.get("seq", 0) <= cutoff:
+                continue  # already covered by snapshot/delta replay
+            try:
+                await asyncio.wait_for(ws.send(json.dumps(event)), SEND_TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                # Client stalled accepting data: drop it (host stays healthy).
+                sub.dropped = True
+                log.warning("[%s] subscriber send stalled >%.0fs — dropping client",
+                            self.session_id, SEND_TIMEOUT)
+                return await _notify_overflow(ws)
+
+
+async def _notify_overflow(ws) -> None:
+    """Best-effort: tell the client to reconnect+resync, then close."""
+    try:
+        await asyncio.wait_for(ws.send(json.dumps({"op": "overflow"})), 2.0)
+    except Exception:
+        pass
+    try:
+        await ws.close()
+    except Exception:
+        pass
+
+
+class Daemon:
+    """Owns the unix socket server and a lazily-populated dict of sessions."""
+
+    def __init__(self, home: Path, workdir: Path):
+        self.home = home
+        self.workdir = workdir
+        self.sock_path = home / "daemon.sock"
+        self.pid_file = home / "daemon.pid"
+        self._sessions: dict[str, Session] = {}
+        self._sessions_lock = asyncio.Lock()
+        self._stop = asyncio.Event()
+
+    # -- lifecycle -----------------------------------------------------------
+    def _preflight(self) -> None:
+        try:
+            pid = int(self.pid_file.read_text().strip())
+            os.kill(pid, 0)
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode()
+            if "tithon" in cmdline:
+                raise SystemExit(f"tithon daemon already running (pid {pid})")
+        except (OSError, ValueError):
+            pass  # stale or absent pid file
+        self.sock_path.unlink(missing_ok=True)
+
+    async def _get_session(self, session_id: str) -> Session:
+        """Return the session for this id, creating + starting it on first use."""
+        async with self._sessions_lock:
+            s = self._sessions.get(session_id)
+            if s is None:
+                session_dir = self.home / "sessions" / _session_dir_name(session_id)
+                s = Session(session_id, session_dir, self.workdir)
+                await s.start()
+                self._sessions[session_id] = s
+            return s
+
+    async def run(self) -> None:
+        self._preflight()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self._stop.set)
+        # write_limit caps each connection's send buffer so a slow client makes
+        # ws.send apply backpressure instead of growing daemon memory unbounded.
+        async with unix_serve(
+            self._handler, path=str(self.sock_path), write_limit=WRITE_BUFFER_HIGH
+        ):
+            os.chmod(self.sock_path, 0o600)
+            self.pid_file.write_text(str(os.getpid()))
+            log.info("daemon ready pid=%d sock=%s (sessions are per-file, lazy)",
+                     os.getpid(), self.sock_path)
+            await self._stop.wait()
+        for s in list(self._sessions.values()):
+            await s.stop()
+        self.pid_file.unlink(missing_ok=True)
+        self.sock_path.unlink(missing_ok=True)
+        log.info("daemon stopped")
+
+    def _global_status(self) -> dict:
+        return {
+            "op": "status_reply",
+            "daemon_pid": os.getpid(),
+            "sessions": [s.status() for s in self._sessions.values()],
+        }
+
     async def _handler(self, ws) -> None:
+        session: Session | None = None
         sub: Subscriber | None = None
         pump: asyncio.Task | None = None
-        log.info("client connected (subscribers=%d)", len(self._subs) + 1)
+        log.info("client connected")
         try:
             async for raw in ws:
                 try:
@@ -357,12 +513,18 @@ class Daemon:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 op = msg.get("op")
+                # Global status (no session): list every live session.
+                if op == "status" and "session" not in msg:
+                    await ws.send(json.dumps(self._global_status()))
+                    continue
+                # A connection is bound to one session, fixed on the first op.
+                if session is None:
+                    session = await self._get_session(msg.get("session", DEFAULT_SESSION))
+
                 if op == "attach":
                     if sub is None:
                         sub = Subscriber(asyncio.Queue(maxsize=SUB_QUEUE_MAX))
-                        self._subs.add(sub)  # buffer live events from this instant
-                        # Bound the kernel send buffer for this connection so a
-                        # stalled client cannot park tens of MB in kernel memory.
+                        session._subs.add(sub)  # buffer live events from this instant
                         try:
                             s = ws.transport.get_extra_info("socket")
                             if s is not None:
@@ -374,72 +536,45 @@ class Daemon:
                     # backlog/cutoff — atomicity within the event loop is what
                     # makes snapshot+delta gapless.
                     if last == 0:
-                        backlog = [{"op": "snapshot", **self._snapshot()}]
+                        backlog = [{"op": "snapshot", **session.snapshot()}]
                         cutoff = backlog[0]["max_seq"]
                     elif last < 0:  # live-only attach
                         backlog = []
-                        cutoff = self.journal.max_seq()
+                        cutoff = session.journal.max_seq()
                     else:
-                        rows = self.journal.messages_after(last)
+                        rows = session.journal.messages_after(last)
                         backlog = [
-                            event_from_message(s, e, t, json.loads(c)) for s, e, t, c in rows
+                            event_from_message(s2, e, t, json.loads(c)) for s2, e, t, c in rows
                         ]
                         cutoff = rows[-1][0] if rows else last
                     for item in backlog:
                         await ws.send(json.dumps(item))
                     await ws.send(json.dumps({"op": "sync", "seq": cutoff}))
                     if pump is None:
-                        pump = asyncio.create_task(self._sub_pump(ws, sub, cutoff))
+                        pump = asyncio.create_task(session.sub_pump(ws, sub, cutoff))
                     log.info(
-                        "client attached last_seen_seq=%d cutoff=%d backlog=%d subscribers=%d",
-                        last, cutoff, len(backlog), len(self._subs),
+                        "[%s] client attached last_seen_seq=%d cutoff=%d backlog=%d",
+                        session.session_id, last, cutoff, len(backlog),
                     )
                 elif op == "execute":
                     code = msg.get("code", "")
                     preview = code[:80].replace("\n", "↵")
-                    exec_id = self._submit(
-                        code, msg.get("submitted_by"), msg.get("origin")
-                    )
-                    log.info("execute queued exec_id=%s queue_len=%d code=%r",
-                             exec_id, self._queue.qsize(), preview)
+                    exec_id = session.submit(code, msg.get("submitted_by"), msg.get("origin"))
+                    log.info("[%s] execute queued exec_id=%s queue_len=%d code=%r",
+                             session.session_id, exec_id, session._queue.qsize(), preview)
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
+                elif op == "interrupt":
+                    ok = session.interrupt()
+                    log.info("[%s] interrupt ok=%s", session.session_id, ok)
+                    await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
+                elif op == "restart_kernel":
+                    pid = await session.restart_kernel()
+                    await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
                 elif op == "status":
-                    await ws.send(json.dumps({"op": "status_reply", **self._status()}))
+                    await ws.send(json.dumps({"op": "status_reply", **session.status()}))
         finally:
             if pump is not None:
                 pump.cancel()
-            if sub is not None:
-                self._subs.discard(sub)
-            log.info("client disconnected (subscribers=%d)", len(self._subs))
-
-    async def _sub_pump(self, ws, sub: Subscriber, cutoff: int) -> None:
-        while True:
-            try:
-                event = await asyncio.wait_for(sub.queue.get(), SUB_POLL)
-            except (asyncio.TimeoutError, TimeoutError):
-                if sub.dropped:
-                    return await self._notify_overflow(ws)
-                continue
-            if sub.dropped:
-                return await self._notify_overflow(ws)
-            if event.get("seq", 0) <= cutoff:
-                continue  # already covered by snapshot/delta replay
-            try:
-                await asyncio.wait_for(ws.send(json.dumps(event)), SEND_TIMEOUT)
-            except (asyncio.TimeoutError, TimeoutError):
-                # Client stalled accepting data: drop it (host stays healthy).
-                sub.dropped = True
-                log.warning("subscriber send stalled >%.0fs — dropping client", SEND_TIMEOUT)
-                return await self._notify_overflow(ws)
-
-    @staticmethod
-    async def _notify_overflow(ws) -> None:
-        """Best-effort: tell the client to reconnect+resync, then close."""
-        try:
-            await asyncio.wait_for(ws.send(json.dumps({"op": "overflow"})), 2.0)
-        except Exception:
-            pass
-        try:
-            await ws.close()
-        except Exception:
-            pass
+            if sub is not None and session is not None:
+                session._subs.discard(sub)
+            log.info("client disconnected")
