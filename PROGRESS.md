@@ -39,7 +39,11 @@
 - **렌더 스크린샷 검증 표준화** (ADR-024): `verify/shot.sh <suite>` — 실 VSCode를 Xvfb에서 띄워 여러 프레임
   캡처→최대 렌더 프레임 보관, std-dev>0.02 blank 차단(verify/shots/, gitignore). `make shot`. 앞으로 확장
   변경 시 모델 단언 + 픽셀 렌더 확인 병행.
-- verify-d = v8 v10 v11 v12 v13 v14 v15 (7/7). 확장 0.0.5.
+- **#7 재접속 시 셀 상태 + 시간 복원** (ADR-025): 출력뿐 아니라 완료(✓+소요시간)/실행중(스피너+실제 경과)/
+  대기중(시계) 상태 복원. 데몬 started_at/finished_at를 스냅샷+이벤트로 노출, VSCodeCellSink를
+  pending/running/done 상태머신으로 재설계(실제 데몬 시각으로 start/end → 경과·소요시간 정확). 함정:
+  clearOutput은 start() 후에만 유효. 검증 실 VSCode v16(A done 0.1s / B running 15.7s / C queued) + 스크린샷.
+- verify-d = v8 v10 v11 v12 v13 v14 v15 v16 (8/8). 확장 0.0.6.
 
 ### Phase 1 ⑨⑩ 산출물 (라이브 동기화 · 최적화 · 백프레셔)
 - extension/src/`liveSync.ts`: `LiveOutputSync` — throttle/coalesce(주입 Scheduler) + run-merge +

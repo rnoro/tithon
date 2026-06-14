@@ -33,8 +33,13 @@ export interface CellSink {
   updateDisplay(cellIndex: number, displayId: string, item: OutputItem): void;
   /** Clear all outputs of the cell. */
   clear(cellIndex: number): void;
-  /** Optional: cell execution lifecycle (running/done) for UI affordances. */
-  status?(cellIndex: number, status: string): void;
+  /**
+   * Optional: cell execution lifecycle for UI affordances (spinner/clock/check
+   * and timing). `status` is "queued" | "running" | "done" | "error"; `tsMs` is
+   * the daemon-side wall-clock (ms) of the transition, so a reconnecting client
+   * shows the real elapsed/duration, not time since reconnect.
+   */
+  status?(cellIndex: number, status: string, tsMs?: number): void;
 }
 
 /** Drives flushing; injected so production throttles and tests step manually. */
@@ -61,7 +66,7 @@ type PendingOp =
   | { t: "output"; item: OutputItem }
   | { t: "display"; displayId: string; item: OutputItem }
   | { t: "clear" }
-  | { t: "status"; status: string };
+  | { t: "status"; status: string; tsMs?: number };
 
 export interface LiveStats {
   events: number;
@@ -128,16 +133,20 @@ export class LiveOutputSync {
         const idx = this.hashIndex.get(computeCellHash(code));
         if (idx !== undefined) this.execToCell.set(execId, idx);
       }
+      // Reconnect restores the queued (pending) state via seedCell; for a fresh
+      // live run the cell flips to "started" almost immediately, so we keep
+      // queued map-only here (no extra sink op, preserves coalescing bounds).
       return;
     }
 
     const idx = this.execToCell.get(execId);
     if (idx === undefined) return; // execution not mapped to a present cell
 
+    const tsMs = typeof ev.payload?.ts === "number" ? ev.payload.ts * 1000 : undefined;
     if (ev.kind === "started") {
-      this.queue(idx, { t: "status", status: "running" });
+      this.queue(idx, { t: "status", status: "running", tsMs });
     } else if (ev.kind === "done") {
-      this.queue(idx, { t: "status", status: ev.payload?.status ?? "done" });
+      this.queue(idx, { t: "status", status: ev.payload?.status ?? "done", tsMs });
     } else if (ev.kind === "output") {
       this.handleOutput(execId, idx, ev.payload?.msg_type, ev.payload?.content ?? {});
     }
@@ -234,7 +243,7 @@ export class LiveOutputSync {
             this.sink.clear(idx);
             break;
           case "status":
-            this.sink.status?.(idx, op.status);
+            this.sink.status?.(idx, op.status, op.tsMs);
             break;
         }
       }

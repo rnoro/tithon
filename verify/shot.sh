@@ -34,6 +34,8 @@ FIX="$WORK/shot.py"
 case "$SUITE" in
   reconnect)
     printf '# %%%% training loop\nimport time\nfor i in range(30):\n    print(i, flush=True)\n    time.sleep(0.5)\n' >"$FIX" ;;
+  reconnectstates)
+    printf '# %%%% A\nprint("DONE_CELL")\n\n# %%%% B\nimport time\nfor i in range(40):\n    print(i, flush=True)\n    time.sleep(0.5)\n\n# %%%% C\nprint("QUEUED_CELL")\n' >"$FIX" ;;
   *)
     printf '# %%%%\nprint("hello from cell 1")\n\n# %%%%\nfor i in range(5):\n    print(f"Iteration {i}")\n\n# %%%%\nprint("Loop completed.")\n' >"$FIX" ;;
 esac
@@ -49,12 +51,12 @@ sd_of() { convert "$1" -colorspace Gray -format '%[fx:standard_deviation]' info:
 best_sd=0; tmp="$OUT.frame.png"
 start=$(date +%s); deadline=$(( start + (HOLD/1000) + 8 ))
 sleep 8
+# Keep the LAST frame whose variance clears the floor — the most settled render
+# (outputs painted), rather than an early transitional frame.
 while [ "$(date +%s)" -lt "$deadline" ]; do
   if import -display "$DISP" -window root "$tmp" 2>/dev/null; then
     sd="$(sd_of "$tmp")"
-    if awk -v a="$sd" -v b="$best_sd" 'BEGIN{ exit !(a+0 > b+0) }'; then
-      best_sd="$sd"; cp "$tmp" "$OUT"
-    fi
+    if awk -v a="$sd" 'BEGIN{ exit !(a+0 > 0.04) }'; then best_sd="$sd"; cp "$tmp" "$OUT"; fi
   fi
   sleep 3
 done

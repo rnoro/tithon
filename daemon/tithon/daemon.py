@@ -237,8 +237,8 @@ class Daemon:
             exec_id, code = await self._queue.get()
             msg_id = self.kc.execute(code)
             self._msgid_to_exec[msg_id] = exec_id
-            self.journal.mark_started(exec_id)
-            self._journal_lifecycle(exec_id, "tithon.started", {})
+            started_at = self.journal.mark_started(exec_id)
+            self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
             log.info("exec %s started (msg_id=%s)", exec_id, msg_id)
             while True:
                 reply = await self.kc.shell_channel.get_msg()
@@ -253,9 +253,13 @@ class Daemon:
             # tiny grace so trailing iopub lands before the folded cache persists
             await asyncio.sleep(0.05)
             folded = json.dumps(self._folds[exec_id].outputs())
-            self.journal.mark_done(exec_id, "done" if status == "ok" else "error", ec, folded)
+            finished_at = self.journal.mark_done(
+                exec_id, "done" if status == "ok" else "error", ec, folded
+            )
             self._journal_lifecycle(
-                exec_id, "tithon.done", {"status": status, "execution_count": ec}
+                exec_id,
+                "tithon.done",
+                {"status": status, "execution_count": ec, "ts": finished_at},
             )
             log.info("exec %s done status=%s", exec_id, status)
 
@@ -294,7 +298,8 @@ class Daemon:
     def _snapshot(self) -> dict:
         execs = []
         for (exec_id, seq, code, status, execution_count, folded_json,
-             cell_origin_uri, cell_range, cell_hash) in self.journal.executions():
+             cell_origin_uri, cell_range, cell_hash,
+             started_at, finished_at) in self.journal.executions():
             fold = self._folds.get(exec_id)
             if fold is not None:
                 outputs = fold.outputs()
@@ -316,6 +321,8 @@ class Daemon:
                     "cell_hash": cell_hash,
                     "origin": origin,
                     "outputs": outputs,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
                 }
             )
         return {

@@ -59,6 +59,9 @@ export interface ExecState {
   cellHash: string | null;
   origin: { uri?: string | null; range?: LineRange | null } | null;
   fold: ExecutionFold;
+  /** Daemon-side wall-clock seconds (epoch); null until known. */
+  startedAt: number | null;
+  finishedAt: number | null;
 }
 
 interface SnapshotExecWire {
@@ -70,6 +73,8 @@ interface SnapshotExecWire {
   cell_hash: string | null;
   origin: { uri?: string | null; range?: LineRange | null } | null;
   outputs: OutputItem[];
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export class SessionClient {
@@ -108,6 +113,8 @@ export class SessionClient {
         cellHash: null,
         origin: null,
         fold: new ExecutionFold(),
+        startedAt: null,
+        finishedAt: null,
       };
       this.execs.set(execId, st);
       this.order.push(execId);
@@ -181,6 +188,8 @@ export class SessionClient {
       st.status = e.status;
       st.cellHash = e.cell_hash ?? null;
       st.origin = e.origin ?? null;
+      st.startedAt = e.started_at ?? null;
+      st.finishedAt = e.finished_at ?? null;
       // Seed the fold from the daemon's already-folded outputs so a still
       // running execution keeps folding correctly as live events arrive.
       st.fold = new ExecutionFold();
@@ -199,9 +208,11 @@ export class SessionClient {
         break;
       case "started":
         st.status = "running";
+        if (typeof ev.payload?.ts === "number") st.startedAt = ev.payload.ts;
         break;
       case "done":
         st.status = ev.payload?.status === "ok" ? "done" : (ev.payload?.status ?? "done");
+        if (typeof ev.payload?.ts === "number") st.finishedAt = ev.payload.ts;
         break;
       case "output":
         st.fold.apply(ev.payload?.msg_type, ev.payload?.content ?? {});

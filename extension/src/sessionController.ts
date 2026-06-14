@@ -80,7 +80,10 @@ function toCellOutput(outputs: OutputItem[], stale: boolean): vscode.NotebookCel
  * collapsing is left to the stdout renderer.
  */
 class VSCodeCellSink implements CellSink {
-  private readonly execs = new Map<number, vscode.NotebookCellExecution>();
+  // Per cell: the proxy execution and whether we've called start() on it yet.
+  // A created-but-not-started execution renders as PENDING (the queued clock);
+  // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
+  private readonly execs = new Map<number, { exec: vscode.NotebookCellExecution; started: boolean }>();
   private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
 
   constructor(
@@ -96,17 +99,31 @@ class VSCodeCellSink implements CellSink {
     }
   }
 
-  private ensureExec(idx: number): vscode.NotebookCellExecution | undefined {
-    let e = this.execs.get(idx);
-    if (!e) {
+  /** Create the proxy execution in PENDING state (clock), if not present. No
+   *  output ops here — VSCode rejects clearOutput/appendOutput before start(). */
+  private create(idx: number): { exec: vscode.NotebookCellExecution; started: boolean } | undefined {
+    let rec = this.execs.get(idx);
+    if (!rec) {
       const c = this.cell(idx);
       if (!c) return undefined;
-      e = this.controller.createNotebookCellExecution(c);
-      e.start(Date.now());
-      void e.clearOutput();
-      this.execs.set(idx, e);
+      rec = { exec: this.controller.createNotebookCellExecution(c), started: false };
+      this.execs.set(idx, rec);
     }
-    return e;
+    return rec;
+  }
+
+  /** Ensure the execution exists AND is started (RUNNING). `startMs` sets the
+   *  real wall-clock start so timing reflects the daemon, not the reconnect.
+   *  clearOutput runs only once, right after start() (it is invalid before). */
+  private ensureStarted(idx: number, startMs?: number): vscode.NotebookCellExecution | undefined {
+    const rec = this.create(idx);
+    if (!rec) return undefined;
+    if (!rec.started) {
+      rec.exec.start(startMs ?? Date.now());
+      void rec.exec.clearOutput();
+      rec.started = true;
+    }
+    return rec.exec;
   }
 
   private forgetStreams(idx: number): void {
@@ -116,7 +133,7 @@ class VSCodeCellSink implements CellSink {
   }
 
   appendStream(idx: number, name: string, text: string): void {
-    const e = this.ensureExec(idx);
+    const e = this.ensureStarted(idx);
     if (!e) return;
     const mime = name === "stderr" ? STDERR_MIME : STDOUT_MIME;
     const item = vscode.NotebookCellOutputItem.text(text, mime);
@@ -132,14 +149,27 @@ class VSCodeCellSink implements CellSink {
   }
 
   /**
-   * Seed a cell with already-folded output captured from the snapshot at attach
-   * time (mid-run reconnect). Renders the prior output AND registers each stream
-   * block in `streamOut`, so subsequent live {@link appendStream} deltas continue
-   * the SAME stdout/stderr block — the cell reads as one continuous stream, as if
-   * the client had been attached from the start (design.md §3.1; ADR-023).
+   * Seed a cell from the snapshot captured at attach time (mid-run reconnect),
+   * restoring both its OUTPUT and its execution STATE/timing (design.md §3.1;
+   * ADR-023/025):
+   *  - "queued" -> pending clock, no output;
+   *  - "running" -> spinner started at the real `startMs`, prior output rendered,
+   *    stream blocks registered so live deltas continue the SAME block;
+   *  - "done"/"error" -> rendered + ended with the real start/finish times so the
+   *    cell shows the actual duration.
    */
-  seedCell(idx: number, items: OutputItem[], terminal: boolean): void {
-    const e = this.ensureExec(idx); // creates the proxy execution + clears
+  seedCell(
+    idx: number,
+    items: OutputItem[],
+    state: "queued" | "running" | "done" | "error",
+    startMs?: number,
+    endMs?: number,
+  ): void {
+    if (state === "queued") {
+      this.create(idx); // pending clock, no output
+      return;
+    }
+    const e = this.ensureStarted(idx, startMs);
     if (!e) return;
     for (const item of items) {
       if (item.output_type === "stream") {
@@ -153,13 +183,16 @@ class VSCodeCellSink implements CellSink {
         void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
       }
     }
-    // A completed execution gets ended now; a still-running one stays "running"
-    // until its live `done` event arrives.
-    if (terminal) this.status(idx, "done");
+    if (state === "done" || state === "error") {
+      e.end(state === "done", endMs ?? Date.now());
+      this.execs.delete(idx);
+      this.forgetStreams(idx);
+    }
+    // a "running" cell stays started until its live `done` event arrives.
   }
 
   appendOutput(idx: number, item: OutputItem): void {
-    const e = this.ensureExec(idx);
+    const e = this.ensureStarted(idx);
     if (!e) return;
     void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
   }
@@ -169,23 +202,43 @@ class VSCodeCellSink implements CellSink {
   }
 
   clear(idx: number): void {
-    const e = this.ensureExec(idx);
+    const e = this.ensureStarted(idx);
     if (!e) return;
     void e.clearOutput();
     this.forgetStreams(idx);
   }
 
-  status(idx: number, status: string): void {
-    if (status === "running") {
-      this.ensureExec(idx);
+  status(idx: number, status: string, tsMs?: number): void {
+    if (status === "queued") {
+      this.create(idx); // pending clock
       return;
     }
-    const e = this.execs.get(idx);
-    if (e) {
-      e.end(status === "done", Date.now());
+    if (status === "running") {
+      this.ensureStarted(idx, tsMs);
+      return;
+    }
+    // done / error: must be started before it can be ended.
+    const rec = this.execs.get(idx);
+    if (rec) {
+      if (!rec.started) {
+        rec.exec.start(tsMs ?? Date.now());
+        rec.started = true;
+      }
+      rec.exec.end(status === "done", tsMs ?? Date.now());
       this.execs.delete(idx);
       this.forgetStreams(idx);
     }
+  }
+
+  /** End any still-open proxy executions (called when live sync stops) so cells
+   *  don't keep a spinner/clock forever after we detach. */
+  endAll(): void {
+    for (const [idx, rec] of this.execs) {
+      if (!rec.started) rec.exec.start(Date.now());
+      rec.exec.end(undefined, Date.now());
+      this.forgetStreams(idx);
+    }
+    this.execs.clear();
   }
 }
 
@@ -318,18 +371,23 @@ export class TithonNotebookController {
     );
     const execs = client.executions();
     live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash })));
-    // Mid-run reconnect: paint the prior folded output into the cells NOW, before
-    // wiring live events, so a still-running execution shows what was produced
-    // before we attached and then keeps streaming seamlessly (ADR-023). This runs
-    // synchronously after attach() resolved — no live event can slip in between
-    // capturing the fold and wiring onEvent, so there's no gap or duplication.
+    // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
+    // STATE+timing into the cell NOW, before wiring live events — a done cell
+    // shows ✓ with its real duration, a running cell shows the spinner started at
+    // the real time (so it keeps counting up) plus its prior output, and a queued
+    // cell shows the pending clock (ADR-023/025). This runs synchronously after
+    // attach() resolved, so no live event can slip in between capturing the
+    // snapshot and wiring onEvent — no gap, no duplication.
+    const toMs = (s: number | null) => (s != null ? s * 1000 : undefined);
     for (const ex of execs) {
       const idx = live.cellOf(ex.execId);
       if (idx === undefined) continue;
-      const prior = client.outputsOf(ex.execId);
-      if (prior.length > 0) {
-        sink.seedCell(idx, prior, ex.status === "done" || ex.status === "error");
-      }
+      const state =
+        ex.status === "done" ? "done"
+        : ex.status === "error" ? "error"
+        : ex.status === "queued" ? "queued"
+        : "running";
+      sink.seedCell(idx, client.outputsOf(ex.execId), state, toMs(ex.startedAt), toMs(ex.finishedAt));
     }
     const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
     // Keep the index current as cells are added/edited after live started
@@ -342,6 +400,7 @@ export class TithonNotebookController {
       dispose: () => {
         changeSub.dispose();
         client.close();
+        sink.endAll(); // don't leave cells spinning after we detach
       },
       refresh,
     };

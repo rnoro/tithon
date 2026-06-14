@@ -22,7 +22,8 @@ def test_insert_and_read_origin_and_cell_hash(tmp_path):
     )
     rows = j.executions()
     assert len(rows) == 1
-    (exec_id, seq, c, status, ec, folded, uri, cell_range, cell_hash) = rows[0]
+    (exec_id, seq, c, status, ec, folded, uri, cell_range, cell_hash,
+     started_at, finished_at) = rows[0]
     assert exec_id == "e1" and c == code and status == "queued"
     assert uri == "file:///w/a.py"
     assert cell_range == '{"start": 4, "end": 6}'
@@ -32,7 +33,8 @@ def test_insert_and_read_origin_and_cell_hash(tmp_path):
 def test_origin_optional(tmp_path):
     j = Journal(tmp_path / "journal.db")
     j.insert_execution("e1", 1, "y = 2\n")  # no origin / cell_hash (e.g. legacy path)
-    (_eid, _seq, _c, _st, _ec, _f, uri, cell_range, cell_hash) = j.executions()[0]
+    (_eid, _seq, _c, _st, _ec, _f, uri, cell_range, cell_hash,
+     _sa, _fa) = j.executions()[0]
     assert uri is None and cell_range is None and cell_hash is None
 
 
@@ -56,5 +58,5 @@ def test_migration_adds_cell_hash_to_old_journal(tmp_path):
     cols = {r[1] for r in j.db.execute("PRAGMA table_info(executions)").fetchall()}
     assert "cell_hash" in cols
     # existing row survives and reads back with NULL cell_hash
-    (eid, _seq, code, *_rest, cell_hash) = j.executions()[0]
+    (eid, _seq, code, *_rest, cell_hash, _sa, _fa) = j.executions()[0]
     assert eid == "e0" and code == "old" and cell_hash is None

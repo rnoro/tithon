@@ -138,19 +138,23 @@ class Journal:
             (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range, cell_hash),
         )
 
-    def mark_started(self, exec_id: str) -> None:
+    def mark_started(self, exec_id: str) -> float:
+        ts = time.time()
         self.db.execute(
             "UPDATE executions SET status='running', started_at=? WHERE exec_id=?",
-            (time.time(), exec_id),
+            (ts, exec_id),
         )
+        return ts
 
     def mark_done(self, exec_id: str, status: str, execution_count: int | None,
-                  folded_json: str) -> None:
+                  folded_json: str) -> float:
+        ts = time.time()
         self.db.execute(
             "UPDATE executions SET status=?, execution_count=?, finished_at=?, folded_json=?"
             " WHERE exec_id=?",
-            (status, execution_count, time.time(), folded_json, exec_id),
+            (status, execution_count, ts, folded_json, exec_id),
         )
+        return ts
 
     def orphan_inflight(self) -> int:
         """Mark queued/running executions as orphaned (after daemon restart)."""
@@ -161,10 +165,10 @@ class Journal:
 
     def executions(self) -> list[tuple]:
         """Rows by seq: (exec_id, seq, code, status, execution_count, folded_json,
-        cell_origin_uri, cell_range, cell_hash)."""
+        cell_origin_uri, cell_range, cell_hash, started_at, finished_at)."""
         return self.db.execute(
             "SELECT exec_id, seq, code, status, execution_count, folded_json,"
-            " cell_origin_uri, cell_range, cell_hash"
+            " cell_origin_uri, cell_range, cell_hash, started_at, finished_at"
             " FROM executions ORDER BY seq"
         ).fetchall()
 
