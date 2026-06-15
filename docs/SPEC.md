@@ -85,7 +85,7 @@ extension re-attaches to the daemon and restores state.
 
 The daemon owns kernel lifetime, journals every message, and serves multiple
 clients a consistent view. It is a single `asyncio` process; source lives in
-[`daemon/src/tithon/`](../daemon/src/tithon/).
+[`src/tithon/`](../src/tithon/).
 
 ### 3.1 Kernel lifetime & failure isolation
 
@@ -291,7 +291,7 @@ If rendering fails it falls back to the widget's final state as text
 
 ## 5. CLI
 
-The `tithon` CLI ([`daemon/src/tithon/cli.py`](../daemon/src/tithon/cli.py))
+The `tithon` CLI ([`src/tithon/cli.py`](../src/tithon/cli.py))
 drives the same daemon over the socket:
 
 | Command | Purpose |

@@ -22,7 +22,6 @@ htmlcov/
 .nox/
 .ipynb_checkpoints/
 .venv/
-daemon/.venv/
 
 # Node / TypeScript
 node_modules/

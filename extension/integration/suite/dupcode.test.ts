@@ -49,7 +49,7 @@ describe("Tithon duplicate-code cells map independently (v20)", () => {
     assert.ok(cellText(nb.cellAt(1)).trim().length > 0, "cell 1 is EMPTY (collapsed onto cell 0)");
     assert.ok(cellText(nb.cellAt(1)).includes("SAME"), "cell 1 missing its own output");
 
-    // Hold the window open so verify/shot.sh can screenshot the rendered cells.
+    // Hold the window open so scripts/shot.sh can screenshot the rendered cells.
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
     if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));
   });

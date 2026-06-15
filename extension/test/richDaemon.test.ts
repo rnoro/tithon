@@ -9,7 +9,7 @@
  *     reconstructs the final bar from it.
  *
  * Skips unless a daemon socket is present (so plain `npm test` stays hermetic);
- * verify/v27.sh starts the daemon and sets TITHON_HOME before running this file.
+ * scripts/v27.sh starts the daemon and sets TITHON_HOME before running this file.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync } from "fs";

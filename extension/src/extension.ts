@@ -59,7 +59,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await ensureTextDefaultForPy();
 
   // The reconnect/restore half (subscribe -> fold -> restore -> attach),
-  // verified end-to-end against a real daemon by verify/v7.
+  // verified end-to-end against a real daemon by scripts/v7.
   // Also owns the executeHandler so the native cell play button works.
   const notebookCtrl = registerRestore(context);
 

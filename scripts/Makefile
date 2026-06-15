@@ -1,23 +1,26 @@
-.PHONY: verify-a verify-b verify-c verify-d verify test
+# Run from anywhere: paths are resolved relative to this Makefile's location.
+HERE := $(dir $(lastword $(MAKEFILE_LIST)))
+
+.PHONY: verify-a verify-b verify-c verify-d verify test shot
 
 verify-a:
-	bash verify/run_verify.sh a
+	bash $(HERE)run_verify.sh a
 
 verify-b:
-	bash verify/run_verify.sh b
+	bash $(HERE)run_verify.sh b
 
 verify-c:
-	bash verify/run_verify.sh c
+	bash $(HERE)run_verify.sh c
 
 verify-d:
-	bash verify/run_verify.sh d
+	bash $(HERE)run_verify.sh d
 
 verify:
-	bash verify/run_verify.sh all
+	bash $(HERE)run_verify.sh all
 
 test:
-	daemon/.venv/bin/python -m pytest daemon/tests -q
+	cd $(HERE).. && uv run pytest -q
 
 shot:
-	bash verify/shot.sh reconnect
-	bash verify/shot.sh screenshot
+	bash $(HERE)shot.sh reconnect
+	bash $(HERE)shot.sh screenshot

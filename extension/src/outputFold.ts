@@ -1,5 +1,5 @@
 /**
- * Client-side folded output state (TS port of daemon/tithon/folding.py).
+ * Client-side folded output state (TS port of src/tithon/folding.py).
  *
  * The daemon's snapshot already carries folded `outputs` per execution, but a
  * *live* (or delta) attach streams raw iopub messages — the client must fold

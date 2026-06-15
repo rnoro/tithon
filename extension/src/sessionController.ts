@@ -7,7 +7,7 @@
  * {@link SessionClient.restoreInto}, and writes them into the notebook's cells
  * through the VSCode NotebookController execution API. The pure pieces it relies
  * on (subscribe + fold + cell_hash attach) are exercised end-to-end against a
- * real daemon by verify/v7; this file is the thin, API-only glue VSCode needs.
+ * real daemon by scripts/v7; this file is the thin, API-only glue VSCode needs.
  */
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";

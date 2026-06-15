@@ -3,7 +3,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV="$ROOT/daemon/.venv"
+VENV="$ROOT/.venv"
 PY="$VENV/bin/python"
 TITHON="$VENV/bin/tithon"
 

@@ -20,5 +20,5 @@ timeout 120 "$TITHON" run -c "$CODE" >/dev/null || fail "plot cell failed"
 
 timeout 30 "$TITHON" attach --since 0 --once >"$TITHON_HOME/attach.ndjson" || fail "attach failed"
 
-DETAIL="$("$PY" "$ROOT/verify/_check_v3.py" "$TITHON_HOME" "$WORK")" || fail "$DETAIL"
+DETAIL="$("$PY" "$ROOT/scripts/_check_v3.py" "$TITHON_HOME" "$WORK")" || fail "$DETAIL"
 echo "RESULT v3 PASS $DETAIL"

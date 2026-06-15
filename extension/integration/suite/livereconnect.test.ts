@@ -4,7 +4,7 @@
  * then RECONNECT (reopen): prior output + cell STATE/timing are restored AND
  * live streaming continues — as if never disconnected. Holds open for a
  * multi-frame screenshot (the spinner + elapsed timer + growing output are only
- * visible in pixels). Driven by verify/demo_reconnect.sh.
+ * visible in pixels). Driven by scripts/demo_reconnect.sh.
  */
 import * as assert from "assert";
 import * as vscode from "vscode";

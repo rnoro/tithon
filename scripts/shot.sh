@@ -5,10 +5,10 @@
 # cell.outputs data model but not on what is actually painted (the user's ask:
 # "verify output is actually drawn on screen"). The PNG is left for inspection.
 #
-# Usage: bash verify/shot.sh <suite> [holdMs]
+# Usage: bash scripts/shot.sh <suite> [holdMs]
 #   <suite> = integration suite filename substring (e.g. reconnect, screenshot,
 #             runcell). A matching fixture is written below.
-#   PNG -> verify/shots/<suite>.png
+#   PNG -> scripts/screenshots/<suite>.png
 set -u
 . "$(dirname "$0")/lib.sh"
 SUITE="${1:-reconnect}"
@@ -17,7 +17,7 @@ fail() { echo "RESULT shot:$SUITE FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-SHOTDIR="$ROOT/verify/shots"; mkdir -p "$SHOTDIR"
+SHOTDIR="$ROOT/scripts/screenshots"; mkdir -p "$SHOTDIR"
 OUT="$SHOTDIR/$SUITE.png"
 for t in Xvfb import convert; do command -v "$t" >/dev/null 2>&1 || fail "$t not installed (apt-get install scrot imagemagick x11-apps)"; done
 

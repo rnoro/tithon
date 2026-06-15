@@ -9,7 +9,7 @@
  * live raw stream agrees with one seeded from the daemon's folded snapshot).
  *
  * Skips unless a daemon socket is present (so plain `npm test` stays hermetic);
- * verify/v7.sh starts the daemon and sets TITHON_HOME before running this file.
+ * scripts/v7.sh starts the daemon and sets TITHON_HOME before running this file.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync } from "fs";

@@ -24,8 +24,8 @@ for i in 1 2 3; do
     timeout 30 "$TITHON" attach --since "$LAST" --until-done >"$TITHON_HOME/attach$i.ndjson" \
       || fail "final attach did not observe done"
   fi
-  LAST="$("$PY" "$ROOT/verify/_lastseq.py" "$TITHON_HOME/attach$i.ndjson" "$LAST")" || fail "lastseq parse"
+  LAST="$("$PY" "$ROOT/scripts/_lastseq.py" "$TITHON_HOME/attach$i.ndjson" "$LAST")" || fail "lastseq parse"
 done
 
-DETAIL="$("$PY" "$ROOT/verify/_check_v1.py" "$TITHON_HOME")" || fail "$DETAIL"
+DETAIL="$("$PY" "$ROOT/scripts/_check_v1.py" "$TITHON_HOME")" || fail "$DETAIL"
 echo "RESULT v1 PASS $DETAIL"

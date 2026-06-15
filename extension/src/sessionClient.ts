@@ -12,7 +12,7 @@
  *                         cell_hash (SPEC.md, see cellAttach).
  *
  * Snapshot+delta equivalence (a since-0 attach and a since-N delta replay fold
- * to the same state) is what verify/v7 checks against a real daemon.
+ * to the same state) is what scripts/v7 checks against a real daemon.
  */
 import WebSocket from "ws";
 import { homedir } from "os";

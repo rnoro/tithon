@@ -4,7 +4,7 @@
 #   - disk fixture prints DISKVERSION,
 #   - the test edits the cell in memory to print EDITED (notebook dirty, disk
 #     stale), runs it natively, and asserts the cell shows EDITED.
-# Needs network + xvfb (see verify/v8.sh header); run via `make verify-d`.
+# Needs network + xvfb (see scripts/v8.sh header); run via `make verify-d`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v13 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT

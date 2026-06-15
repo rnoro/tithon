@@ -34,7 +34,7 @@ timeout 180 "$TITHON" run -c "$CODE" >/dev/null || fail "tqdm.notebook cell fail
 MODELS="$(status_field widget_models)" || fail "status failed"
 echo "v5: daemon mirror holds $MODELS widget models after 50k iterations"
 SNAP="$(timeout 20 "$TITHON" attach --since 0 --once 2>/dev/null)"
-echo "$SNAP" | "$PY" "$ROOT/verify/_check_v5.py" 50000 || fail "(1) widget mirror snapshot check failed"
+echo "$SNAP" | "$PY" "$ROOT/scripts/_check_v5.py" 50000 || fail "(1) widget mirror snapshot check failed"
 
 # (2) html-manager jsdom render of the mirror snapshot.
 echo "v5: html-manager jsdom render ---------------------------------------"
@@ -42,7 +42,7 @@ echo "v5: html-manager jsdom render ---------------------------------------"
 
 # (3) Widget State Mirror unit tests (deterministic, incl. binary buffers).
 echo "v5: Widget State Mirror unit tests ----------------------------------"
-timeout 120 "$PY" -m pytest "$ROOT/daemon/tests/test_widgets.py" -q || fail "(3) mirror unit tests failed"
+timeout 120 "$PY" -m pytest "$ROOT/test/test_widgets.py" -q || fail "(3) mirror unit tests failed"
 
 # Document the integration-test environment limitation in the RESULT detail.
 have_display="no-display(xvfb absent)"

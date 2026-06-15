@@ -19,5 +19,5 @@ timeout 30 "$TITHON" attach --since 0 --once >"$TITHON_HOME/attach.ndjson" || fa
 T1=$(date +%s%N)
 ELAPSED_MS=$(( (T1 - T0) / 1000000 ))
 
-DETAIL="$("$PY" "$ROOT/verify/_check_v2.py" "$TITHON_HOME" "$ELAPSED_MS")" || fail "$DETAIL"
+DETAIL="$("$PY" "$ROOT/scripts/_check_v2.py" "$TITHON_HOME" "$ELAPSED_MS")" || fail "$DETAIL"
 echo "RESULT v2 PASS $DETAIL"

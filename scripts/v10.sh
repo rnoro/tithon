@@ -7,7 +7,7 @@
 #     a 20-step slow loop and asserts the cell stdout GROWS over time and ends
 #     with all 20 lines (live, not a single end-of-run dump).
 # Coalescing/bounds are unit-verified (test/liveSync.test.ts); this verifies the
-# live wiring renders in real VSCode. Needs network + xvfb (see verify/v8.sh
+# live wiring renders in real VSCode. Needs network + xvfb (see scripts/v8.sh
 # header for the apt prerequisites); run via `make verify-d`.
 . "$(dirname "$0")/lib.sh"
 

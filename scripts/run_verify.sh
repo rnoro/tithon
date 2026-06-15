@@ -19,7 +19,7 @@ total=0
 for s in $scripts; do
   echo "===== $s ====="
   out="$(mktemp)"
-  timeout 600 bash "$ROOT/verify/$s.sh" 2>&1 | tee "$out"
+  timeout 600 bash "$ROOT/scripts/$s.sh" 2>&1 | tee "$out"
   line="$(grep -E "^RESULT $s " "$out" | tail -1)"
   rm -f "$out"
   [ -z "$line" ] && line="RESULT $s FAIL (no RESULT line — crashed or timed out)"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # v6 — ⑥ percent-format NotebookSerializer.
-#   (a) tricky corpus (verify/corpus/*.py) round-trips with a 0-byte diff,
+#   (a) tricky corpus (scripts/corpus/*.py) round-trips with a 0-byte diff,
 #   (b) fast-check property test: 1,000 random percent files round-trip,
 #   (c) journal origin(cell_hash) -> cell attachment mapping unit test.
 # All three are vitest tests in extension/; PASS iff vitest exits 0.
@@ -30,7 +30,7 @@ NO_COLOR=1 npx vitest run test/serializer.test.ts test/cellAttach.test.ts >"$OUT
 rc=$?
 cat "$OUT"
 
-corpus=$(ls "$ROOT"/verify/corpus/*.py 2>/dev/null | grep -vc '/_')
+corpus=$(ls "$ROOT"/scripts/corpus/*.py 2>/dev/null | grep -vc '/_')
 tests_line="$(grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+ passed' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"
 rm -f "$OUT"
 

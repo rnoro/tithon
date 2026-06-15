@@ -9,7 +9,7 @@
 # Per-subscriber memory is bounded by construction (capped event queue +
 # write_limit on the transport; undelivered bytes sit in the OS socket buffer,
 # not daemon memory) and the drop-on-overflow / drop-on-stall paths are proven
-# deterministically in daemon/tests/test_backpressure.py. Hermetic (real
+# deterministically in test/test_backpressure.py. Hermetic (real
 # daemon+kernel, no network/display) — part of `make verify`.
 . "$(dirname "$0")/lib.sh"
 
@@ -25,7 +25,7 @@ echo "v9: daemon up (pid $DP)"
 
 # Attach a subscriber, then freeze it so its event loop stops reading entirely.
 # Run python directly (no `timeout` wrapper) so $! is the client itself.
-"$PY" "$ROOT/verify/_stalled_client.py" "$TITHON_HOME/daemon.sock" 120 \
+"$PY" "$ROOT/scripts/_stalled_client.py" "$TITHON_HOME/daemon.sock" 120 \
   >"$TITHON_HOME/stalled.log" 2>&1 &
 SC=$!
 for _ in $(seq 1 50); do

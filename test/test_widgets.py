@@ -2,7 +2,7 @@
 
 Deterministic, no kernel: exercises comm_open/comm_msg/comm_close interpretation,
 the widget-state+json snapshot shape, and binary-buffer handling (which tqdm's
-FloatProgress does not exercise — covered live by verify/v5.sh).
+FloatProgress does not exercise — covered live by scripts/v5.sh).
 """
 import base64
 

@@ -28,7 +28,7 @@ await esbuild.build({
 // must be a self-contained browser ESM bundle (it cannot require @jupyter-widgets
 // from node_modules there). ~3MB with html-manager + base + controls + the
 // ipywidgets CSS (inlined as text and injected into the webview). Loaded via the
-// `notebookRenderer` contribution; verified in a real host by verify/v29.
+// `notebookRenderer` contribution; verified in a real host by scripts/v29.
 await esbuild.build({
   entryPoints: ["src/widgetRendererEntry.ts"],
   outfile: "dist/widgetRenderer.js",

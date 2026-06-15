@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { parse, serialize, countMarkers, bodyLinesFromText } from "../src/serializer";
 
-const CORPUS_DIR = join(__dirname, "..", "..", "verify", "corpus");
+const CORPUS_DIR = join(__dirname, "..", "..", "scripts", "corpus");
 
 /** latin1 is a 1:1 byte<->char mapping, so string equality == byte equality. */
 function readBytesAsString(path: string): string {

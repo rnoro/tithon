@@ -2,15 +2,15 @@
 # DEMO (not a pass/fail gate): run the livereconnect suite under an explicit Xvfb
 # and capture a frame every ~2.5s across a long-loop DISCONNECT->RECONNECT, to
 # visually prove that cell state (spinner + real elapsed timer) and output are
-# preserved and streaming continues. Frames -> verify/shots/demo/ (gitignored).
-#   bash verify/demo_reconnect.sh
+# preserved and streaming continues. Frames -> scripts/screenshots/demo/ (gitignored).
+#   bash scripts/demo_reconnect.sh
 . "$(dirname "$0")/lib.sh"
 trap cleanup_procs EXIT
 EXT="$ROOT/extension"
 if ! command -v npx >/dev/null 2>&1; then
   for d in "$HOME/.nvm/versions/node"/*/bin; do [ -x "$d/npx" ] && PATH="$d:$PATH" && break; done
 fi
-SHOTS="$ROOT/verify/shots/demo"; rm -rf "$SHOTS"; mkdir -p "$SHOTS"
+SHOTS="$ROOT/scripts/screenshots/demo"; rm -rf "$SHOTS"; mkdir -p "$SHOTS"
 (cd "$EXT" && npx tsc -p tsconfig.integration.json >/dev/null 2>&1) || { echo "build failed"; exit 1; }
 
 setup_env demo-reconnect

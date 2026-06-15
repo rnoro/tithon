@@ -1,6 +1,6 @@
 /**
  * Launch a real VSCode Extension Host (via @vscode/test-electron) and run the
- * restore integration suite inside it. Driven by verify/v8.sh, which starts a
+ * restore integration suite inside it. Driven by scripts/v8.sh, which starts a
  * daemon, seeds executions, and passes TITHON_HOME / TITHON_FIXTURE in the env.
  */
 import * as path from "path";

@@ -4,7 +4,7 @@
  * a cell document. Round-trip is delegated to the byte-exact pure serializer:
  * each cell carries its verbatim parsed structure in metadata, and
  * `serializeNotebook` reconstructs from that — so an unedited open->save is a
- * 0-byte diff (the Phase 0 ⑥ guarantee, verified by verify/v6.sh).
+ * 0-byte diff (the Phase 0 ⑥ guarantee, verified by scripts/v6.sh).
  */
 import * as vscode from "vscode";
 import { parse, serialize, cellSource, bodyLinesFromText, type Cell } from "./serializer";

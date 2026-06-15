@@ -4,7 +4,7 @@
 #   - selects the Tithon kernel, runs ALL cells natively (no manual live step),
 #   - asserts EACH cell's output lands on its OWN cell (CELL0/1/2), not all
 #     collapsed onto the top cell.
-# Needs network + xvfb (see verify/v8.sh header); run via `make verify-d`.
+# Needs network + xvfb (see scripts/v8.sh header); run via `make verify-d`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v12 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT

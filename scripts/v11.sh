@@ -6,7 +6,7 @@
 #   - asserts the cell shows the streamed output.
 # Before the fix the cell stayed empty (executeHandler was a no-op and the submit
 # path closed its socket before output arrived). Needs network + xvfb (see
-# verify/v8.sh header for apt prerequisites); run via `make verify-d`.
+# scripts/v8.sh header for apt prerequisites); run via `make verify-d`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v11 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT

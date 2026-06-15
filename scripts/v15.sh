@@ -3,7 +3,7 @@
 #       running (driven by a separate client), then a fresh VSCode client
 #       attaches partway through and must show BOTH the pre-reconnect output
 #       (restored) AND the rest streamed live — seamless. Needs network + xvfb
-#       (see verify/v8.sh header); run via `make verify-d`.
+#       (see scripts/v8.sh header); run via `make verify-d`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v15 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
