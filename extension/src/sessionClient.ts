@@ -27,6 +27,7 @@ import {
 } from "./cellAttach";
 import type { Cell } from "./serializer";
 import type { WidgetState } from "./richOutput";
+import { ArtifactCache } from "./artifactCache";
 
 /** Image bytes resolved from a `$tithon_artifact` reference. */
 export interface ArtifactBytes {
@@ -94,8 +95,12 @@ export class SessionClient {
   private onEventCb: ((ev: LiveEvent) => void) | null = null;
   private kernelInfoData: { status?: string; pid?: number | null; python?: string | null } | null = null;
   private widgetState: WidgetState | null = null;
-  /** id -> resolved bytes (null = fetched but not found). Dedupes refetches. */
-  private readonly artifactCache = new Map<string, ArtifactBytes | null>();
+  /** id -> resolved bytes (null = fetched but not found). Dedupes refetches and,
+   *  being byte-budgeted LRU, bounds memory when a live plot yields a new image
+   *  every step (each a distinct sha → otherwise cached forever). */
+  private readonly artifactCache = new ArtifactCache<ArtifactBytes | null>(
+    (v) => (v ? v.bytes.length : 0),
+  );
   /** One reused connection for ALL artifact fetches (no socket-per-image churn,
    *  which melted the tunnel for a per-step matplotlib plot). Requests are
    *  multiplexed by req_id; opened lazily, reopened if it drops. */
