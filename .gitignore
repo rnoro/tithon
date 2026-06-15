@@ -1,19 +1,59 @@
-daemon/.venv/
+# ================================ Python ================================
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
 *.egg-info/
-.tithon/
+.eggs/
+*.egg
 .pytest_cache/
-nohup.out
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+.tox/
+.nox/
+.ipynb_checkpoints/
+.venv/
+daemon/.venv/
 
-# node
+# ========================== Node / TypeScript ==========================
 node_modules/
+*.tsbuildinfo
+.eslintcache
+*.log
+npm-debug.log*
+yarn-debug.log*
+coverage/
+*.lcov
+.nyc_output
+*.tgz
+.npm
+
+# ============================== Project ================================
+# tithon daemon state (socket, journal, kernel connection files)
+.tithon/
+# esbuild output
 dist/
 out-int/
+# VSCode extension test runner
 .vscode-test/
-build/
-*.log
-# extension package artifacts
+# packaged extension
 *.vsix
-
 # screenshot render artifacts
-verify/shots/
+scripts/screenshots/
+# daemon startup log (nohup)
+nohup.out
+
+# ================================= OS =================================
+.DS_Store
+Thumbs.db
+*.swp
+*~
