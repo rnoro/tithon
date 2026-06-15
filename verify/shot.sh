@@ -38,6 +38,46 @@ case "$SUITE" in
     printf '# %%%% A\nprint("DONE_CELL")\n\n# %%%% B\nimport time\nfor i in range(40):\n    print(i, flush=True)\n    time.sleep(0.5)\n\n# %%%% C\nprint("QUEUED_CELL")\n' >"$FIX" ;;
   dupcode)
     printf '# %%%% one\nprint("SAME", flush=True)\n\n# %%%% two\nprint("SAME", flush=True)\n' >"$FIX" ;;
+  widget)
+    cat >"$FIX" <<'PY'
+# %% nb
+from tqdm.notebook import tqdm as tnb
+for i in tnb(range(50)):
+    pass
+PY
+    ;;
+  widgetlive)
+    cat >"$FIX" <<'PY'
+# %% nb
+from tqdm.notebook import tqdm as tnb
+import time
+for i in tnb(range(600)):
+    time.sleep(0.05)
+PY
+    ;;
+  richoutputs)
+    cat >"$FIX" <<'PY'
+# %% mpl
+%matplotlib inline
+import matplotlib.pyplot as plt
+plt.figure(figsize=(3.2, 1.8))
+plt.plot([0, 1, 2], [0, 1, 4])
+plt.title("matplotlib inline")
+plt.tight_layout()
+plt.show()
+
+# %% tqdm
+from tqdm import tqdm
+import sys
+for i in tqdm(range(20), file=sys.stderr):
+    pass
+
+# %% nb
+from tqdm.notebook import tqdm as tnb
+for i in tnb(range(5)):
+    pass
+PY
+    ;;
   *)
     printf '# %%%%\nprint("hello from cell 1")\n\n# %%%%\nfor i in range(5):\n    print(f"Iteration {i}")\n\n# %%%%\nprint("Loop completed.")\n' >"$FIX" ;;
 esac

@@ -17,6 +17,15 @@ import { parse, type Cell } from "./serializer";
 import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
 import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
+import {
+  imageOf,
+  imageRefsOf,
+  widgetModelIdOf,
+  widgetFallbackText,
+  widgetPayload,
+  TITHON_WIDGET_MIME,
+  type WidgetState,
+} from "./richOutput";
 
 /**
  * Build serializer Cells from the IN-MEMORY notebook (the authoritative cell
@@ -41,34 +50,74 @@ function cellsFromNotebook(notebook: vscode.NotebookDocument): Cell[] {
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
 const STDERR_MIME = "application/vnd.code.notebook.stderr";
 
-/** Convert one folded output item into a VSCode notebook output item. */
-function toOutputItem(o: OutputItem): vscode.NotebookCellOutputItem {
+/** Render context: prefetched image bytes + the widget mirror (both sync). */
+interface RenderCtx {
+  /** Bytes of a prefetched image artifact, or undefined if not (yet) fetched. */
+  image(artifactId: string): Uint8Array | undefined;
+  widgets: WidgetState | null;
+}
+
+/**
+ * Convert one folded output item into VSCode notebook output item(s). Usually a
+ * single item; a widget yields two (the live renderer payload + a text fallback
+ * so a missing renderer / copy-paste still shows the value).
+ */
+function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutputItem[] {
   switch (o.output_type) {
     case "stream":
-      return vscode.NotebookCellOutputItem.text(o.text, o.name === "stderr" ? STDERR_MIME : STDOUT_MIME);
+      return [vscode.NotebookCellOutputItem.text(o.text, o.name === "stderr" ? STDERR_MIME : STDOUT_MIME)];
     case "error":
-      return vscode.NotebookCellOutputItem.error({
+      return [vscode.NotebookCellOutputItem.error({
         name: o.ename ?? "Error",
         message: o.evalue ?? "",
         stack: (o.traceback ?? []).join("\n"),
-      });
+      })];
     case "display_data":
     case "execute_result": {
-      // Pick a representative mime. Images were journaled as artifact refs
-      // ($tithon_artifact) — the renderer entry resolves those; here we prefer
-      // text/plain for the spike, falling back to JSON of the data bundle.
       const data = o.data ?? {};
-      const text = data["text/plain"];
-      if (typeof text === "string") {
-        return vscode.NotebookCellOutputItem.text(text, "text/plain");
+      // 1) Image (matplotlib inline): show the actual picture, not its "<Figure
+      //    ...>" text repr. PNG/JPEG were journaled as $tithon_artifact refs
+      //    whose bytes are prefetched into ctx; fall through to text if not ready.
+      const img = imageOf(o);
+      if (img?.ref) {
+        const bytes = ctx?.image(img.ref.artifact_id);
+        if (bytes) return [new vscode.NotebookCellOutputItem(bytes, img.mime)];
+      } else if (img?.base64) {
+        return [new vscode.NotebookCellOutputItem(Buffer.from(img.base64, "base64"), img.mime)];
       }
-      return vscode.NotebookCellOutputItem.json(data);
+      // 2) Vector image (text-based) — VSCode renders it natively.
+      const svg = data["image/svg+xml"];
+      if (typeof svg === "string") return [vscode.NotebookCellOutputItem.text(svg, "image/svg+xml")];
+      // 3) ipywidget (tqdm.notebook etc.): render it for real via the Tithon widget
+      //    renderer (html-manager) when the mirror state is known, carrying the
+      //    state in the output so the renderer needs no round-trip; keep a text
+      //    fallback alongside. Unknown model (fresh live run, state only in the
+      //    snapshot) -> §3.3 text fallback, else the display's own text/plain.
+      const modelId = widgetModelIdOf(o);
+      if (modelId) {
+        const payload = widgetPayload(o, ctx?.widgets ?? null);
+        if (payload) {
+          const items = [vscode.NotebookCellOutputItem.json(payload, TITHON_WIDGET_MIME)];
+          const fb = widgetFallbackText(modelId, ctx?.widgets ?? null);
+          if (fb) items.push(vscode.NotebookCellOutputItem.text(fb, "text/plain"));
+          return items;
+        }
+        const text = widgetFallbackText(modelId, ctx?.widgets ?? null);
+        if (text) return [vscode.NotebookCellOutputItem.text(text, "text/plain")];
+      }
+      // 4) HTML repr (pandas DataFrame etc.).
+      const html = data["text/html"];
+      if (typeof html === "string") return [vscode.NotebookCellOutputItem.text(html, "text/html")];
+      // 5) Plain text, else the raw data bundle.
+      const text = data["text/plain"];
+      if (typeof text === "string") return [vscode.NotebookCellOutputItem.text(text, "text/plain")];
+      return [vscode.NotebookCellOutputItem.json(data)];
     }
   }
 }
 
-function toCellOutput(outputs: OutputItem[], stale: boolean): vscode.NotebookCellOutput {
-  const out = new vscode.NotebookCellOutput(outputs.map(toOutputItem));
+function toCellOutput(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): vscode.NotebookCellOutput {
+  const out = new vscode.NotebookCellOutput(outputs.flatMap((o) => toOutputItems(o, ctx)));
   // Surface the §3.2 "stale" badge: the cell was edited since this run.
   if (stale) out.metadata = { tithonStale: true };
   return out;
@@ -86,11 +135,35 @@ class VSCodeCellSink implements CellSink {
   // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
   private readonly execs = new Map<number, { exec: vscode.NotebookCellExecution; started: boolean }>();
   private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
+  // Per-cell promise chain: image appends fetch bytes asynchronously, so the
+  // cell's done/end must queue behind them or VSCode rejects "execution ended".
+  private readonly tail = new Map<number, Promise<void>>();
 
   constructor(
     private readonly controller: vscode.NotebookController,
     private readonly notebook: vscode.NotebookDocument,
+    private readonly client: SessionClient,
   ) {}
+
+  /** Render context: prefetched image bytes (sync) + the widget mirror. */
+  private ctx(): RenderCtx {
+    return {
+      image: (id) => this.client.cachedArtifact(id)?.bytes,
+      widgets: this.client.widgets(),
+    };
+  }
+
+  /** Serialize async work per cell so image appends and the final end stay ordered. */
+  private chain(idx: number, work: () => Promise<void>): void {
+    const next = (this.tail.get(idx) ?? Promise.resolve()).then(work).catch(() => undefined);
+    this.tail.set(idx, next);
+  }
+
+  /** Prefetch every image artifact referenced by these outputs before rendering. */
+  async prefetch(items: OutputItem[]): Promise<void> {
+    const ids = items.flatMap((o) => imageRefsOf(o).map((r) => r.artifact_id));
+    if (ids.length) await this.client.prefetchArtifacts(ids);
+  }
 
   private cell(idx: number): vscode.NotebookCell | undefined {
     try {
@@ -181,7 +254,8 @@ class VSCodeCellSink implements CellSink {
         this.streamOut.set(`${idx}:${item.name}`, out);
         void e.appendOutput(out);
       } else {
-        void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
+        // Image bytes were prefetched by startLive before seeding, so ctx() resolves.
+        void e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
       }
     }
     if (state === "done" || state === "error") {
@@ -195,7 +269,19 @@ class VSCodeCellSink implements CellSink {
   appendOutput(idx: number, item: OutputItem): void {
     const e = this.ensureStarted(idx);
     if (!e) return;
-    void e.appendOutput(new vscode.NotebookCellOutput([toOutputItem(item)]));
+    const pending = imageRefsOf(item)
+      .map((r) => r.artifact_id)
+      .filter((id) => this.client.cachedArtifact(id) === undefined);
+    if (pending.length) {
+      // A live matplotlib figure: fetch its bytes, then append — queued on the
+      // cell's chain so the trailing `done` end() waits for the image to land.
+      this.chain(idx, async () => {
+        await this.client.prefetchArtifacts(pending);
+        await e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
+      });
+    } else {
+      void e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
+    }
   }
 
   updateDisplay(idx: number, _displayId: string, item: OutputItem): void {
@@ -218,16 +304,20 @@ class VSCodeCellSink implements CellSink {
       this.ensureStarted(idx, tsMs);
       return;
     }
-    // done / error: must be started before it can be ended.
+    // done / error: must be started before it can be ended. Queue the end on the
+    // cell's chain so any in-flight image append (fetched async) lands first.
     const rec = this.execs.get(idx);
     if (rec) {
-      if (!rec.started) {
-        rec.exec.start(tsMs ?? Date.now());
-        rec.started = true;
-      }
-      rec.exec.end(status === "done", tsMs ?? Date.now());
       this.execs.delete(idx);
       this.forgetStreams(idx);
+      const endMs = tsMs ?? Date.now();
+      this.chain(idx, async () => {
+        if (!rec.started) {
+          rec.exec.start(endMs);
+          rec.started = true;
+        }
+        rec.exec.end(status === "done", endMs);
+      });
     }
   }
 
@@ -261,6 +351,16 @@ export class TithonNotebookController {
   private readonly selectionSub: vscode.Disposable;
   /** Clickable status-bar indicator showing/selecting the kernel's Python. */
   readonly pyStatus: vscode.StatusBarItem;
+  /** Channel to the ipywidget notebook renderer (live updates + render outcome). */
+  private readonly widgetMessaging: vscode.NotebookRendererMessaging;
+  /** Render outcomes reported by the widget renderer (html|fallback) — for verify. */
+  readonly widgetRenders: Array<{ model_id?: string; mode?: string }> = [];
+  /** Count of live widget updates the renderer applied (live animation) — for verify. */
+  widgetUpdatesApplied = 0;
+  // Coalesced live widget-state deltas pushed to the renderer (latest per comm id,
+  // flushed ~50ms) so a 50k-update tqdm.notebook animates without flooding it.
+  private readonly widgetUpdateBuf = new Map<string, Record<string, unknown>>();
+  private widgetFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
@@ -268,6 +368,21 @@ export class TithonNotebookController {
     this.pyStatus.command = "tithon.selectInterpreter";
     this.pyStatus.text = "$(snake) Tithon";
     this.pyStatus.tooltip = "Tithon: select Python interpreter";
+    // Renderer channel: the widget renderer reports whether it painted html vs the
+    // text fallback (surfaced for verification), and we push live comm deltas to it.
+    this.widgetMessaging = vscode.notebooks.createRendererMessaging("tithon-widget");
+    this.widgetMessaging.onDidReceiveMessage((e) => {
+      const m = e.message as { type?: string; model_id?: string; mode?: string; comm_id?: string };
+      if (m?.type === "tithon.widget-rendered") {
+        this.widgetRenders.push({ model_id: m.model_id, mode: m.mode });
+        console.log(`[tithon] widget rendered: ${m.mode} (${m.model_id})`);
+      } else if (m?.type === "tithon.widget-updated") {
+        this.widgetUpdatesApplied += 1;
+        if (this.widgetUpdatesApplied <= 3 || this.widgetUpdatesApplied % 10 === 0) {
+          console.log(`[tithon] widget updated x${this.widgetUpdatesApplied} (${m.comm_id})`);
+        }
+      }
+    });
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
     this.controller.supportsExecutionOrder = false;
@@ -320,6 +435,27 @@ export class TithonNotebookController {
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
     }
+  }
+
+  /** Coalesce a live comm-state delta for the widget renderer (latest per comm id). */
+  private queueWidgetUpdate(payload: { msg_type?: string; comm_id?: string; data?: any } | undefined): void {
+    if (payload?.msg_type !== "comm_msg" || !payload.comm_id) return;
+    const data = payload.data ?? {};
+    if (data.method !== "update" && data.method !== "echo_update") return;
+    const merged = { ...(this.widgetUpdateBuf.get(payload.comm_id) ?? {}), ...(data.state ?? {}) };
+    this.widgetUpdateBuf.set(payload.comm_id, merged);
+    if (!this.widgetFlushTimer) {
+      this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
+    }
+  }
+
+  /** Push the coalesced widget deltas to the renderer so live widgets animate. */
+  private flushWidgetUpdates(): void {
+    this.widgetFlushTimer = null;
+    for (const [comm_id, state] of this.widgetUpdateBuf) {
+      void this.widgetMessaging.postMessage({ type: "tithon.widget-update", comm_id, state });
+    }
+    this.widgetUpdateBuf.clear();
   }
 
   /** Show the kernel's Python version on the controller label + status bar. */
@@ -410,6 +546,7 @@ export class TithonNotebookController {
   dispose(): void {
     this.selectionSub.dispose();
     this.pyStatus.dispose();
+    if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
     this.controller.dispose();
@@ -478,6 +615,14 @@ export class TithonNotebookController {
     await client.attach(0);
     try {
       const attachments = client.restoreInto(cells, notebook.uri.toString());
+      // Prefetch every image artifact before rendering so figures restore as
+      // pictures, not "<Figure ...>" placeholders.
+      const allOutputs = [...attachments.values()].flatMap((a) => a.outputs as OutputItem[]);
+      await client.prefetchArtifacts(allOutputs.flatMap((o) => imageRefsOf(o).map((r) => r.artifact_id)));
+      const ctx: RenderCtx = {
+        image: (id) => client.cachedArtifact(id)?.bytes,
+        widgets: client.widgets(),
+      };
       for (const [cellIndex, att] of attachments) {
         let cell: vscode.NotebookCell;
         try {
@@ -487,7 +632,7 @@ export class TithonNotebookController {
         }
         const exec = this.controller.createNotebookCellExecution(cell);
         exec.start(Date.now());
-        await exec.replaceOutput(toCellOutput(att.outputs as OutputItem[], att.stale));
+        await exec.replaceOutput(toCellOutput(att.outputs as OutputItem[], att.stale, ctx));
         exec.end(!att.stale, Date.now());
       }
     } finally {
@@ -510,7 +655,7 @@ export class TithonNotebookController {
     // Surface the kernel's Python version on the controller (the picker/indicator
     // showed only "Tithon"; now "Tithon · Python 3.11.5").
     this.applyKernelLabel(client.kernelInfo()?.python ?? null);
-    const sink = new VSCodeCellSink(this.controller, notebook);
+    const sink = new VSCodeCellSink(this.controller, notebook, client);
     const live = new LiveOutputSync(
       cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
       sink,
@@ -518,6 +663,11 @@ export class TithonNotebookController {
     );
     const execs = client.executions();
     live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));
+    // Prefetch image bytes for the snapshot so seedCell renders matplotlib
+    // figures synchronously below (and not as a "<Figure ...>" placeholder).
+    // Events arriving during this await are captured by outputsOf() at seed time
+    // and live events are wired only afterwards — no gap, no duplication.
+    await sink.prefetch(execs.flatMap((e) => client.outputsOf(e.execId)));
     // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
     // STATE+timing into the cell NOW, before wiring live events — a done cell
     // shows ✓ with its real duration, a running cell shows the spinner started at
@@ -542,7 +692,13 @@ export class TithonNotebookController {
     const changeSub = vscode.workspace.onDidChangeNotebookDocument((e) => {
       if (e.notebook.uri.toString() === notebook.uri.toString()) refresh();
     });
-    client.onEvent((ev) => live.onEvent(ev));
+    client.onEvent((ev) => {
+      live.onEvent(ev);
+      // Comm deltas drive live widget animation: forward state patches to the
+      // renderer (the display_data already rendered the widget; this just updates
+      // the model so e.g. a tqdm.notebook bar fills in real time).
+      if (ev.kind === "widget") this.queueWidgetUpdate(ev.payload);
+    });
     return {
       dispose: () => {
         changeSub.dispose();
@@ -600,6 +756,10 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         vscode.window.showErrorMessage(`Tithon daemon restart: ${String(err)}`);
       }
     }),
+    // Test-only: lets the integration suite confirm the widget renderer painted
+    // html (vs the text fallback) and applied live animation updates.
+    vscode.commands.registerCommand("tithon._widgetRenderLog", () => controller.widgetRenders),
+    vscode.commands.registerCommand("tithon._widgetUpdateCount", () => controller.widgetUpdatesApplied),
   );
   return controller;
 }

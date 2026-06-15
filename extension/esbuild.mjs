@@ -24,8 +24,25 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// NOTE: the ipywidget renderer (widgetRendererEntry + @jupyter-widgets) is NOT
-// bundled/shipped. It's unverified in real VSCode (jsdom-only) and would add
-// ~3MB; none of the verified output paths (stdout/stream/result/error/image)
-// use it. The source is kept; re-enable here + restore the `notebookRenderer`
-// contribution when ipywidget rendering is actually verified in a real host.
+// ipywidget renderer (design.md §3.3): runs INSIDE the notebook webview, so it
+// must be a self-contained browser ESM bundle (it cannot require @jupyter-widgets
+// from node_modules there). ~3MB with html-manager + base + controls + the
+// ipywidgets CSS (inlined as text and injected into the webview). Loaded via the
+// `notebookRenderer` contribution; verified in a real host by verify/v29.
+await esbuild.build({
+  entryPoints: ["src/widgetRendererEntry.ts"],
+  outfile: "dist/widgetRenderer.js",
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: "es2020",
+  loader: {
+    ".css": "text", // injected as a <style> by the renderer entry
+    ".svg": "text",
+    ".eot": "empty",
+    ".ttf": "empty",
+    ".woff": "empty",
+    ".woff2": "empty",
+  },
+  logLevel: "info",
+});

@@ -6,3 +6,4 @@
 !package.json
 !README.md
 !dist/extension.js
+!dist/widgetRenderer.js

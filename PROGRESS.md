@@ -1,8 +1,83 @@
 # PROGRESS
 
-## 현재 상태 (2026-06-14)
-**파일별 커널/세션 + 2차 사용자 버그(#1~#6) + 데몬 자동시작·커널 Python 버전 라벨 (ext 0.0.8).**
-`make verify` 8/8 + `make verify-c` 3/3 + `make verify-d` 14/14 PASS, vitest 50, daemon pytest 32.
+## 현재 상태 (2026-06-15)
+**파일별 커널/세션 + 데몬 자동시작 + 패키징·UX 라운드 + matplotlib·tqdm 출력 + tqdm.notebook 위젯(정적+라이브) (ext 0.0.13).**
+suite 구성: `make verify-a` 4(v1~v4), `make verify-b` 2(v5~v6), `make verify-c` 4(v7·v9·v17·v27),
+`make verify-d` 20(v8·v10~v16·v18~v30 실 VSCode), `make verify`(all) 8(v1~v7·v9).
+이번 세션: **daemon pytest 36/36**, **vitest 57 pass/6 skip**(richOutput 7 + richDaemon 4 + widget jsdom 5),
+**verify-c 4/4 PASS**, **실 VSCode v28·v29·v30 PASS**(+ shot richoutputs/widget/widgetlive 픽셀 — matplotlib
+그림 · 초록 막대 100% · 블루 막대 34% 실행 중). verify-d 전체 재실행은 백그라운드 진행 중.
+
+### matplotlib inline + tqdm 출력 지원 (ADR-034, v27/v28, Option 1)
+이전엔 matplotlib figure가 셀에 "<Figure size 640x480 with 1 Axes>" **텍스트로만** 떴다 —
+`toOutputItem`이 display_data에서 text/plain을 우선 골랐고, 데몬이 png를 `$tithon_artifact`
+파일로 추출해 두었지만 클라이언트가 그 바이트를 받을 경로가 없었다. 수정:
+- **데몬 `get_artifact` op**(세션 스코프, `Session.read_artifact`): 아티팩트 파일 바이트를 base64로
+  같은 unix 소켓에 반환. 저널엔 base64 안 들어가는 §3.1 유지 + 공유 FS 가정 없음 + sha 디둡(고유
+  이미지당 1회 fetch).
+- **클라이언트**: `SessionClient.getArtifact`(캐시)/`cachedArtifact`(동기)/`prefetchArtifacts` +
+  `widgets()`(미러 스냅샷). 순수 헬퍼 `richOutput.ts`(imageOf/imageRefsOf/widgetModelIdOf/widgetFallbackText).
+- **렌더**: `toOutputItem`이 이미지 바이트 > svg > 위젯-view 텍스트폴백 > html > text/plain 순.
+  matplotlib는 prefetch한 바이트로 `image/png` 출력 아이템. tqdm.notebook 위젯은 §3.3 폴백 —
+  미러에서 HBox children 순회로 `100% |████| 5/5 [time]` **최종 막대** 재구성(모델 미상=라이브 첫
+  실행이면 display의 text/plain "0%…"로 폴백). 라이브 이미지 append 후 done end()가 "execution
+  ended" 거부하지 않게 VSCodeCellSink에 per-cell promise chain.
+- **터미널 tqdm**(`from tqdm import tqdm`, stderr `\r`)은 stream fold로 이미 동작 — 검증만 추가.
+- **스코프 한정**: 위젯 풀렌더(html-manager 커스텀 렌더러, §6⑤ 최대 리스크)는 분리; update_display_data
+  인플레이스 갱신 미구현. 라이브 tqdm.notebook은 0% 시작상태만(최종 막대는 재접속/restore 시 복원).
+- 검증: v27(hermetic 실데몬 3) + v28(실 VSCode: image/png PNG매직 20KB + 터미널 tqdm 100% +
+  restore 위젯 "100% 5/5") + shot richoutputs. 데몬 venv에 matplotlib/matplotlib_inline 필요.
+
+### tqdm.notebook ipywidget 렌더러 — 정적/재접속 (ADR-035, v29, §6⑤)
+ADR-034의 텍스트 폴백을 넘어 **실제 위젯**을 실 VSCode webview에서 렌더(프로젝트 최대 리스크 §6⑤ 통과).
+- **자체완결 커스텀 mime** `application/vnd.tithon.widget+json` = `{model_id, state(미러 전체)}` → 렌더러가
+  호스트 왕복 없이 html-manager로 즉시 렌더(state-도착-전-render 레이스 제거).
+- esbuild 렌더러 번들(browser/esm, 3.3MB, html-manager+base+controls+widgets.built.css 인라인→`<style>`
+  주입). package.json `notebookRenderer`(**`requiresMessaging:"optional"` 필수** — 없으면 postMessage no-op,
+  첫 v29 실패 원인) + `.vscodeignore`.
+- `toOutputItem`→`toOutputItems`(배열): widget-view는 미러에 모델 있으면 위젯 mime+텍스트폴백, 없으면 텍스트.
+- 렌더러 엔트리: `{model_id,state}` 읽어 html-manager 렌더, 실패 시 텍스트 폴백, html|fallback을 host로 보고
+  (`tithon._widgetRenderLog` 테스트 명령). output id별 manager 캐시(라이브 업데이트 대비).
+- 검증 v29(실 VSCode: tqdm.notebook→restore→위젯 mime + 렌더러 **html 보고**) + shot widget(픽셀: 초록 막대).
+
+### tqdm.notebook 라이브 애니메이션 (ADR-036, v30, Phase 3) ✅
+정적 렌더(ADR-035)를 넘어 **막대가 실행 중 실시간으로 채워짐**(restore 불요):
+- **데몬**: widget 이벤트 payload에 comm `data`(state) 포함 → 클라가 라이브 미러 구축 가능.
+- **클라이언트**: `SessionClient.applyEvent`가 widget 이벤트로 라이브 미러(`applyWidgetEvent`: open/msg/close).
+  comm_open이 display_data보다 먼저 와서 표시 시점에 모델 존재 → **라이브 중 위젯 mime 방출**.
+- **컨트롤러**: startLive onEvent가 widget 델타를 comm_id별 coalesce(50ms)해 렌더러로 `tithon.widget-update`
+  푸시 → 렌더러 `model.set_state`로 막대 애니메이트, 적용 시 `widget-updated` 보고(카운트 `_widgetUpdateCount`).
+- 검증 v30(실 VSCode: 라이브 실행 중 위젯 mime + html 렌더 + 업데이트 적용>0) + shot widgetlive(픽셀: 34% 실행중)
+  + hermetic richDaemon(driver 실행 전 attach→라이브 미러 value==max).
+- **남은 것**: 위젯→커널 **양방향**(슬라이더 드래그 등 §3.3 bidirectional)은 미구현(tqdm은 display-only라 불요);
+  바이너리 버퍼 위젯의 라이브 갱신은 버퍼 생략(정적 스냅샷 렌더는 처리).
+
+### 패키징·인터프리터·UX 라운드 (ADR-029~033, v24~v26, ext 0.0.9→0.0.12)
+PROGRESS가 0.0.8에서 멈춰 있던 구간을 갱신 — 실 tunnel 사용자 피드백 후속:
+- **vsix 번들링** (ADR-029, 0.0.9): `vsce package --no-dependencies`가 런타임 의존 `ws`를 빠뜨려
+  활성화가 `Cannot find module 'ws'`로 실패(.py를 못 엶). `esbuild.mjs`로 src를 dist/extension.js에
+  번들(ws 인라인) → vsix 4파일·37KB. 통합테스트는 소스로 로드해 이 결함을 못 잡음 → vsix 자체를
+  활성화까지 검증해야 한다는 교훈. ipywidget 렌더러(~3MB, jsdom 전용 미검증)는 이 패키지에서 제외.
+- **인터프리터 기준 데몬 기동** (ADR-030, 0.0.10): jupyter처럼 "venv 활성화 없이 그냥 되게". `__main__.py`
+  추가(`python -m tithon`), daemonProcess.resolvePython()이 ms-python 활성 인터프리터를 찾아
+  `"<python>" -m tithon daemon`을 1순위 spawn. 각 후보는 곧 죽으면 fast-fail→다음 후보, 전부 실패 시
+  데몬 로그 꼬리+시도 명령을 에러로 노출(이전 0.0.9는 단일 후보 20s 타임아웃→"daemon did not come up").
+- **셀 stop 버튼** (ADR-031, 0.0.11): `controller.interruptHandler`→데몬 SIGINT(os.kill(kernel.pid,SIGINT)).
+  실행 셀은 KeyboardInterrupt→✗로 종료, **커널 생존**해 재실행 가능. v24(루프→중단→tick 멈춤+재실행 RUN2).
+- **.py 텍스트 기본 + Cell View opt-in** (ADR-032): selector `*.py` 유지(openWith 동작) + 활성화 시
+  `editorAssociations["*.py"]="default"`로 텍스트에 양보(사용자 지정 연관은 가드). 명령 openAsCellView/
+  openAsText + 제목줄 버튼/CodeLens. v25(open→텍스트, openAsCellView→tithon-py 노트북 실행).
+- **Select Python Interpreter + 데몬 재시작** (ADR-033, 0.0.12): 커널은 데몬 Python(sys.executable)으로
+  뜨므로 인터프리터는 데몬 전역 → 변경엔 재시작 필요. 데몬 `shutdown[--kill-kernels]` op 추가,
+  waitForDaemonStop은 **소켓이 아니라 pid 파일 소멸 대기**(너무 일찍 반환→preflight "already running"
+  레이스 회피). selectInterpreter QuickPick→pythonPath 저장→확인→restartDaemon(라이브 dispose→shutdown→
+  대기→ensureDaemon→re-live). 상태바 `$(snake) Tithon: Python x.y`. v26(재시작→데몬·커널 pid 변경+카운터 리셋).
+
+### 진행 중(미커밋) — daemon src 레이아웃 재구조화
+워킹트리에 staged 상태로 `daemon/tithon/` → `daemon/src/tithon/`(9파일 rename),
+`pyproject.toml [tool.hatch...].packages = ["src/tithon"]`, `prompts/` 삭제가 올라가 있음.
+import는 정상(`daemon/src/tithon/__init__.py`에서 로드 OK). **verify v*.sh가 옛 경로를 하드코딩하지
+않는지 `make verify` 통과로 확인 후 커밋할 것** — 미검증 상태.
 
 ### 데몬 자동시작 + 커널 Python 버전 (ADR-028, v23)
 - **데몬 자동시작**: `daemonProcess.ts` ensureDaemon이 소켓 연결 실패 시 `tithon daemon`을 detached
@@ -74,7 +149,7 @@
   delta-append + dirty-set + cell_hash 메모이즈(ADR-017). `sessionClient.ts`에 onEvent 훅 추가.
 - extension/src/`sessionController.ts`: `VSCodeCellSink`(proxy execution + appendOutputItems) +
   `startLive()`. extension.ts/package.json에 `tithon.startLive` 커맨드.
-- daemon/tithon/`daemon.py`: 백프레셔(ADR-018) — Subscriber 큐 상한 + SEND_TIMEOUT drop +
+- daemon/src/tithon/`daemon.py`: 백프레셔(ADR-018) — Subscriber 큐 상한 + SEND_TIMEOUT drop +
   write_limit(transport 버퍼 bound) + SO_SNDBUF. 상한/타임아웃 env 조정 가능(기본=프로덕션).
 - test: `liveSync.test.ts`(7, coalescing 상한·순서·\r·clear) · `test_backpressure.py`(4, 큐 bound +
   send-stall drop) · `restore`/`live` 실 VSCode(v8/v10) · `v9.sh`(호스트 건강성).
@@ -118,7 +193,7 @@
     `widgetRendererEntry.ts`: Cell View·"Run Cell" CodeLens→데몬 execute·위젯 렌더러
     엔트리(스파이크). `tsc -p` 빌드 통과.
   - test/: serializer(코퍼스 8 + 1000케이스 property) · cellAttach · widget(jsdom) = 25 tests.
-- daemon/tithon/`widgets.py`: Widget State Mirror(comm 해석, 바이너리 버퍼, widget-state+json).
+- daemon/src/tithon/`widgets.py`: Widget State Mirror(comm 해석, 바이너리 버퍼, widget-state+json).
   daemon.py에 통합(iopub comm 처리 → 미러·저널·브로드캐스트, 스냅샷에 widgets 포함,
   재시작 시 _rebuild_mirror). pytest test_widgets.py 9개(버퍼 포함).
 - verify/v5.sh(tqdm 5만→fresh attach FloatProgress value==max==total + jsdom 렌더 + 미러
@@ -129,7 +204,7 @@
 
 ## (이전) Stage A 완료 — `make verify-a` 4/4 PASS (종료코드 0), pytest 16/16 통과.
 
-- daemon/tithon 패키지: 데몬 + CLI 구현 완료
+- daemon/src/tithon 패키지: 데몬 + CLI 구현 완료
   - `folding.py`: folded 스냅샷 순수 로직 (\r/\n/\b 터미널 의미론, clear_output(wait),
     update_display_data display_id별 최종본). pytest 16개.
   - `journal.py`: SQLite WAL 저널 (executions/messages/artifacts, §3.1).
@@ -152,9 +227,14 @@
   additive 마이그레이션(ALTER TABLE ADD COLUMN cell_hash). pytest 28, vitest 27, verify 6/6.
 
 ## 다음 단계 (Phase 1 진행 중)
-- ✅ ①~⑩ + 1차(#1~#7) + 2차(#1~#6 파일별 커널) + 데몬 자동시작·Python 라벨 — verify 8/8 + verify-c 3/3 + verify-d 14/14.
+- ✅ ①~⑩ + 1차(#1~#7) + 2차(#1~#6 파일별 커널) + 데몬 자동시작·Python 라벨(0.0.8) +
+  vsix 번들·인터프리터 기동·stop 버튼·.py 텍스트 기본·인터프리터 선택/재시작(0.0.9~0.0.12) +
+  **matplotlib inline 이미지 + tqdm 출력(0.0.13, ADR-034)**.
 - 다음 후보:
-  - 위젯 라이브: tqdm 위젯 미러 스냅샷을 라이브 경로로 렌더(현재 stream/result/error 렌더; 위젯은 복원만).
+  - **vsix 재패키징**: 0.0.13 esbuild 번들 + .vsix(사용자 설치용) — 출력기능은 소스 검증됨, vsix 미생성.
+  - **src 레이아웃 커밋**: 미커밋 재구조화를 `make verify` 통과 확인 후 커밋(verify 경로 하드코딩 점검).
+  - **위젯 양방향(§3.3 bidirectional)**: 슬라이더 드래그 등 위젯→커널 comm_msg 프록시 + echo 브로드캐스트.
+    현재는 display-only(tqdm.notebook 정적+라이브 ✅, ADR-035/036); 인터랙티브 위젯은 이 조각 필요.
   - update_display_data 인플레이스 갱신(현재 sessionController는 append 스파이크) — 매칭 출력 교체.
   - 세션 GC: 닫힌 파일의 커널 수명 정책(현재 커널은 detached로 계속 생존; idle 종료/명시 종료 UI 필요).
   - tunnel 시나리오 문서화 갱신(파일별 커널 + 커널 재시작/인터럽트 UI).

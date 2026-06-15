@@ -312,7 +312,15 @@ class Session:
                 "seq": seq,
                 "exec_id": exec_id,
                 "kind": "widget",
-                "payload": {"msg_type": msg_type, "comm_id": content.get("comm_id")},
+                # Carry the comm data (state patch) so a live client mirrors the
+                # widget as it changes — that's what makes a tqdm.notebook bar
+                # animate live (not just restore on reconnect). Binary buffers are
+                # omitted here (tqdm has none); the snapshot still carries them.
+                "payload": {
+                    "msg_type": msg_type,
+                    "comm_id": content.get("comm_id"),
+                    "data": content.get("data"),
+                },
             }
         )
 
@@ -440,6 +448,30 @@ class Session:
             "max_seq": self.journal.max_seq(),
             "executions": len(self.journal.executions()),
             "widget_models": len(self._mirror),
+        }
+
+    def read_artifact(self, artifact_id: str) -> dict:
+        """Return a rich-output artifact's bytes (base64) by id.
+
+        Images are stored as files on disk (design.md §3.1) and journaled only
+        as ``$tithon_artifact`` references, so a client renders them by fetching
+        the bytes on demand over the same unix socket (no base64 in the journal,
+        no shared-filesystem assumption). Deduped by sha, so each unique image is
+        fetched at most once per client.
+        """
+        row = self.journal.find_artifact(artifact_id)
+        if row is None:
+            return {"artifact_id": artifact_id, "found": False}
+        _, _, mime, rel_path, _ = row
+        try:
+            raw = (self.artifacts.workdir / rel_path).read_bytes()
+        except OSError:
+            return {"artifact_id": artifact_id, "found": False}
+        return {
+            "artifact_id": artifact_id,
+            "mime": mime,
+            "data_b64": base64.b64encode(raw).decode("ascii"),
+            "found": True,
         }
 
     async def sub_pump(self, ws, sub: Subscriber, cutoff: int) -> None:
@@ -617,6 +649,9 @@ class Daemon:
                 elif op == "restart_kernel":
                     pid = await session.restart_kernel()
                     await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
+                elif op == "get_artifact":
+                    art = session.read_artifact(msg.get("artifact_id", ""))
+                    await ws.send(json.dumps({"op": "artifact", **art}))
                 elif op == "status":
                     await ws.send(json.dumps({"op": "status_reply", **session.status()}))
         finally:
