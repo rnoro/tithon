@@ -26,12 +26,20 @@
 2. 구현 → `make verify-a`(또는 -b) 실행 → **요약 테이블 전체를 대화에 그대로 출력**한다.
    (goal 평가자는 대화만 본다. 출력을 생략하면 진행이 인정되지 않는다)
 3. 턴 종료 전: PROGRESS.md 갱신(완료/다음/막힌 것), 의미 있는 설계 판단은 DECISIONS.md에
-   ADR 한 줄 요약으로 추가, 마일스톤마다 git commit (메시지: "p0: <항목> <내용>").
+   ADR 한 줄 요약으로 추가, 마일스톤마다 git commit 한다. 커밋 메시지는 **Conventional Commits**
+   컨벤션을 따른다: `type(scope): summary` (type = feat/fix/refactor/test/docs/build/chore 등,
+   scope = daemon/extension/verify 등 선택). 예: `feat(extension): render ipywidget outputs`.
 4. 같은 실패가 3회 반복되면 같은 방법을 더 시도하지 말 것: 실패 가설을 PROGRESS.md에
    기록하고 접근을 바꾼다(디버그 로그 추가 → 최소 재현 스크립트 분리 → 설계 재검토 순).
 5. 컨텍스트가 compact되어도 PROGRESS.md/DECISIONS.md만으로 작업을 복구할 수 있어야 한다 —
    "머릿속에만 있는 상태"를 만들지 말 것. 반복해서 쓰는 환경 지식(예: 커널 spawn 시
    주의점)은 메모리에 저장해 다음 세션에서도 쓰이게 한다.
+6. 구현 루프를 최종 종료할 때(턴 종료)마다 테스트가 남긴 잔여 커널/데몬을 정리한다 —
+   verify 스크립트는 `/tmp/tithon-*` 임시 TITHON_HOME에 detached 커널을 띄우는데, 이들이
+   쌓이면 시스템 자원을 잠식하고 커널 spawn 타이밍 레이스로 격리 테스트를 플레이크시킨다.
+   이 정리는 `.claude/settings.json`의 Stop 훅으로 자동 수행된다(수동 보강이 필요하면
+   `pkill -f '[i]pykernel_launcher.*-f /tmp/tithon'` — `[i]` 문자클래스는 pkill -f가 자기
+   자신의 명령줄을 매칭해 셸을 죽이는 self-kill을 피한다).
 
 ## 안티치팅 (절대 규칙)
 - verify/ 스크립트는 결과를 약화시키는 방향으로 수정 금지. 버그 수정·검증 강화·항목 추가만

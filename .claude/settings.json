@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pkill -f '[i]pykernel_launcher.*-f /tmp/tithon' 2>/dev/null; true",
+            "statusMessage": "Cleaning leftover Tithon test kernels"
+          }
+        ]
+      }
+    ]
+  }
+}
