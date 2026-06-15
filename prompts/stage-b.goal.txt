@@ -1,1 +1,0 @@
-/goal `make verify-b`가 종료코드 0으로 끝나고 출력 마지막에 "VERIFY-B SUMMARY: 2/2 PASS"가 있으며, v5·v6의 RESULT 라인을 포함한 전체 출력이 대화에 표시되어 있고(폴백 전환 시 그 근거가 DECISIONS.md에 커밋되어 있고), vitest·pytest 전체 통과 출력이 대화에 있으며, 작업이 git commit 되어 있고, PROGRESS.md에 Stage B 완료 상태가 기록되어 있다.

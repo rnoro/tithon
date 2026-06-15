@@ -1,1 +1,0 @@
-/goal `make verify-a`가 종료코드 0으로 끝나고 출력 마지막에 "VERIFY-A SUMMARY: 4/4 PASS"가 있으며, v1~v4 각각의 RESULT 라인을 포함한 전체 출력이 대화에 표시되어 있고, pytest 전체가 통과한 출력도 대화에 있으며, 작업이 git commit 되어 있고, PROGRESS.md에 Stage A 완료 상태가 기록되어 있다.
