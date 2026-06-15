@@ -1,12 +1,19 @@
 /**
- * Launch a real VSCode Extension Host (via @vscode/test-electron) and run the
- * restore integration suite inside it. Driven by scripts/v8.sh, which starts a
- * daemon, seeds executions, and passes TITHON_HOME / TITHON_FIXTURE in the env.
+ * Launch a real VSCode Extension Host (via @vscode/test-electron) and run an
+ * integration suite inside it. Driven by the vN.sh scripts, which start a
+ * daemon, seed executions, and pass TITHON_HOME / TITHON_FIXTURE / TITHON_SUITE
+ * (and, for the LSP suite, TITHON_LSP_EXT_DIR) in the env.
  */
 import * as path from "path";
 import { runTests } from "@vscode/test-electron";
 
 async function main(): Promise<void> {
+  // When this harness runs inside a VSCode server/tunnel, the inherited env has
+  // ELECTRON_RUN_AS_NODE=1 — which makes the desktop Electron we spawn run as
+  // plain Node, treating the workspace folder as a script ("Cannot find module
+  // …/work"). Strip it so the test host boots as a real Electron app.
+  delete process.env.ELECTRON_RUN_AS_NODE;
+
   // out-int/integration/runTest.js -> ../../ is the extension root.
   const extensionDevelopmentPath = path.resolve(__dirname, "../../");
   const extensionTestsPath = path.resolve(__dirname, "./suite/index");
@@ -21,6 +28,15 @@ async function main(): Promise<void> {
   const home = process.env.TITHON_HOME;
   const userDataDir = home ? path.join(home, "vscode-user") : undefined;
 
+  // Most suites run hermetically with --disable-extensions (only our dev
+  // extension loads). The LSP suite (v32) instead needs real notebook-aware
+  // Python language servers (ruff/ty) live, so it passes TITHON_LSP_EXT_DIR — a
+  // curated extensions dir — and we drop --disable-extensions for that run.
+  const lspExtDir = process.env.TITHON_LSP_EXT_DIR;
+  const extArgs = lspExtDir
+    ? [`--extensions-dir=${lspExtDir}`]
+    : ["--disable-extensions"];
+
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
@@ -33,13 +49,13 @@ async function main(): Promise<void> {
       "--skip-welcome",
       "--skip-release-notes",
       "--disable-workspace-trust",
-      // keep other installed extensions out; our dev extension still loads.
-      "--disable-extensions",
+      ...extArgs,
       ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
     ],
     extensionTestsEnv: {
       TITHON_HOME: process.env.TITHON_HOME ?? "",
       TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
+      TITHON_HELPER: process.env.TITHON_HELPER ?? "",
       TITHON_SUITE: process.env.TITHON_SUITE ?? "",
     },
   });
