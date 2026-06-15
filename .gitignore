@@ -1,4 +1,4 @@
-# ================================ Python ================================
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,7 +24,7 @@ htmlcov/
 .venv/
 daemon/.venv/
 
-# ========================== Node / TypeScript ==========================
+# Node / TypeScript
 node_modules/
 *.tsbuildinfo
 .eslintcache
@@ -37,22 +37,30 @@ coverage/
 *.tgz
 .npm
 
-# ============================== Project ================================
+# Project
 # tithon daemon state (socket, journal, kernel connection files)
 .tithon/
+
 # esbuild output
 dist/
 out-int/
+
 # VSCode extension test runner
 .vscode-test/
+
 # packaged extension
 *.vsix
-# screenshot render artifacts
+
+# screenshot render artifacts during script test
 scripts/screenshots/
+
 # daemon startup log (nohup)
 nohup.out
 
-# ================================= OS =================================
+# Local Agent
+.claude/
+
+# OS
 .DS_Store
 Thumbs.db
 *.swp
