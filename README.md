@@ -76,14 +76,13 @@ can connect and disconnect at any time and always converge on the same state.
 ### Daemon + CLI
 
 ```bash
-cd daemon
-uv venv                          # create .venv (Python 3.11+)
-uv pip install -e '.[dev]'       # installs the `tithon` CLI
-uv pip install ipywidgets        # optional: needed for ipywidgets/tqdm.notebook
+uv sync                          # create .venv (Python 3.11+), install tithon + dev deps
 ```
 
-This puts a `tithon` entry point in `daemon/.venv/bin`. Activate the venv, or
-call `daemon/.venv/bin/tithon` directly.
+This puts a `tithon` entry point in `.venv/bin`. Run it with `uv run tithon …`,
+or call `.venv/bin/tithon` directly. Dependencies are managed with
+[uv](https://docs.astral.sh/uv/): runtime deps in `[project.dependencies]`, dev
+and verification deps in `[dependency-groups]`, all pinned by `uv.lock`.
 
 ### VSCode extension
 
@@ -258,13 +257,12 @@ rationale.
 ## Repository layout
 
 ```
-daemon/      Python 3.11+ package: the daemon and CLI
-  tithon/    daemon.py kernel.py journal.py folding.py widgets.py artifacts.py cli.py
-  tests/     pytest unit tests
-extension/   TypeScript VSCode extension (npm, vitest, + integration/ for electron)
-verify/      end-to-end verification scripts (v1–v10) + shared lib
-docs/        SPEC.md (design source of truth, maturity & verification)
-Makefile     verify / verify-a..d / test
+src/tithon/    Python 3.11+ package: daemon.py kernel.py journal.py folding.py widgets.py artifacts.py cli.py
+test/          pytest unit tests
+extension/     TypeScript VSCode extension (npm, vitest, + integration/ for electron)
+scripts/       end-to-end verification scripts (v1–v30) + shared lib + Makefile
+docs/          SPEC.md (design source of truth, maturity & verification)
+pyproject.toml package + dependencies (uv); pinned by uv.lock
 ```
 
 ---
@@ -272,12 +270,12 @@ Makefile     verify / verify-a..d / test
 ## Development & testing
 
 ```bash
-make verify        # hermetic end-to-end suite
-make test          # daemon unit tests (pytest)
+make -C scripts verify     # hermetic end-to-end suite
+uv run pytest              # Python unit tests
 cd extension && npm test   # extension unit tests (vitest)
 ```
 
-The real-VSCode integration tests (`make verify-d`) download VSCode and run it
+The real-VSCode integration tests (`make -C scripts verify-d`) download VSCode and run it
 under `xvfb`; see [`docs/SPEC.md`](docs/SPEC.md) for the full suite
 breakdown, prerequisites, and current implementation maturity. Project decisions
 are recorded as ADRs in [`DECISIONS.md`](DECISIONS.md), and ongoing work in

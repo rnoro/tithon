@@ -12,16 +12,24 @@ dependencies = [
 [project.scripts]
 tithon = "tithon.cli:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
-    "matplotlib",
-    "tqdm",
-]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tithon"]
+
+# Dev dependencies (PEP 735). `uv sync` installs this group by default. These are
+# what you need to develop and run the verification scripts: matplotlib / tqdm /
+# ipywidgets are runtime deps of the verify suite (matplotlib inline figures,
+# terminal tqdm, and tqdm.notebook widget comms), not just the unit tests.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "matplotlib",
+    "tqdm",
+    "ipywidgets",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
