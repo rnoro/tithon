@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v29 — REAL VSCode ipywidget rendering (design.md §6⑤, the project's top risk):
+# v29 — REAL VSCode ipywidget rendering (SPEC.md, the project's top risk):
 #       a tqdm.notebook FloatProgress renders via @jupyter-widgets/html-manager
 #       INSIDE the notebook webview (not the text fallback). Proves the renderer
 #       contribution + 3MB browser bundle + mime routing + html-manager work in a

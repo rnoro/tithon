@@ -1,6 +1,6 @@
 /**
  * Minimal daemon client (spike level) — talks the daemon's WebSocket protocol
- * over its unix domain socket (design.md §3.1; the daemon binds a 0600 unix
+ * over its unix domain socket (SPEC.md; the daemon binds a 0600 unix
  * socket, never TCP). Used by the CodeLens "Run Cell" wiring to submit code.
  */
 import WebSocket from "ws";

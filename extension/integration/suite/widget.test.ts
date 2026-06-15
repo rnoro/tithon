@@ -1,5 +1,5 @@
 /**
- * v29 — REAL VSCode ipywidget rendering (design.md §6⑤, the highest-risk item):
+ * v29 — REAL VSCode ipywidget rendering (SPEC.md, the highest-risk item):
  * a tqdm.notebook FloatProgress is rendered by the Tithon widget renderer
  * (@jupyter-widgets/html-manager) INSIDE the notebook webview — not the text
  * fallback. Proves the renderer contribution + browser bundle + mime routing +

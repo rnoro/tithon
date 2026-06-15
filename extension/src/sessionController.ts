@@ -224,7 +224,7 @@ class VSCodeCellSink implements CellSink {
 
   /**
    * Seed a cell from the snapshot captured at attach time (mid-run reconnect),
-   * restoring both its OUTPUT and its execution STATE/timing (design.md §3.1;
+   * restoring both its OUTPUT and its execution STATE/timing (SPEC.md;
    * ADR-023/025):
    *  - "queued" -> pending clock, no output;
    *  - "running" -> spinner started at the real `startMs`, prior output rendered,

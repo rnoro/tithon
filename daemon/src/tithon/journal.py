@@ -1,12 +1,12 @@
 """SQLite(WAL) append-only message journal — the single source of truth.
 
-Schema follows design.md §3.1: ``executions`` / ``messages`` / ``artifacts``.
+Schema follows SPEC.md: ``executions`` / ``messages`` / ``artifacts``.
 ``messages.msg_seq`` (AUTOINCREMENT rowid) doubles as the global monotonic
 event ``seq`` used by the snapshot+delta sync protocol.
 
 Raw iopub messages are preserved as-is, except that rich image payloads are
 replaced by artifact references *before* journaling (no base64 in the DB —
-design.md §3.1). Execution lifecycle transitions are journaled as pseudo
+SPEC.md). Execution lifecycle transitions are journaled as pseudo
 messages (``tithon.queued`` / ``tithon.started`` / ``tithon.done``) so that
 delta replay reproduces exactly what live subscribers saw.
 """

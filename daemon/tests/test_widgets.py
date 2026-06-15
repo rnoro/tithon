@@ -1,4 +1,4 @@
-"""Unit tests for the Widget State Mirror (design.md §3.3).
+"""Unit tests for the Widget State Mirror (SPEC.md).
 
 Deterministic, no kernel: exercises comm_open/comm_msg/comm_close interpretation,
 the widget-state+json snapshot shape, and binary-buffer handling (which tqdm's

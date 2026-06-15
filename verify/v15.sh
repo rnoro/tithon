@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v15 — REAL VSCode mid-run RECONNECT (design.md §3.1): a long loop is already
+# v15 — REAL VSCode mid-run RECONNECT (SPEC.md): a long loop is already
 #       running (driven by a separate client), then a fresh VSCode client
 #       attaches partway through and must show BOTH the pre-reconnect output
 #       (restored) AND the rest streamed live — seamless. Needs network + xvfb

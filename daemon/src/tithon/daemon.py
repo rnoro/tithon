@@ -4,7 +4,7 @@ Each editor file (``session`` id = the file uri) gets its OWN ipykernel and
 its OWN journal — like Jupyter, where every notebook has its own kernel, so
 variables never leak between files and one file's runs never bleed into
 another's view. A single WebSocket server on a unix domain socket (0600) only
-— no TCP (design.md §4 security) — routes every op to its session by the
+— no TCP (SPEC.md security) — routes every op to its session by the
 ``session`` field. Sessions are created lazily on first attach/execute and the
 kernel is spawned detached (setsid), so it survives daemon restarts and the
 next client to touch that file re-attaches to the running kernel.
@@ -380,7 +380,7 @@ class Session:
         exec_id = f"e{self._exec_counter}"
         # cell_hash is computed daemon-side from the submitted code (authoritative,
         # matches the extension's sha256(code)) so output<->cell attachment works
-        # even for CLI runs that send no origin (design.md §3.2).
+        # even for CLI runs that send no origin (SPEC.md).
         cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
         self.journal.insert_execution(
             exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
@@ -453,7 +453,7 @@ class Session:
     def read_artifact(self, artifact_id: str) -> dict:
         """Return a rich-output artifact's bytes (base64) by id.
 
-        Images are stored as files on disk (design.md §3.1) and journaled only
+        Images are stored as files on disk (SPEC.md) and journaled only
         as ``$tithon_artifact`` references, so a client renders them by fetching
         the bytes on demand over the same unix socket (no base64 in the journal,
         no shared-filesystem assumption). Deduped by sha, so each unique image is

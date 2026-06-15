@@ -1,5 +1,5 @@
 /**
- * Live cell-output synchronization with bounded render cost (design.md §3.1/§3.3
+ * Live cell-output synchronization with bounded render cost (SPEC.md
  * live path). Turns the daemon's per-event stream into a *coalesced* sequence of
  * sink operations so a 50k-iteration loop does not melt the renderer:
  *

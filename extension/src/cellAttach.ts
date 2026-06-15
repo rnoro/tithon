@@ -1,5 +1,5 @@
 /**
- * Output -> cell attachment (design.md §3.2).
+ * Output -> cell attachment (SPEC.md).
  *
  * The journal owns outputs, not the `.py` file. Each execution recorded a
  * `cell_hash` (hash of the submitted cell code) and the line range it came

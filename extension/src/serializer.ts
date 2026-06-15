@@ -1,7 +1,7 @@
 /**
  * Percent-format (`# %%`) <-> cell model, with byte-exact round-trip.
  *
- * Design (design.md §3.2, Phase 0 item ⑥): the on-disk source is pure
+ * Design (SPEC.md, Phase 0 item ⑥): the on-disk source is pure
  * percent-format `.py`. We parse it into a cell list for the Tithon Cell View
  * and serialize it back with ZERO reformatting. Round-trip integrity is an
  * absolute requirement, so the parser partitions the input into *physical

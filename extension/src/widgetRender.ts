@@ -1,5 +1,5 @@
 /**
- * ipywidget rendering from a Widget State Mirror snapshot (design.md §3.3).
+ * ipywidget rendering from a Widget State Mirror snapshot (SPEC.md).
  *
  * The extension contributes a notebook renderer for
  * `application/vnd.jupyter.widget-view+json` and instantiates models/views with

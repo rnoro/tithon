@@ -24,7 +24,7 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// ipywidget renderer (design.md §3.3): runs INSIDE the notebook webview, so it
+// ipywidget renderer (SPEC.md): runs INSIDE the notebook webview, so it
 // must be a self-contained browser ESM bundle (it cannot require @jupyter-widgets
 // from node_modules there). ~3MB with html-manager + base + controls + the
 // ipywidgets CSS (inlined as text and injected into the webview). Loaded via the

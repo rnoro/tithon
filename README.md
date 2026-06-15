@@ -11,9 +11,8 @@ tunnel hours later, and your outputs are still there and still streaming.
 > moment the client disconnects. Tithon lifts the curse: _immortality, with
 > eternal youth this time._
 
-The authoritative design document is [`docs/design.md`](docs/design.md). For the
-current implementation maturity and the verification matrix, see
-[`docs/status.md`](docs/status.md).
+The authoritative design document is [`docs/SPEC.md`](docs/SPEC.md); it also
+covers current implementation maturity and the verification matrix.
 
 ---
 
@@ -102,7 +101,7 @@ Press **F5** in `extension/` to launch an Extension Development Host, or install
 the `.vsix` (Extensions panel ▸ "Install from VSIX…"). For the remote workflow
 this project is built for, see
 [Remote workflow (VSCode tunnel)](#remote-workflow-vscode-tunnel) below; the
-automated integration harness is described in [`docs/status.md`](docs/status.md).
+automated integration harness is described in [`docs/SPEC.md`](docs/SPEC.md).
 
 ---
 
@@ -243,7 +242,7 @@ and referenced from the journal.
 
 ## Architecture invariants
 
-These are load-bearing; see [`docs/design.md`](docs/design.md) for the full
+These are load-bearing; see [`docs/SPEC.md`](docs/SPEC.md) for the full
 rationale.
 
 1. The kernel is spawned detached and its connection file is persisted, so the
@@ -264,7 +263,7 @@ daemon/      Python 3.11+ package: the daemon and CLI
   tests/     pytest unit tests
 extension/   TypeScript VSCode extension (npm, vitest, + integration/ for electron)
 verify/      end-to-end verification scripts (v1–v10) + shared lib
-docs/        design.md (design source of truth), status.md (maturity & verification)
+docs/        SPEC.md (design source of truth, maturity & verification)
 Makefile     verify / verify-a..d / test
 ```
 
@@ -279,7 +278,7 @@ cd extension && npm test   # extension unit tests (vitest)
 ```
 
 The real-VSCode integration tests (`make verify-d`) download VSCode and run it
-under `xvfb`; see [`docs/status.md`](docs/status.md) for the full suite
+under `xvfb`; see [`docs/SPEC.md`](docs/SPEC.md) for the full suite
 breakdown, prerequisites, and current implementation maturity. Project decisions
 are recorded as ADRs in [`DECISIONS.md`](DECISIONS.md), and ongoing work in
 [`PROGRESS.md`](PROGRESS.md).

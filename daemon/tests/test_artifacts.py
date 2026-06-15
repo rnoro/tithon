@@ -1,5 +1,5 @@
 """Rich-output artifact store: image payloads become real files, journaled as
-references (design.md §3.1, ADR-008). Pins the matplotlib path: a display_data
+references (SPEC.md, ADR-008). Pins the matplotlib path: a display_data
 ``image/png`` is decoded to a file + sha-deduped, the journal keeps only a
 ``$tithon_artifact`` ref, and the bytes are recoverable by artifact id (what
 ``Session.read_artifact`` / the ``get_artifact`` op serve to a client)."""

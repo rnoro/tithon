@@ -1,6 +1,6 @@
 """Rich-output artifact store: image payloads become real files on disk.
 
-Base64 image data never enters the journal (design.md §3.1) — it is decoded
+Base64 image data never enters the journal (SPEC.md) — it is decoded
 on receipt, written to ``<workdir>/.tithon/outputs/`` with an sha-based
 filename, deduplicated by sha256, and the message content carries only a
 ``$tithon_artifact`` reference.

@@ -1,6 +1,6 @@
 /**
  * VSCode NotebookSerializer for percent-format `.py` (notebook type
- * `tithon-py`, design.md §3.2). Disk holds pure percent `.py`; this opens it as
+ * `tithon-py`, SPEC.md). Disk holds pure percent `.py`; this opens it as
  * a cell document. Round-trip is delegated to the byte-exact pure serializer:
  * each cell carries its verbatim parsed structure in metadata, and
  * `serializeNotebook` reconstructs from that — so an unedited open->save is a

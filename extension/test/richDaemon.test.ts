@@ -68,7 +68,7 @@ describe.skipIf(!live)("rich outputs over a real daemon (v27)", () => {
       expect(fig, "an image output is present").toBeTruthy();
       const img = imageOf(fig!)!;
       expect(img.mime).toBe("image/png");
-      // The journal must carry a REFERENCE, not inline base64 (design.md §3.1).
+      // The journal must carry a REFERENCE, not inline base64 (SPEC.md).
       expect(img.ref, "image is a $tithon_artifact ref, not inline base64").toBeTruthy();
 
       const art = await reconnect.getArtifact(img.ref!.artifact_id);

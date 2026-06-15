@@ -1,5 +1,5 @@
 /**
- * SessionClient — the *subscribe* half of the daemon protocol (design.md §3.1).
+ * SessionClient — the *subscribe* half of the daemon protocol (SPEC.md).
  *
  * `DaemonClient` only submits code; this client attaches with `last_seen_seq`,
  * consumes the snapshot + delta + live event stream, and maintains the current
@@ -9,7 +9,7 @@
  *   attach(0) -> snapshot seeds each execution's folded outputs
  *             -> live `output` events keep in-flight executions current
  *   restoreInto(cells) -> attach those outputs to the document's cells by
- *                         cell_hash (design.md §3.2, see cellAttach).
+ *                         cell_hash (SPEC.md, see cellAttach).
  *
  * Snapshot+delta equivalence (a since-0 attach and a since-N delta replay fold
  * to the same state) is what verify/v7 checks against a real daemon.
@@ -139,7 +139,7 @@ export class SessionClient {
 
   /**
    * Fetch a rich-output artifact's bytes by id over the unix socket (cached).
-   * Images live as files on the host (design.md §3.1); the client pulls the
+   * Images live as files on the host (SPEC.md); the client pulls the
    * bytes on demand and renders them as an `image/*` output item. `get_artifact`
    * binds the session on its first message, so no attach is needed.
    */

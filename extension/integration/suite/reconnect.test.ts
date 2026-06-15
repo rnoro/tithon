@@ -4,7 +4,7 @@
  * attaches partway through. The cell must show BOTH the output produced BEFORE
  * the reconnect (restored from the snapshot) AND the output produced AFTER it
  * (streamed live) — seamless, as if the client had watched from the start
- * (design.md §3.1: snapshot + delta + live).
+ * (SPEC.md: snapshot + delta + live).
  */
 import * as assert from "assert";
 import * as vscode from "vscode";

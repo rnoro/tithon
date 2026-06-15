@@ -2,9 +2,9 @@
  * Rich-output rendering helpers (matplotlib images + ipywidget text fallback).
  *
  * The daemon journals image payloads as `$tithon_artifact` references, not
- * base64 (design.md §3.1) — these helpers turn a folded {@link OutputItem} into
+ * base64 (SPEC.md) — these helpers turn a folded {@link OutputItem} into
  * what VSCode needs: image bytes fetched on demand, and a *text* fallback for
- * ipywidgets (design.md §3.3 fallback) reconstructed from the daemon's widget
+ * ipywidgets (SPEC.md fallback) reconstructed from the daemon's widget
  * state mirror (so a reconnect shows e.g. tqdm.notebook's FINAL bar, not "0%").
  *
  * Pure and DOM-free so it is unit-testable; the network fetch + VSCode binding
@@ -130,8 +130,8 @@ function numStr(n: number): string {
 }
 
 /**
- * A one-line text rendering of an ipywidget from the mirror state (design.md
- * §3.3 fallback). For a progress widget (tqdm.notebook) it reconstructs the
+ * A one-line text rendering of an ipywidget from the mirror state (SPEC.md
+ * fallback). For a progress widget (tqdm.notebook) it reconstructs the
  * familiar bar from the FINAL mirrored state: `100% |████████| 5/5 [time]`.
  * Returns undefined when the model is unknown (e.g. a fresh live run before any
  * snapshot) so the caller can fall back to the display's own text/plain.

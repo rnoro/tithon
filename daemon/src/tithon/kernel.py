@@ -4,7 +4,7 @@ re-attach across daemon restarts.
 The kernel is intentionally NOT tied to the daemon's lifetime: it is started
 with ``start_new_session=True`` (setsid) so a daemon crash/restart leaves it
 running, and the connection file + pid file under the session directory let
-the next daemon re-attach (design.md §3.1).
+the next daemon re-attach (SPEC.md).
 """
 from __future__ import annotations
 

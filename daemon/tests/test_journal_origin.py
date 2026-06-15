@@ -1,4 +1,4 @@
-"""Journal persistence of execution origin + cell_hash (design.md §3.1/§3.2).
+"""Journal persistence of execution origin + cell_hash (SPEC.md).
 
 The output<->cell attachment (verify item ⑥, extension/cellAttach) keys on the
 journal's cell_hash; these tests pin that the journal actually stores and

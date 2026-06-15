@@ -1,4 +1,4 @@
-"""Widget State Mirror — the daemon's "shadow frontend" (design.md §3.3).
+"""Widget State Mirror — the daemon's "shadow frontend" (SPEC.md).
 
 ipywidgets keep a kernel-side object in sync with a frontend model over a
 Jupyter *comm* channel. Plain message replay can't restore that state, so the

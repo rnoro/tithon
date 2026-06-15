@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# v30 — REAL VSCode LIVE ipywidget animation (design.md §3.3 live path): a
+# v30 — REAL VSCode LIVE ipywidget animation (SPEC.md live path): a
 #       tqdm.notebook bar renders AND animates while the cell runs, with NO
 #       reconnect. Proves the live half: client builds the widget mirror from
 #       comm events (widget output emitted with state mid-run) + renderer paints
