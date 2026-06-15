@@ -681,7 +681,12 @@ class Daemon:
                     await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
                 elif op == "get_artifact":
                     art = session.read_artifact(msg.get("artifact_id", ""))
-                    await ws.send(json.dumps({"op": "artifact", **art}))
+                    reply = {"op": "artifact", **art}
+                    # Echo the request id so a client can multiplex many fetches
+                    # over ONE long-lived connection (no socket-per-image churn).
+                    if "req_id" in msg:
+                        reply["req_id"] = msg["req_id"]
+                    await ws.send(json.dumps(reply))
                 elif op == "status":
                     await ws.send(json.dumps({"op": "status_reply", **session.status()}))
         finally:

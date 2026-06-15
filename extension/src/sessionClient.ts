@@ -96,6 +96,16 @@ export class SessionClient {
   private widgetState: WidgetState | null = null;
   /** id -> resolved bytes (null = fetched but not found). Dedupes refetches. */
   private readonly artifactCache = new Map<string, ArtifactBytes | null>();
+  /** One reused connection for ALL artifact fetches (no socket-per-image churn,
+   *  which melted the tunnel for a per-step matplotlib plot). Requests are
+   *  multiplexed by req_id; opened lazily, reopened if it drops. */
+  private artifactWs: WebSocket | null = null;
+  private artifactWsReady: Promise<WebSocket> | null = null;
+  private artifactReqSeq = 0;
+  private readonly pendingArtifacts = new Map<
+    number,
+    { resolve: (v: ArtifactBytes | null) => void; reject: () => void }
+  >();
   /** Highest seq the daemon told us about (snapshot.max_seq or last sync). */
   syncSeq = 0;
 
@@ -143,33 +153,56 @@ export class SessionClient {
    * bytes on demand and renders them as an `image/*` output item. `get_artifact`
    * binds the session on its first message, so no attach is needed.
    */
-  getArtifact(id: string): Promise<ArtifactBytes | null> {
-    const cached = this.artifactCache.get(id);
-    if (cached !== undefined) return Promise.resolve(cached);
-    return new Promise((resolve) => {
+  /** Open (once) the reused artifact channel; reject all in-flight on drop. */
+  private artifactChannel(): Promise<WebSocket> {
+    if (this.artifactWs && this.artifactWs.readyState === WebSocket.OPEN) {
+      return Promise.resolve(this.artifactWs);
+    }
+    if (this.artifactWsReady) return this.artifactWsReady;
+    this.artifactWsReady = new Promise<WebSocket>((resolve, reject) => {
       const ws = new WebSocket(unixWsUrl(this.sockPath));
-      let settled = false;
-      const done = (v: ArtifactBytes | null) => {
-        if (settled) return;
-        settled = true;
-        this.artifactCache.set(id, v);
-        try { ws.close(); } catch { /* already closing */ }
-        resolve(v);
+      const drop = () => {
+        if (this.artifactWs === ws) this.artifactWs = null;
+        this.artifactWsReady = null;
+        // Reject every outstanding fetch so it re-fetches on the next channel —
+        // a transient drop must NOT be cached as "not found" (the image exists).
+        const pending = [...this.pendingArtifacts.values()];
+        this.pendingArtifacts.clear();
+        for (const p of pending) p.reject();
       };
-      ws.once("open", () =>
-        ws.send(JSON.stringify({ op: "get_artifact", artifact_id: id, session: this.session })));
+      ws.once("open", () => { this.artifactWs = ws; resolve(ws); });
       ws.on("message", (raw: WebSocket.RawData) => {
         let m: any;
         try { m = JSON.parse(raw.toString()); } catch { return; }
-        if (m.op === "artifact") {
-          done(m.found && typeof m.data_b64 === "string"
-            ? { mime: m.mime, bytes: new Uint8Array(Buffer.from(m.data_b64, "base64")) }
-            : null);
-        }
+        if (m.op !== "artifact") return;
+        const p = this.pendingArtifacts.get(m.req_id);
+        if (!p) return;
+        this.pendingArtifacts.delete(m.req_id);
+        p.resolve(m.found && typeof m.data_b64 === "string"
+          ? { mime: m.mime, bytes: new Uint8Array(Buffer.from(m.data_b64, "base64")) }
+          : null);
       });
-      ws.once("error", () => done(null));
-      ws.once("close", () => done(null));
+      ws.once("error", (err) => { reject(err); drop(); });
+      ws.once("close", drop);
     });
+    return this.artifactWsReady;
+  }
+
+  getArtifact(id: string): Promise<ArtifactBytes | null> {
+    const cached = this.artifactCache.get(id);
+    if (cached !== undefined) return Promise.resolve(cached);
+    return this.artifactChannel().then(
+      (ws) => new Promise<ArtifactBytes | null>((resolve, reject) => {
+        const reqId = ++this.artifactReqSeq;
+        this.pendingArtifacts.set(reqId, { resolve, reject });
+        ws.send(JSON.stringify(
+          { op: "get_artifact", artifact_id: id, session: this.session, req_id: reqId }));
+      }).then((v) => {
+        // A daemon reply (bytes, or null = genuinely not found / GC'd) is cached.
+        this.artifactCache.set(id, v);
+        return v;
+      }),
+    ).catch(() => null); // channel open/drop failure: return null, do NOT cache (retry later)
   }
 
   /** Prefetch many artifacts (e.g. all images in a snapshot) before rendering. */
@@ -405,5 +438,11 @@ export class SessionClient {
   close(): void {
     this.ws?.close();
     this.ws = null;
+    this.artifactWs?.close();
+    this.artifactWs = null;
+    this.artifactWsReady = null;
+    const pending = [...this.pendingArtifacts.values()];
+    this.pendingArtifacts.clear();
+    for (const p of pending) p.reject();
   }
 }
