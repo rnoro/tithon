@@ -99,6 +99,29 @@ class TestExecutionFold:
         assert out[1] == {"output_type": "error", "ename": "ValueError",
                           "evalue": "bad", "traceback": ["tb"]}
 
+    def test_artifact_ids_track_current_frame_only(self):
+        """clear_output(wait)+display_data (the live-plot idiom) drops the prior
+        frame's artifact id from the set, so the daemon GCs its file."""
+        def frame(aid):
+            return ("display_data", {"data": {"image/png": {"$tithon_artifact": {"artifact_id": aid}}},
+                                     "metadata": {}})
+        f = ExecutionFold()
+        f.apply(*frame("png1"))
+        assert f.artifact_ids() == {"png1"}
+        f.apply("clear_output", {"wait": True})
+        f.apply(*frame("png2"))
+        assert f.artifact_ids() == {"png2"}  # png1 superseded -> GC-eligible
+
+    def test_artifact_ids_keep_all_distinct_displays(self):
+        """Intentional multi-image output (no clear) keeps every artifact."""
+        def frame(aid):
+            return ("display_data", {"data": {"image/png": {"$tithon_artifact": {"artifact_id": aid}}},
+                                     "metadata": {}})
+        out = ExecutionFold()
+        out.apply(*frame("a"))
+        out.apply(*frame("b"))
+        assert out.artifact_ids() == {"a", "b"}
+
     def test_status_and_execute_input_ignored(self):
         out = fold_messages([
             ("status", {"execution_state": "busy"}),

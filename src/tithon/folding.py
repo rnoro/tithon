@@ -130,6 +130,23 @@ class ExecutionFold:
                 }
             )
 
+    def artifact_ids(self) -> set[str]:
+        """Artifact ids referenced by the CURRENT folded output.
+
+        A frame dropped by ``clear_output``/``update_display_data`` leaves this
+        set, which the daemon uses to GC its no-longer-referenced file.
+        """
+        ids: set[str] = set()
+        for it in self._items:
+            data = it.get("data")
+            if not isinstance(data, dict):
+                continue
+            for v in data.values():
+                ref = v.get("$tithon_artifact") if isinstance(v, dict) else None
+                if isinstance(ref, dict) and "artifact_id" in ref:
+                    ids.add(ref["artifact_id"])
+        return ids
+
     def outputs(self) -> list[dict]:
         out = []
         for it in self._items:

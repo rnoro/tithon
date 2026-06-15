@@ -65,6 +65,44 @@ def test_identical_image_is_deduped(tmp_path):
     assert len(pngs) == 1
 
 
+def _png(seed: bytes) -> str:
+    """A distinct fake image payload (each seed -> a different sha)."""
+    return base64.b64encode(PNG + seed).decode()
+
+
+def test_delete_removes_file_and_row(tmp_path):
+    j, store = _store(tmp_path)
+    content = {"data": {"image/png": _png(b"a")}}
+    [art_id] = store.extract("e1", content)
+    rel = content["data"]["image/png"]["$tithon_artifact"]["rel_path"]
+    assert (tmp_path / rel).exists()
+
+    store.delete(art_id)
+    assert not (tmp_path / rel).exists()
+    # Row is gone too, so a re-occurring identical image re-creates the file
+    # (dedup must not point at a deleted file).
+    assert j.find_artifact(art_id) is None
+    recreated = {"data": {"image/png": _png(b"a")}}
+    [again] = store.extract("e2", recreated)
+    assert again == art_id  # same sha -> same artifact id
+    new_rel = recreated["data"]["image/png"]["$tithon_artifact"]["rel_path"]
+    assert (tmp_path / new_rel).exists()
+
+
+def test_sweep_keeps_only_referenced(tmp_path):
+    j, store = _store(tmp_path)
+    keep_id = store.extract("e1", {"data": {"image/png": _png(b"keep")}})[0]
+    drop1 = store.extract("e2", {"data": {"image/png": _png(b"d1")}})[0]
+    drop2 = store.extract("e3", {"data": {"image/png": _png(b"d2")}})[0]
+
+    removed = store.sweep(keep={keep_id})
+    assert removed == 2
+    assert j.find_artifact(keep_id) is not None
+    assert j.find_artifact(drop1) is None and j.find_artifact(drop2) is None
+    pngs = list((tmp_path / ".tithon" / "outputs").glob("*.png"))
+    assert len(pngs) == 1
+
+
 def test_non_image_data_untouched(tmp_path):
     j, store = _store(tmp_path)
     content = {"data": {"text/plain": "hello",

@@ -22,6 +22,7 @@ import logging
 import os
 import signal
 import socket
+from collections import Counter
 from pathlib import Path
 
 from websockets.asyncio.server import unix_serve
@@ -99,6 +100,10 @@ class Session:
         self.kernel_status = "unknown"
         self.kernel_pyversion: str | None = None  # e.g. "3.11.5"
         self._folds: dict[str, ExecutionFold] = {}
+        # How many live folded snapshots reference each artifact id. When a count
+        # hits zero (a frame superseded by clear_output/update_display_data) the
+        # file is GC'd, so a live-updating plot keeps O(1) files, not one/step.
+        self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
         self._subs: set[Subscriber] = set()
@@ -189,13 +194,24 @@ class Session:
         return ok
 
     def _rebuild_folds(self) -> None:
-        """Recompute in-memory folded snapshots from raw journal messages."""
+        """Recompute in-memory folded snapshots from raw journal messages.
+
+        Then seed the live-artifact reference counter from the rebuilt folds and
+        sweep ``.tithon/outputs/`` of any artifact no surviving fold references —
+        reclaiming frames left behind by a previous run (or by an older daemon
+        that predated artifact GC)."""
         for exec_id, *_ in self.journal.executions():
             fold = ExecutionFold()
             for _seq, msg_type, content_json in self.journal.messages_for_exec(exec_id):
                 if not msg_type.startswith("tithon."):
                     fold.apply(msg_type, json.loads(content_json))
             self._folds[exec_id] = fold
+        self._artifact_refs = Counter(
+            aid for fold in self._folds.values() for aid in fold.artifact_ids()
+        )
+        removed = self.artifacts.sweep(keep=set(self._artifact_refs))
+        if removed:
+            log.info("[%s] swept %d orphaned artifact(s)", self.session_id, removed)
 
     def _rebuild_mirror(self) -> None:
         """Replay journaled comm messages to restore widget state after restart."""
@@ -292,8 +308,22 @@ class Session:
             refs = self.artifacts.extract(exec_id, content)
             artifact_ref = ",".join(refs) or None
         seq = self.journal.append_message(exec_id, msg_type, content, artifact_ref)
-        self._folds[exec_id].apply(msg_type, content)
+        fold = self._folds[exec_id]
+        before = fold.artifact_ids()
+        fold.apply(msg_type, content)
+        self._gc_artifacts(before, fold.artifact_ids())
         self._broadcast(event_from_message(seq, exec_id, msg_type, content))
+
+    def _gc_artifacts(self, before: set[str], after: set[str]) -> None:
+        """Adjust the live-reference counter for one fold transition; delete the
+        file of any artifact that no fold references anymore."""
+        for aid in after - before:
+            self._artifact_refs[aid] += 1
+        for aid in before - after:
+            self._artifact_refs[aid] -= 1
+            if self._artifact_refs[aid] <= 0:
+                del self._artifact_refs[aid]
+                self.artifacts.delete(aid)
 
     def _handle_comm(self, exec_id, msg_type: str, content: dict, buffers: list) -> None:
         """Feed the Widget State Mirror; journal raw comm (buffers base64)."""

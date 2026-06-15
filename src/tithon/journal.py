@@ -198,5 +198,19 @@ class Journal:
             (artifact_id, sha256, mime, rel_path, bytes_len),
         )
 
+    def delete_artifact(self, artifact_id: str) -> None:
+        """Drop an artifact row (its file is GC'd once no live fold references it).
+
+        The row must go too, not just the file: otherwise ``find_artifact`` would
+        let ``ArtifactStore.extract`` dedup a re-occurring image onto a deleted
+        file. The raw iopub message still carries the ``$tithon_artifact`` ref, so
+        a mid-history delta replay degrades to a ``found:false`` text fallback.
+        """
+        self.db.execute("DELETE FROM artifacts WHERE artifact_id=?", (artifact_id,))
+
+    def all_artifacts(self) -> list[tuple]:
+        """(artifact_id, rel_path) for every registered artifact (startup sweep)."""
+        return self.db.execute("SELECT artifact_id, rel_path FROM artifacts").fetchall()
+
     def close(self) -> None:
         self.db.close()

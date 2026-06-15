@@ -62,3 +62,30 @@ class ArtifactStore:
             }
             refs.append(sha)
         return refs
+
+    def delete(self, artifact_id: str) -> None:
+        """Remove a superseded artifact's file and journal row.
+
+        Called when no live folded snapshot references the artifact anymore (a
+        live-updating matplotlib plot supersedes its previous frame every step,
+        so without this ``.tithon/outputs/`` grows one file per step forever).
+        """
+        row = self.journal.find_artifact(artifact_id)
+        if row is not None:
+            rel_path = row[3]
+            (self.workdir / rel_path).unlink(missing_ok=True)
+        self.journal.delete_artifact(artifact_id)
+
+    def sweep(self, keep: set[str]) -> int:
+        """Delete every registered artifact whose id is not in ``keep``.
+
+        Run once after the daemon rebuilds its folds on (re)start, to reclaim
+        frames that accumulated before this GC existed or while the daemon was
+        down. Returns the number of artifacts removed.
+        """
+        removed = 0
+        for artifact_id, _rel_path in self.journal.all_artifacts():
+            if artifact_id not in keep:
+                self.delete(artifact_id)
+                removed += 1
+        return removed
