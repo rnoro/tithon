@@ -180,9 +180,7 @@ export class LiveOutputSync {
     }
     if (msgType === "update_display_data") {
       const did = content?.transient?.display_id;
-      if (did != null) {
-        this.queue(idx, { t: "display", displayId: did, item: toDisplay(content) });
-      }
+      if (did != null) this.queueDisplay(idx, did, toDisplay(content));
       return;
     }
     if (!["stream", "display_data", "execute_result", "error"].includes(msgType)) return;
@@ -202,6 +200,39 @@ export class LiveOutputSync {
     } else if (msgType === "error") {
       this.queue(idx, { t: "output", item: toError(content) });
     }
+  }
+
+  /**
+   * Coalesce update_display_data within a flush window (mirrors queueStream's
+   * run-merge): keep only the LATEST content per display_id, so a live-updating
+   * display (e.g. update_display in a tight loop) costs ONE in-place sink call
+   * per window, not one per event. If the display_data that CREATED this id is
+   * still pending in the same window, fold the update into it (one appendOutput
+   * carrying the latest content). A pending clear resets the merge horizon.
+   */
+  private queueDisplay(idx: number, displayId: string, item: OutputItem): void {
+    const ops = this.pending.get(idx);
+    if (ops) {
+      for (let i = ops.length - 1; i >= 0; i--) {
+        const op = ops[i];
+        if (op.t === "clear") break; // don't merge across a clear
+        if (op.t === "display" && op.displayId === displayId) {
+          op.item = item; // supersede the earlier update with the latest
+          return;
+        }
+        if (
+          op.t === "output" &&
+          op.item.output_type === "display_data" &&
+          op.item.display_id === displayId &&
+          (item.output_type === "display_data" || item.output_type === "execute_result")
+        ) {
+          op.item.data = item.data; // fold into the pending create
+          op.item.metadata = item.metadata;
+          return;
+        }
+      }
+    }
+    this.queue(idx, { t: "display", displayId, item });
   }
 
   /** Run-merge: fold consecutive same-name stream deltas into one append op. */

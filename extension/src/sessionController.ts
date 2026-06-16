@@ -135,6 +135,10 @@ class VSCodeCellSink implements CellSink {
   // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
   private readonly execs = new Map<number, { exec: vscode.NotebookCellExecution; started: boolean }>();
   private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
+  // Per cell+display_id: the NotebookCellOutput a display_data created, so a later
+  // update_display_data REPLACES it in place (replaceOutputItems) instead of
+  // stacking a new output each frame. Keyed `${idx}:${displayId}`, mirroring streamOut.
+  private readonly displayOut = new Map<string, vscode.NotebookCellOutput>();
   // Per-cell promise chain: image appends fetch bytes asynchronously, so the
   // cell's done/end must queue behind them or VSCode rejects "execution ended".
   private readonly tail = new Map<number, Promise<void>>();
@@ -206,6 +210,21 @@ class VSCodeCellSink implements CellSink {
     }
   }
 
+  /** Forget a cell's display_id→output map (on clear/end): a finished execution
+   *  can't be replaced into, and a fresh run re-registers its own displays. */
+  private forgetDisplays(idx: number): void {
+    for (const k of [...this.displayOut.keys()]) {
+      if (k.startsWith(`${idx}:`)) this.displayOut.delete(k);
+    }
+  }
+
+  /** Remember the NotebookCellOutput for a display_id-bearing output so a later
+   *  update_display_data can replace it in place rather than appending. */
+  private registerDisplay(idx: number, item: OutputItem, out: vscode.NotebookCellOutput): void {
+    const did = (item as { display_id?: string }).display_id;
+    if (typeof did === "string") this.displayOut.set(`${idx}:${did}`, out);
+  }
+
   appendStream(idx: number, name: string, text: string): void {
     const e = this.ensureStarted(idx);
     if (!e) return;
@@ -255,13 +274,16 @@ class VSCodeCellSink implements CellSink {
         void e.appendOutput(out);
       } else {
         // Image bytes were prefetched by startLive before seeding, so ctx() resolves.
-        void e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
+        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+        this.registerDisplay(idx, item, out); // a live update after reconnect replaces in place
+        void e.appendOutput(out);
       }
     }
     if (state === "done" || state === "error") {
       e.end(state === "done", endMs ?? Date.now());
       this.execs.delete(idx);
       this.forgetStreams(idx);
+      this.forgetDisplays(idx);
     }
     // a "running" cell stays started until its live `done` event arrives.
   }
@@ -277,15 +299,41 @@ class VSCodeCellSink implements CellSink {
       // cell's chain so the trailing `done` end() waits for the image to land.
       this.chain(idx, async () => {
         await this.client.prefetchArtifacts(pending);
-        await e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
+        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+        this.registerDisplay(idx, item, out);
+        await e.appendOutput(out);
       });
     } else {
-      void e.appendOutput(new vscode.NotebookCellOutput(toOutputItems(item, this.ctx())));
+      const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+      this.registerDisplay(idx, item, out);
+      void e.appendOutput(out);
     }
   }
 
-  updateDisplay(idx: number, _displayId: string, item: OutputItem): void {
-    this.appendOutput(idx, item); // spike: append (no in-place display update yet)
+  /**
+   * In-place display update (update_display_data): replace the OUTPUT a prior
+   * display_data created — keyed by display_id — instead of appending a new one,
+   * so a live timer / re-displayed figure updates in place (no stacking). Falls
+   * back to append (and registers) when the display isn't tracked yet (an update
+   * before its create, or a display from another cell/run). Serialized on the
+   * cell's chain so it lands after any in-flight append of the SAME display
+   * (registration order) and before the trailing done end().
+   */
+  updateDisplay(idx: number, displayId: string, item: OutputItem): void {
+    const e = this.ensureStarted(idx);
+    if (!e) return;
+    const existing = this.displayOut.get(`${idx}:${displayId}`);
+    if (!existing) {
+      this.appendOutput(idx, item);
+      return;
+    }
+    const pending = imageRefsOf(item)
+      .map((r) => r.artifact_id)
+      .filter((id) => this.client.cachedArtifact(id) === undefined);
+    this.chain(idx, async () => {
+      if (pending.length) await this.client.prefetchArtifacts(pending);
+      await e.replaceOutputItems(toOutputItems(item, this.ctx()), existing);
+    });
   }
 
   clear(idx: number): void {
@@ -293,6 +341,7 @@ class VSCodeCellSink implements CellSink {
     if (!e) return;
     void e.clearOutput();
     this.forgetStreams(idx);
+    this.forgetDisplays(idx);
   }
 
   status(idx: number, status: string, tsMs?: number): void {
@@ -310,6 +359,7 @@ class VSCodeCellSink implements CellSink {
     if (rec) {
       this.execs.delete(idx);
       this.forgetStreams(idx);
+      this.forgetDisplays(idx);
       const endMs = tsMs ?? Date.now();
       this.chain(idx, async () => {
         if (!rec.started) {
@@ -328,6 +378,7 @@ class VSCodeCellSink implements CellSink {
       if (!rec.started) rec.exec.start(Date.now());
       rec.exec.end(undefined, Date.now());
       this.forgetStreams(idx);
+      this.forgetDisplays(idx);
     }
     this.execs.clear();
   }

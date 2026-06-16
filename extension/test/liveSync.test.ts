@@ -29,11 +29,11 @@ class TestSink implements CellSink {
     this.ops.push({ op: "appendStream", idx, name, text });
     if (name === "stdout") this.rawStdout.set(idx, (this.rawStdout.get(idx) ?? "") + text);
   }
-  appendOutput(idx: number, _item: OutputItem): void {
-    this.ops.push({ op: "appendOutput", idx });
+  appendOutput(idx: number, item: OutputItem): void {
+    this.ops.push({ op: "appendOutput", idx, text: textOf(item) });
   }
-  updateDisplay(idx: number): void {
-    this.ops.push({ op: "updateDisplay", idx });
+  updateDisplay(idx: number, displayId?: string, item?: OutputItem): void {
+    this.ops.push({ op: "updateDisplay", idx, name: displayId, text: textOf(item) });
   }
   clear(idx: number): void {
     this.ops.push({ op: "clear", idx });
@@ -49,6 +49,15 @@ class TestSink implements CellSink {
     const o = f.outputs()[0] as Extract<OutputItem, { output_type: "stream" }> | undefined;
     return o?.text ?? "";
   }
+}
+
+/** text/plain of a display/result item (for asserting in-place update content). */
+function textOf(item?: OutputItem): string | undefined {
+  if (item && (item.output_type === "display_data" || item.output_type === "execute_result")) {
+    const t = item.data?.["text/plain"];
+    return typeof t === "string" ? t : undefined;
+  }
+  return undefined;
 }
 
 function queued(execId: string, code: string): LiveEvent {
@@ -233,5 +242,73 @@ describe("LiveOutputSync — refreshCells (ADR-022: cell added after live starte
     live.onEvent(stream("e2b", "B\n"));
     sched.tick();
     expect(sink.visibleStdout(1)).toBe("B\n");
+  });
+});
+
+describe("LiveOutputSync — update_display_data in-place (Fix E coalescing)", () => {
+  const disp = (execId: string, v: string): LiveEvent =>
+    output(execId, "display_data", { data: { "text/plain": v }, transient: { display_id: "d" } });
+  const upd = (execId: string, v: string): LiveEvent =>
+    output(execId, "update_display_data", { data: { "text/plain": v }, transient: { display_id: "d" } });
+
+  it("routes update_display_data to updateDisplay, never appendOutput (no stacking)", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    live.onEvent(upd("e1", "x"));
+    sched.tick();
+    expect(sink.ops.filter((o) => o.op === "updateDisplay").length).toBe(1);
+    expect(sink.ops.filter((o) => o.op === "appendOutput").length).toBe(0);
+  });
+
+  it("bounds 1000 updates in one window to a SINGLE in-place updateDisplay (latest content)", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+
+    live.onEvent(disp("e1", "v0"));
+    sched.tick(); // window 1: the create -> one appendOutput
+    expect(sink.ops.filter((o) => o.op === "appendOutput").length).toBe(1);
+
+    for (let i = 1; i <= 1000; i++) live.onEvent(upd("e1", `v${i}`));
+    sched.tick(); // window 2: 1000 updates -> ONE updateDisplay
+
+    const upds = sink.ops.filter((o) => o.op === "updateDisplay");
+    expect(upds.length).toBe(1);
+    expect(upds[0].name).toBe("d"); // display_id routed through
+    expect(upds[0].text).toBe("v1000"); // only the latest content survives
+  });
+
+  it("folds a create + its updates in ONE window into a single appendOutput", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+
+    live.onEvent(disp("e1", "v0"));
+    for (let i = 1; i <= 1000; i++) live.onEvent(upd("e1", `v${i}`));
+    sched.tick();
+
+    expect(sink.ops.filter((o) => o.op === "appendOutput").length).toBe(1);
+    expect(sink.ops.filter((o) => o.op === "updateDisplay").length).toBe(0);
+    expect(sink.ops.find((o) => o.op === "appendOutput")?.text).toBe("v1000"); // latest folded in
+  });
+
+  it("does not merge an update across a clear", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+
+    live.onEvent(upd("e1", "a"));
+    live.onEvent(output("e1", "clear_output", {})); // immediate clear drops pending
+    live.onEvent(upd("e1", "b"));
+    sched.tick();
+
+    const ops = sink.ops.filter((o) => o.idx === 0).map((o) => o.op);
+    expect(ops).toEqual(["clear", "updateDisplay"]);
+    expect(sink.ops.find((o) => o.op === "updateDisplay")?.text).toBe("b");
   });
 });
