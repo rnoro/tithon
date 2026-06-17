@@ -80,6 +80,8 @@ PY
     ;;
   opentextshot)
     printf '# %%%% greeting\nprint("HELLO_OPENTEXT", flush=True)\n\n# %%%% math\nx = 6 * 7\nprint(f"answer = {x}")\n' >"$FIX" ;;
+  orphanrestore)
+    printf '# %%%% orphan\nprint("ORPHANME", flush=True)\nimport time\ntime.sleep(120)\n' >"$FIX" ;;
   *)
     printf '# %%%%\nprint("hello from cell 1")\n\n# %%%%\nfor i in range(5):\n    print(f"Iteration {i}")\n\n# %%%%\nprint("Loop completed.")\n' >"$FIX" ;;
 esac

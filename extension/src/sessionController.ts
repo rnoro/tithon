@@ -265,7 +265,7 @@ class VSCodeCellSink implements CellSink {
   seedCell(
     idx: number,
     items: OutputItem[],
-    state: "queued" | "running" | "done" | "error",
+    state: "queued" | "running" | "done" | "error" | "orphaned",
     startMs?: number,
     endMs?: number,
   ): void {
@@ -273,7 +273,13 @@ class VSCodeCellSink implements CellSink {
       this.create(idx); // pending clock, no output
       return;
     }
-    const e = this.ensureStarted(idx, startMs);
+    // An "orphaned" execution was in-flight when the daemon/kernel restarted, so
+    // it will NEVER receive a `done` event. Render its captured output but show it
+    // as a finished, neutral cell (no ✓/✗) — do NOT start a live spinner at its
+    // ancient `startedAt`, which would tick up forever ("26667s running", the bug
+    // the user saw on first open). Start/end at ~now so no absurd elapsed shows.
+    const orphaned = state === "orphaned";
+    const e = this.ensureStarted(idx, orphaned ? undefined : startMs);
     if (!e) return;
     for (const item of items) {
       if (item.output_type === "stream") {
@@ -290,8 +296,10 @@ class VSCodeCellSink implements CellSink {
         void e.appendOutput(out);
       }
     }
-    if (state === "done" || state === "error") {
-      e.end(state === "done", endMs ?? Date.now());
+    if (state === "done" || state === "error" || orphaned) {
+      // orphaned -> neutral end (success undefined) at ~now; done/error -> the real
+      // success flag and finish time so the cell shows its actual duration.
+      e.end(orphaned ? undefined : state === "done", orphaned ? Date.now() : (endMs ?? Date.now()));
       this.execs.delete(idx);
       this.forgetStreams(idx);
       this.forgetDisplays(idx);
@@ -348,9 +356,29 @@ class VSCodeCellSink implements CellSink {
   }
 
   clear(idx: number): void {
-    const e = this.ensureStarted(idx);
-    if (!e) return;
-    void e.clearOutput();
+    const rec = this.execs.get(idx);
+    if (rec?.started) {
+      // A kernel-driven clear_output WHILE the cell is running: clear via the live
+      // execution, keeping its spinner.
+      void rec.exec.clearOutput();
+    } else {
+      // No live execution for this cell — e.g. the daemon echoing back a user's
+      // own "Clear Outputs" (a tombstone broadcast), or another window's clear.
+      // Do NOT ensureStarted() here: that leaves a phantom execution whose spinner
+      // never ends (no matching `done` event), the "clearing a cell leaves it
+      // stuck running" bug. Guard on outputs.length so our OWN clear (which already
+      // emptied the cell before the echo round-trips back) does nothing — no flash,
+      // no edit→change feedback loop. Only when output actually survives (another
+      // window cleared it) do we clear, via a momentary execution that ends
+      // IMMEDIATELY (VSCode exposes no output-only edit, so this is the only path).
+      const c = this.cell(idx);
+      if (c && c.outputs.length > 0) {
+        const exec = this.controller.createNotebookCellExecution(c);
+        exec.start(Date.now());
+        void exec.clearOutput();
+        exec.end(undefined, Date.now());
+      }
+    }
     this.forgetStreams(idx);
     this.forgetDisplays(idx);
   }
@@ -389,6 +417,13 @@ class VSCodeCellSink implements CellSink {
     return this.execs.has(idx);
   }
 
+  /** Cell indices with an OPEN proxy execution (spinner/clock). A cell that is
+   *  not running should not appear here; if it lingers, a `done`/`end` was missed
+   *  (the stuck-spinner signature). Exposed for the regression e2e. */
+  activeCells(): number[] {
+    return [...this.execs.keys()];
+  }
+
   /** End any still-open proxy executions (called when live sync stops) so cells
    *  don't keep a spinner/clock forever after we detach. */
   endAll(): void {
@@ -414,7 +449,7 @@ export class TithonNotebookController {
   private labelledPython = false; // set the "Python x.y" label only once
   private readonly liveSessions = new Map<
     string,
-    { dispose: () => void; refresh: () => void }
+    { dispose: () => void; refresh: () => void; activeCells: () => number[] }
   >();
 
   private readonly selectionSub: vscode.Disposable;
@@ -746,7 +781,7 @@ export class TithonNotebookController {
    */
   async startLive(
     notebook: vscode.NotebookDocument,
-  ): Promise<{ dispose: () => void; refresh: () => void }> {
+  ): Promise<{ dispose: () => void; refresh: () => void; activeCells: () => number[] }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     const client = new SessionClient(
       undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
@@ -782,6 +817,9 @@ export class TithonNotebookController {
         ex.status === "done" ? "done"
         : ex.status === "error" ? "error"
         : ex.status === "queued" ? "queued"
+        // "orphaned": in-flight at a daemon/kernel restart, no `done` is coming —
+        // render output without a perpetual spinner (the "26667s running" bug).
+        : ex.status === "orphaned" ? "orphaned"
         : "running";
       sink.seedCell(idx, client.outputsOf(ex.execId), state, toMs(ex.startedAt), toMs(ex.finishedAt));
     }
@@ -807,7 +845,14 @@ export class TithonNotebookController {
         sink.endAll(); // don't leave cells spinning after we detach
       },
       refresh,
+      activeCells: () => sink.activeCells(),
     };
+  }
+
+  /** Cell indices with an open proxy execution for a notebook (regression e2e:
+   *  a cleared cell must not linger here, which would be a stuck spinner). */
+  activeExecCells(notebook: vscode.NotebookDocument): number[] {
+    return this.liveSessions.get(notebook.uri.toString())?.activeCells() ?? [];
   }
 }
 
@@ -861,6 +906,12 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     // html (vs the text fallback) and applied live animation updates.
     vscode.commands.registerCommand("tithon._widgetRenderLog", () => controller.widgetRenders),
     vscode.commands.registerCommand("tithon._widgetUpdateCount", () => controller.widgetUpdatesApplied),
+    // Test-only: cell indices with an open proxy execution for the active notebook
+    // (a cleared/orphaned cell lingering here is the stuck-spinner bug).
+    vscode.commands.registerCommand("tithon._activeExecCells", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.activeExecCells(nb) : [];
+    }),
   );
   return controller;
 }

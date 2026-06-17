@@ -184,6 +184,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerNotebookSerializer(
       "tithon-py",
       new PercentNotebookSerializer(),
+      // Cell OUTPUTS live in the daemon journal, never in the `.py` on disk (the
+      // serializer writes pure percent-format code, no outputs). Mark them
+      // transient so VSCode does NOT treat live output writes as unsaved edits:
+      // otherwise every appendOutput/clear makes the notebook "dirty" but the save
+      // never persists outputs, so it can never reconcile to clean — autosave then
+      // fires every ~1s ("saving…" in the status bar) and the constant churn lags
+      // the editor. transientOutputs lets restore/live-sync write freely with no
+      // phantom dirty state. (The verbatim `tithonCell` metadata stays persistent.)
+      { transientOutputs: true },
     ),
     vscode.languages.registerCodeLensProvider(
       { language: "python", scheme: "file" },
