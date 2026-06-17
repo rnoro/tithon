@@ -440,6 +440,20 @@ export class SessionClient {
     });
   }
 
+  /**
+   * Permanently clear the folded outputs of the given executions on the daemon
+   * (a user "Clear Outputs" / "Clear All"). Fire-and-forget over the live attach
+   * socket (already bound to this session); the daemon's `cleared` reply is
+   * ignored by {@link handle}. Without this the next attach re-seeds the cleared
+   * output from the journal, undoing the user's clear. Pass no ids / empty to
+   * no-op.
+   */
+  clearOutputs(execIds: string[]): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || execIds.length === 0) return;
+    ws.send(JSON.stringify({ op: "clear_output", session: this.session, exec_ids: execIds }));
+  }
+
   close(): void {
     this.ws?.close();
     this.ws = null;

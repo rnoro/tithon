@@ -162,6 +162,18 @@ class Journal:
         )
         return ts
 
+    def set_folded(self, exec_id: str, folded_json: str) -> None:
+        """Overwrite an execution's cached folded snapshot.
+
+        Used after a user clear: ``mark_done`` already wrote the pre-clear
+        snapshot, so the column must be re-materialized to match the folded
+        state (otherwise the snapshot fallback path would restore the cleared
+        output for a session that never replays this exec's raw messages).
+        """
+        self.db.execute(
+            "UPDATE executions SET folded_json=? WHERE exec_id=?", (folded_json, exec_id)
+        )
+
     def orphan_inflight(self) -> int:
         """Mark queued/running executions as orphaned (after daemon restart)."""
         cur = self.db.execute(

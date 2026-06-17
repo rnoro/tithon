@@ -371,6 +371,13 @@ class VSCodeCellSink implements CellSink {
     }
   }
 
+  /** True while a proxy execution is open for this cell — i.e. the sink itself
+   *  is driving its output (so an outputs->empty change is OUR clearOutput, not
+   *  a user clear). Used to tell user clears apart from sink-driven ones. */
+  isExecuting(idx: number): boolean {
+    return this.execs.has(idx);
+  }
+
   /** End any still-open proxy executions (called when live sync stops) so cells
    *  don't keep a spinner/clock forever after we detach. */
   endAll(): void {
@@ -657,6 +664,33 @@ export class TithonNotebookController {
     this.liveSessions.get(notebook.uri.toString())?.refresh();
   }
 
+  /**
+   * Make a user's native "Clear Outputs" / "Clear All Outputs" durable. VSCode
+   * clears the cell visually, but the output lives in the daemon journal, so the
+   * next snapshot/delta resync would restore it — undoing the user's clear. For
+   * each cell whose outputs went to empty while the sink is NOT executing it
+   * (a sink-driven clear during a run is ours, not the user's), map it to its
+   * journal executions and tell the daemon to clear them. ALL executions mapped
+   * to the cell are cleared so an older run of a re-run cell cannot reappear.
+   */
+  private propagateUserClears(
+    e: vscode.NotebookDocumentChangeEvent,
+    sink: VSCodeCellSink,
+    live: LiveOutputSync,
+    client: SessionClient,
+  ): void {
+    const execIds: string[] = [];
+    for (const ch of e.cellChanges) {
+      if (!ch.outputs || ch.outputs.length !== 0) continue; // only outputs -> empty
+      const idx = ch.cell.index;
+      if (sink.isExecuting(idx)) continue; // our own clearOutput during a run
+      for (const ex of client.executions()) {
+        if (live.cellOf(ex.execId) === idx) execIds.push(ex.execId);
+      }
+    }
+    if (execIds.length) client.clearOutputs(execIds);
+  }
+
   /** Attach a session, restore folded outputs, and write them into the cells. */
   async restore(notebook: vscode.NotebookDocument): Promise<void> {
     const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
@@ -741,7 +775,9 @@ export class TithonNotebookController {
     // Keep the index current as cells are added/edited after live started
     // (ADR-022) — otherwise a new cell's execution maps to nothing.
     const changeSub = vscode.workspace.onDidChangeNotebookDocument((e) => {
-      if (e.notebook.uri.toString() === notebook.uri.toString()) refresh();
+      if (e.notebook.uri.toString() !== notebook.uri.toString()) return;
+      refresh();
+      this.propagateUserClears(e, sink, live, client);
     });
     client.onEvent((ev) => {
       live.onEvent(ev);

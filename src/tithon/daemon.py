@@ -193,6 +193,38 @@ class Session:
         self._journal_lifecycle(None, "tithon.kernel", {"status": "interrupted"})
         return ok
 
+    def clear_outputs(self, exec_ids: list[str] | None) -> int:
+        """Permanently clear the folded outputs of executions (all if ``None``).
+
+        A user clearing a cell's output (VSCode "Clear Outputs" / "Clear All
+        Outputs") must be durable: the folded snapshot is the daemon's source of
+        truth, so without this the next attach re-seeds the old output and the
+        cleared output reappears — not what the user asked for.
+
+        SPEC.md keeps the journal append-only and original-preserving, so we do
+        NOT delete rows. Instead we append a synthetic ``clear_output``
+        (wait=False) per target — the exact message the fold (and the client's
+        ``outputFold`` port) already collapse to "no output". That makes the full
+        snapshot, the since-N delta replay, and any live subscriber all converge
+        on cleared. The fold dropping its artifact references lets the existing
+        artifact GC reclaim the image files (so a cleared plot frees its PNG).
+        """
+        targets = (
+            list(self._folds) if exec_ids is None
+            else [e for e in exec_ids if e in self._folds]
+        )
+        for exec_id in targets:
+            fold = self._folds[exec_id]
+            before = fold.artifact_ids()
+            seq = self.journal.append_message(exec_id, "clear_output", {"wait": False})
+            fold.apply("clear_output", {"wait": False})
+            self._gc_artifacts(before, fold.artifact_ids())
+            self.journal.set_folded(exec_id, json.dumps(fold.outputs()))
+            self._broadcast(event_from_message(seq, exec_id, "clear_output", {"wait": False}))
+        if targets:
+            log.info("[%s] user-cleared %d execution(s)", self.session_id, len(targets))
+        return len(targets)
+
     def _rebuild_folds(self) -> None:
         """Recompute in-memory folded snapshots from raw journal messages.
 
@@ -676,6 +708,14 @@ class Daemon:
                     ok = session.interrupt()
                     log.info("[%s] interrupt ok=%s", session.session_id, ok)
                     await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
+                elif op == "clear_output":
+                    # User cleared cell output(s): persist it so a resync does not
+                    # restore them. `all` clears every execution; else `exec_ids`.
+                    if msg.get("all"):
+                        n = session.clear_outputs(None)
+                    else:
+                        n = session.clear_outputs(msg.get("exec_ids") or [])
+                    await ws.send(json.dumps({"op": "cleared", "count": n}))
                 elif op == "restart_kernel":
                     pid = await session.restart_kernel()
                     await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
