@@ -1,6 +1,11 @@
+> ### **Attention!**
+>
+> Tithon is currently in alpha, so you might run into some bugs and issues.  
+> Please report any bugs you find, your feedback will really help me improve Tithon!
+
 # Tithon
 
-**Persistent, loss-free remote Python sessions.** Tithon keeps an interactive
+**The immortal Python REPL that will set you free.** Tithon keeps an interactive
 Python (Jupyter) kernel running on a remote host independently of any client,
 and losslessly restores cell output, progress, and widget state whenever a
 client (re)connects — close your laptop mid-run, reopen over an SSH/VSCode
@@ -43,68 +48,53 @@ covers current implementation maturity and the verification matrix.
 
 ## How it works
 
-```
-   VSCode / CLI client                    Remote Host
-  ┌────────────────────┐                 ┌───────────────────────────────┐
-  │ subscribe(last_seq)│ ── unix sock ── │  tithon daemon                │
-  │ snapshot + delta   │ ◀───0600─────  │   ├─ journal (SQLite WAL)     │
-  │ restore / live     │                 │   ├─ folded snapshots         │
-  └────────────────────┘                 │   └─ widget mirror            │
-                                         │            │ ZMQ (detached)   │
-                                         │      ┌─────┴───────┐          │
-                                         │      │  ipykernel  │ survives │
-                                         │      └─────────────┘ restarts │
-                                         └───────────────────────────────┘
-```
-
-The daemon owns the kernel and journals everything it emits. Clients never talk
-to the kernel directly — they sync against the journal, so any number of clients
-can connect and disconnect at any time and always converge on the same state.
+TODO: Show program architecture image.
 
 ---
 
 ## Requirements
 
 - **Python 3.11+** (the daemon and CLI).
-- [**uv**](https://github.com/astral-sh/uv) for environment management.
-- **Node 20+ / npm** — only to build or run the VSCode extension.
+- etc..?
 
 ---
 
 ## Installation
 
-### Daemon + CLI
+### 1. Tithon CLI
+
+#### Using pip
 
 ```bash
-uv sync                          # create .venv (Python 3.11+), install tithon + dev deps
+pip install tithon
 ```
 
-This puts a `tithon` entry point in `.venv/bin`. Run it with `uv run tithon …`,
-or call `.venv/bin/tithon` directly. Dependencies are managed with
-[uv](https://docs.astral.sh/uv/): runtime deps in `[project.dependencies]`, dev
-and verification deps in `[dependency-groups]`, all pinned by `uv.lock`.
-
-### VSCode extension
-
-The extension is not yet on the Marketplace; build it from source and either run
-it in a development host or package it as a `.vsix`:
+#### Using uv
 
 ```bash
-cd extension
-npm install
-npm run build                    # tsc -> dist/
-npx vsce package                 # optional: -> tithon-extension-<version>.vsix
+uv add tithon
 ```
 
-Press **F5** in `extension/` to launch an Extension Development Host, or install
-the `.vsix` (Extensions panel ▸ "Install from VSIX…"). For the remote workflow
-this project is built for, see
-[Remote workflow (VSCode tunnel)](#remote-workflow-vscode-tunnel) below; the
-automated integration harness is described in [`docs/SPEC.md`](docs/SPEC.md).
+### 2. VSCode extension
+
+#### From VS Code Marketplace
+
+1. Open VS Code
+2. Go to Extensions
+3. Search for "tithon"
+4. Click "Install"
+
+Or install directly from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=rnoro.tithon)
+
+**Command Line:**
+
+```bash
+code --install-extension rnoro.tithon
+```
 
 ---
 
-## Quickstart
+## Quickstart(CLI)
 
 State (socket, log, journal, artifacts) lives under `TITHON_HOME`, default
 `~/.tithon`.
@@ -139,35 +129,18 @@ tithon run -c 'print(x)'             # -> 42, kernel state intact
 
 ---
 
-## Remote workflow (VSCode tunnel)
+## Quickstart(Remote workflow)
 
 This is the workflow Tithon is built for: you edit from a laptop while the kernel
 runs on a remote GPU host and keeps running across your disconnects. With a
-VSCode **Tunnel** (or **Remote-SSH**) connection the VSCode *Extension Host* runs
+VSCode **Tunnel** (or **Remote-SSH**) connection the VSCode _Extension Host_ runs
 **on the remote host**, so the Tithon extension reaches the daemon's host-local
 unix socket directly — no port forwarding. Your laptop only renders the UI, so
 closing it never stops the work.
 
-**On the remote host** — install (see [Installation](#installation)) and:
+**From your remote client:**
 
-```bash
-# 1. Start the daemon. It binds $TITHON_HOME/daemon.sock on the host
-#    (default ~/.tithon/daemon.sock) and owns the kernel.
-tithon daemon &
-
-# 2. Make the extension available to the remote VSCode — package it once...
-cd extension && npm install && npx vsce package    # -> tithon-extension-<version>.vsix
-#    ...then install the .vsix into the remote VSCode (Extensions ▸ "Install from
-#    VSIX…", or `code --install-extension tithon-extension-<version>.vsix`).
-#    During development you can instead open extension/ and press F5.
-
-# 3. Expose the host to VSCode.
-code tunnel                                        # or connect via Remote-SSH
-```
-
-**From your laptop:**
-
-1. Connect to the host (VSCode ▸ *Connect to Tunnel…* or *Remote-SSH*) and open
+1. Connect to the host (VSCode ▸ _Connect to Tunnel…_ or _Remote-SSH_) and open
    your project folder.
 2. Open a percent-format `.py`. Run cells with the **Run Cell** CodeLens, then
    run **Tithon: Start Live Output Sync** to stream output into the cells as it
@@ -253,30 +226,3 @@ rationale.
 5. The daemon binds a `0600` unix domain socket only — never TCP.
 
 ---
-
-## Repository layout
-
-```
-src/tithon/    Python 3.11+ package: daemon.py kernel.py journal.py folding.py widgets.py artifacts.py cli.py
-test/          pytest unit tests
-extension/     TypeScript VSCode extension (npm, vitest, + integration/ for electron)
-scripts/       end-to-end verification scripts (v1–v30) + shared lib + Makefile
-docs/          SPEC.md (design source of truth, maturity & verification)
-pyproject.toml package + dependencies (uv); pinned by uv.lock
-```
-
----
-
-## Development & testing
-
-```bash
-make -C scripts verify     # hermetic end-to-end suite
-uv run pytest              # Python unit tests
-cd extension && npm test   # extension unit tests (vitest)
-```
-
-The real-VSCode integration tests (`make -C scripts verify-d`) download VSCode and run it
-under `xvfb`; see [`docs/SPEC.md`](docs/SPEC.md) for the full suite
-breakdown, prerequisites, and current implementation maturity. Project decisions
-are recorded as ADRs in [`DECISIONS.md`](DECISIONS.md), and ongoing work in
-[`PROGRESS.md`](PROGRESS.md).

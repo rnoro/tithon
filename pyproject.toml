@@ -1,13 +1,48 @@
 [project]
 name = "tithon"
-version = "0.0.1"
-description = "Tithon — persistent remote interactive Python sessions"
+version = "0.1.1"
+description = "Tithon - The immortal Python REPL that will set you free."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "rnoro", email = "rnoro5122@gmail.com" },
+]
+keywords = [
+    "jupyter",
+    "repl",
+    "kernel",
+    "interactive",
+    "persistent",
+    "vscode",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Linguistic",
+]
 requires-python = ">=3.11"
 dependencies = [
     "jupyter_client>=8",
     "ipykernel>=6",
     "websockets>=12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rnoro/tithon"
+Documentation = "https://tithon.readthedocs.io/"
+Repository = "https://github.com/rnoro/tithon"
+"Bug Tracker" = "https://github.com/rnoro/tithon/issues"
+"Discussions" = "https://github.com/rnoro/tithon/discussions"
+Changelog = "https://github.com/rnoro/tithon/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tithon = "tithon.cli:main"
