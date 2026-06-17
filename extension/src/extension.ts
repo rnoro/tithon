@@ -21,6 +21,47 @@ function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined 
   );
 }
 
+/**
+ * Resolve a notebook URI from a command argument.
+ *
+ * Different invokers hand a command different shapes: the `editor/title` menu and
+ * direct callers pass a `vscode.Uri`, but the `notebook/toolbar` menu forwards a
+ * notebook action-context object — `{ notebookEditor: { notebookUri } }` — NOT a
+ * Uri. A handler that trusts the raw arg then calls `vscode.openWith` on a plain
+ * object and fails with "Invalid argument 'resource'" (silently, from a toolbar
+ * button) — the cause of "Open as Text does nothing". Unwrap the known shapes;
+ * return undefined for anything else so the caller can fall back.
+ */
+function resolveNotebookUri(arg: unknown): vscode.Uri | undefined {
+  if (arg instanceof vscode.Uri) return arg;
+  if (arg && typeof arg === "object") {
+    const o = arg as Record<string, unknown>;
+    const ne = o.notebookEditor as Record<string, unknown> | undefined;
+    const candidate = ne?.notebookUri ?? o.notebookUri ?? o.uri;
+    if (candidate instanceof vscode.Uri) return candidate;
+  }
+  return undefined;
+}
+
+/** Close every open Cell-View (tithon-py notebook) tab for `uriStr`. */
+async function closeCellViewTabs(uriStr: string): Promise<void> {
+  const tabs = vscode.window.tabGroups.all
+    .flatMap((g) => g.tabs)
+    .filter(
+      (t) =>
+        t.input instanceof vscode.TabInputNotebook &&
+        t.input.notebookType === "tithon-py" &&
+        t.input.uri.toString() === uriStr,
+    );
+  if (tabs.length) {
+    try {
+      await vscode.window.tabGroups.close(tabs, true);
+    } catch {
+      /* a dirty/locked tab may refuse; openWith below still switches focus */
+    }
+  }
+}
+
 /** True for a notebook backed by Tithon's Cell View. */
 function isTithon(nb: vscode.NotebookDocument): boolean {
   return nb.notebookType === "tithon-py";
@@ -200,14 +241,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       cellViewUris.add(uri.toString());
       await closeStaleTextTabs(uri.toString());
     }),
-    // Reopen the active Tithon notebook as a plain text editor. Drop it from the
-    // Cell-View set FIRST so the single-representation guard does not then close
-    // the very text editor the user just asked for.
-    vscode.commands.registerCommand("tithon.openAsText", async (arg?: vscode.Uri) => {
-      const uri = arg ?? vscode.window.activeNotebookEditor?.notebook.uri;
-      if (!uri) return;
-      cellViewUris.delete(uri.toString());
-      await vscode.commands.executeCommand("vscode.openWith", uri, "default");
+    // Reopen the active Tithon notebook as a plain text editor. Invoked from the
+    // notebook/toolbar button, which forwards a `{ notebookEditor: {...} }`
+    // context object — NOT a Uri (resolveNotebookUri unwraps it; fall back to the
+    // active notebook editor). Drop the URI from the Cell-View set FIRST so the
+    // single-representation guard (onDidChangeTabs) does not close the very text
+    // editor we are opening, then close the Cell-View tab so we never leave both
+    // a notebook and a text editor on the same URI (the ADR-041 LSP collision).
+    vscode.commands.registerCommand("tithon.openAsText", async (arg?: unknown) => {
+      const uri =
+        resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
+      if (!uri) {
+        vscode.window.showInformationMessage("Tithon: no Cell View to open as text");
+        return;
+      }
+      try {
+        cellViewUris.delete(uri.toString());
+        await closeCellViewTabs(uri.toString());
+        await vscode.commands.executeCommand("vscode.openWith", uri, "default");
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon open as text: ${String(err)}`);
+      }
     }),
     vscode.commands.registerCommand("tithon.interruptKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;

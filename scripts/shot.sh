@@ -78,6 +78,8 @@ for i in tnb(range(5)):
     pass
 PY
     ;;
+  opentextshot)
+    printf '# %%%% greeting\nprint("HELLO_OPENTEXT", flush=True)\n\n# %%%% math\nx = 6 * 7\nprint(f"answer = {x}")\n' >"$FIX" ;;
   *)
     printf '# %%%%\nprint("hello from cell 1")\n\n# %%%%\nfor i in range(5):\n    print(f"Iteration {i}")\n\n# %%%%\nprint("Loop completed.")\n' >"$FIX" ;;
 esac
