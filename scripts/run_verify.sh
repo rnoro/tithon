@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 case "${1:-a}" in
   a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
   b) scripts="v5 v6"; label="VERIFY-B" ;;
-  c) scripts="v7 v9 v17 v27 v31 v34"; label="VERIFY-C" ;;   # client restore + backpressure + per-file kernels + rich outputs + live-plot artifact GC + durable clear (hermetic)
+  c) scripts="v7 v9 v17 v27 v31 v34 v35"; label="VERIFY-C" ;;   # client restore + backpressure + per-file kernels + rich outputs + live-plot artifact GC + durable clear + project-local storage (hermetic)
   d) scripts="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v25 v26 v28 v29 v30 v32 v33"; label="VERIFY-D" ;;  # real VSCode end-to-end (network + xvfb); v32 also needs ruff/ty/ms-python installed
   all) scripts="v1 v2 v3 v4 v5 v6 v7 v9"; label="VERIFY" ;;
   *) echo "usage: $0 a|b|c|d|all" >&2; exit 2 ;;

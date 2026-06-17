@@ -116,11 +116,15 @@ export class SessionClient {
 
   /**
    * `session` is the file uri — one kernel + journal per file (like Jupyter).
-   * Defaults to "default" (the CLI/REPL session) when omitted.
+   * Defaults to "default" (the CLI/REPL session) when omitted. `workdir` is the
+   * file's project root (workspace folder fsPath); the daemon uses it, on first
+   * creation of this session, to root the session's artifacts + kernel cwd at
+   * the right project and to name the kernel/journal dir readably (ADR-044).
    */
   constructor(
     private readonly sockPath: string = defaultSocketPath(),
     private readonly session: string = "default",
+    private readonly workdir?: string,
   ) {}
 
   onChange(cb: () => void): void {
@@ -246,7 +250,8 @@ export class SessionClient {
       this.ws = ws;
       let synced = false;
       ws.once("open", () => {
-        ws.send(JSON.stringify({ op: "attach", last_seen_seq: lastSeenSeq, session: this.session }));
+        ws.send(JSON.stringify(
+          { op: "attach", last_seen_seq: lastSeenSeq, session: this.session, workdir: this.workdir }));
       });
       ws.on("message", (raw: WebSocket.RawData) => {
         let m: any;
@@ -434,7 +439,8 @@ export class SessionClient {
         }
       };
       ws.once("open", () =>
-        ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session: this.session })));
+        ws.send(JSON.stringify(
+          { op: "attach", last_seen_seq: -1, session: this.session, workdir: this.workdir })));
       ws.on("message", onMsg);
       ws.once("error", reject);
     });

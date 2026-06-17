@@ -47,6 +47,17 @@ function cellsFromNotebook(notebook: vscode.NotebookDocument): Cell[] {
   }));
 }
 
+/**
+ * The project root for a file (its workspace folder fsPath), passed to the daemon
+ * so the file's session roots its artifacts + kernel cwd at the right project and
+ * names its kernel/journal dir readably (ADR-044). Undefined for a file outside
+ * any workspace folder (single-file open) — the daemon then falls back to a
+ * hashed dir + its own cwd.
+ */
+export function workdirForUri(uri: vscode.Uri): string | undefined {
+  return vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+}
+
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
 const STDERR_MIME = "application/vnd.code.notebook.stderr";
 
@@ -481,6 +492,7 @@ export class TithonNotebookController {
       // Submit with the cell's *line* range (matching the CodeLens path and the
       // doc-cell ranges restore uses), not a cell-index range — see ADR-019.
       const ranges = await this.cellLineRanges(notebook);
+      const workdir = workdirForUri(notebook.uri);
       for (const cell of cells) {
         const code = cell.document.getText();
         await this.daemon.execute(code, {
@@ -488,7 +500,7 @@ export class TithonNotebookController {
           range: ranges[cell.index] ?? { start: cell.index, end: cell.index },
           cell_hash: computeCellHash(code),
           index: cell.index, // authoritative cell identity (duplicate-code fix)
-        });
+        }, workdir);
       }
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
@@ -696,7 +708,8 @@ export class TithonNotebookController {
     const cells = cellsFromNotebook(notebook); // in-memory, not disk (ADR-021)
 
     await ensureDaemon(this.sockPath);
-    const client = new SessionClient(undefined, notebook.uri.toString());
+    const client = new SessionClient(
+      undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
     await client.attach(0);
     try {
       const attachments = client.restoreInto(cells, notebook.uri.toString());
@@ -735,7 +748,8 @@ export class TithonNotebookController {
     notebook: vscode.NotebookDocument,
   ): Promise<{ dispose: () => void; refresh: () => void }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
-    const client = new SessionClient(undefined, notebook.uri.toString());
+    const client = new SessionClient(
+      undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
     await client.attach(0); // catch up on any prior state, then stream live
     // Surface the kernel's Python version on the controller (the picker/indicator
     // showed only "Tithon"; now "Tithon · Python 3.11.5").

@@ -12,7 +12,7 @@ import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
 import { ensureDaemon } from "./daemonProcess";
-import { registerRestore } from "./sessionController";
+import { registerRestore, workdirForUri } from "./sessionController";
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
@@ -166,7 +166,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             notebookCtrl.refreshLive(nb); // pick up cells added since live started (ADR-022)
           }
 
-          const execId = await client.execute(arg.code, arg.origin);
+          const workdir = workdirForUri(vscode.Uri.parse(arg.origin.uri));
+          const execId = await client.execute(arg.code, arg.origin, workdir);
           vscode.window.setStatusBarMessage(`Tithon: submitted ${execId}`, 3000);
         } catch (err) {
           vscode.window.showErrorMessage(`Tithon: ${String(err)}`);

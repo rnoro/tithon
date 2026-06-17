@@ -20,10 +20,13 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import socket
 from collections import Counter
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from websockets.asyncio.server import unix_serve
 
@@ -56,16 +59,65 @@ WRITE_BUFFER_HIGH = int(os.environ.get("TITHON_WRITE_BUFFER_HIGH", str(1 << 20))
 SOCK_SNDBUF = int(os.environ.get("TITHON_SOCK_SNDBUF", str(1 << 20)))  # bytes
 
 
-def _session_dir_name(session_id: str) -> str:
-    """Filesystem-safe directory name for a session.
+def _safe_component(s: str) -> str:
+    """One filesystem-safe path component (readable, bounded)."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", s)[:80] or "_"
 
-    The default session keeps its historical ``default`` directory; every other
-    session (a file uri) is hashed so any uri maps to a stable, safe path that
-    the next daemon can re-attach to.
+
+def _uri_to_path(uri: str) -> Path | None:
+    """Local filesystem path for a ``file://`` uri, else None."""
+    try:
+        p = urlparse(uri)
+        if p.scheme != "file" or not p.path:
+            return None
+        return Path(url2pathname(unquote(p.path)))
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _session_layout(
+    home: Path, session_id: str, workdir_hint: str | None, default_workdir: Path
+) -> tuple[Path, Path]:
+    """Return ``(session_dir, artifact_workdir)`` for a session.
+
+    Splits per SPEC.md / ADR-044: the kernel connection file (which carries an
+    hmac-sha256 key), pid, log and journal live under ``~/.tithon`` (never in a
+    repo); only artifacts are project-local.
+
+    - The default session (CLI/REPL) keeps its historical ``sessions/default``
+      dir and the daemon's launch cwd.
+    - A file-uri session whose project root is known (``workdir_hint``, sent by
+      the client) gets a READABLE, project-qualified kernel/journal dir
+      ``sessions/<project>-<hash8>/<relpath…>`` (so a human debugging finds a
+      file's session by name, not by an opaque hash), and its artifacts +
+      kernel cwd are rooted at its OWN project — fixing the bug where every
+      session shared the daemon's single launch cwd, so a second project's
+      images landed in the first project's ``.tithon/outputs``.
+    - Without a project root (single-file open / a uri outside the root / the
+      CLI) fall back to a stable hashed dir + the daemon's cwd.
     """
+    base = home / "sessions"
     if session_id == DEFAULT_SESSION:
-        return DEFAULT_SESSION
-    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+        return base / DEFAULT_SESSION, default_workdir
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    if workdir_hint:
+        root = Path(workdir_hint)
+        file_path = _uri_to_path(session_id)
+        rel = None
+        if file_path is not None:
+            try:
+                rel = file_path.relative_to(root)
+            except ValueError:
+                rel = None  # the file is not under the project root
+        if rel is not None and rel.parts:
+            # Hash the ROOT (stable per project) so all of a project's files
+            # share one readable parent; the relpath gives per-file uniqueness.
+            proj_hash = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:8]
+            proj = f"{_safe_component(root.name or 'root')}-{proj_hash}"
+            parts = [_safe_component(p) for p in rel.parts]
+            return base / proj / Path(*parts), root
+        return base / digest[:16], root  # outside the root: still root artifacts there
+    return base / digest[:16], default_workdir
 
 
 class Subscriber:
@@ -90,9 +142,12 @@ class Session:
         self.session_id = session_id
         self.session_dir = session_dir
         session_dir.mkdir(parents=True, exist_ok=True)
-        # Persist the human-readable session id (file uri) next to the kernel so
-        # `tithon status` and post-mortems can map the hashed dir back to a file.
-        (session_dir / "meta.json").write_text(json.dumps({"session_id": session_id}))
+        # Persist the human-readable session id (file uri) + project workdir next
+        # to the kernel so `tithon status` and post-mortems can map the dir back
+        # to a file and see where its artifacts/kernel-cwd are rooted.
+        (session_dir / "meta.json").write_text(
+            json.dumps({"session_id": session_id, "workdir": str(workdir)})
+        )
         self.journal = Journal(session_dir / "journal.db", session_id)
         self.kernel = KernelHandle(session_dir, workdir, session_dir / "kernel.log")
         self.artifacts = ArtifactStore(workdir, self.journal)
@@ -595,13 +650,21 @@ class Daemon:
             pass  # stale or absent pid file
         self.sock_path.unlink(missing_ok=True)
 
-    async def _get_session(self, session_id: str) -> Session:
-        """Return the session for this id, creating + starting it on first use."""
+    async def _get_session(self, session_id: str, workdir_hint: str | None = None) -> Session:
+        """Return the session for this id, creating + starting it on first use.
+
+        ``workdir_hint`` (the client's project root) is used only when the
+        session is first created — it fixes the session's storage layout and
+        artifact root (see ``_session_layout``); later ops on an existing session
+        ignore it (the kernel/journal are already placed).
+        """
         async with self._sessions_lock:
             s = self._sessions.get(session_id)
             if s is None:
-                session_dir = self.home / "sessions" / _session_dir_name(session_id)
-                s = Session(session_id, session_dir, self.workdir)
+                session_dir, workdir = _session_layout(
+                    self.home, session_id, workdir_hint, self.workdir
+                )
+                s = Session(session_id, session_dir, workdir)
                 await s.start()
                 self._sessions[session_id] = s
             return s
@@ -659,8 +722,12 @@ class Daemon:
                     self._stop.set()
                     return
                 # A connection is bound to one session, fixed on the first op.
+                # The first op may carry the client's project root (`workdir`) so
+                # a freshly-created session roots its artifacts/kernel there.
                 if session is None:
-                    session = await self._get_session(msg.get("session", DEFAULT_SESSION))
+                    session = await self._get_session(
+                        msg.get("session", DEFAULT_SESSION), msg.get("workdir")
+                    )
 
                 if op == "attach":
                     if sub is None:

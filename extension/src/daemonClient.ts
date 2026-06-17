@@ -43,15 +43,17 @@ export class DaemonClient {
   }
 
   /** Submit code for execution; resolves with the assigned exec_id. The session
-   *  (per-file kernel) is the origin's file uri. */
-  async execute(code: string, origin?: ExecOrigin): Promise<string> {
+   *  (per-file kernel) is the origin's file uri. `workdir` is the file's project
+   *  root — on first creation the daemon roots this session's artifacts/kernel
+   *  cwd there and names its dir readably (ADR-044). */
+  async execute(code: string, origin?: ExecOrigin, workdir?: string): Promise<string> {
     const session = sessionOf(origin);
     const ws = await this.open();
     try {
       // attach live-only first so the daemon is ready to stream our events.
-      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session }));
+      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
       await this.waitFor(ws, (m) => m.op === "sync");
-      ws.send(JSON.stringify({ op: "execute", code, origin, session }));
+      ws.send(JSON.stringify({ op: "execute", code, origin, session, workdir }));
       const ack = await this.waitFor(ws, (m) => m.op === "execute_ack");
       return ack.exec_id as string;
     } finally {
