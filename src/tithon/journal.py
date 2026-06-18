@@ -175,11 +175,27 @@ class Journal:
         )
 
     def orphan_inflight(self) -> int:
-        """Mark queued/running executions as orphaned (after daemon restart)."""
-        cur = self.db.execute(
-            "UPDATE executions SET status='orphaned' WHERE status IN ('queued','running')"
-        )
-        return cur.rowcount
+        """Mark queued/running executions as orphaned (after a daemon/kernel restart).
+
+        A ``running`` exec never got a ``done``, so its ``finished_at`` is NULL.
+        Freeze it at the exec's LAST journaled activity (``MAX(messages.ts)``,
+        which is always >= ``started_at`` because every exec journals a
+        ``tithon.started`` message): a restored cell then shows the REAL elapsed
+        run time it accumulated before being cut off — not a live spinner, and not
+        wall-clock-since-then. A ``queued`` exec never started, so it keeps a NULL
+        ``finished_at``.
+        """
+        running = self.db.execute(
+            "UPDATE executions SET status='orphaned',"
+            " finished_at=COALESCE("
+            "  (SELECT MAX(ts) FROM messages WHERE messages.exec_id=executions.exec_id),"
+            "  started_at)"
+            " WHERE status='running'"
+        ).rowcount
+        queued = self.db.execute(
+            "UPDATE executions SET status='orphaned' WHERE status='queued'"
+        ).rowcount
+        return running + queued
 
     def executions(self) -> list[tuple]:
         """Rows by seq: (exec_id, seq, code, status, execution_count, folded_json,

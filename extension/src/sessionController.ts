@@ -274,12 +274,13 @@ class VSCodeCellSink implements CellSink {
       return;
     }
     // An "orphaned" execution was in-flight when the daemon/kernel restarted, so
-    // it will NEVER receive a `done` event. Render its captured output but show it
-    // as a finished, neutral cell (no ✓/✗) — do NOT start a live spinner at its
-    // ancient `startedAt`, which would tick up forever ("26667s running", the bug
-    // the user saw on first open). Start/end at ~now so no absurd elapsed shows.
+    // it will NEVER receive a `done` event. Render its captured output as a
+    // finished, NEUTRAL cell (no ✓/✗) and DO NOT leave a live spinner — but keep
+    // its REAL elapsed run time: the daemon froze finished_at at the exec's last
+    // journaled activity, so the cell shows e.g. "12.4s" frozen, not a spinner
+    // ticking from the ancient start ("26667s", the bug the user first saw).
     const orphaned = state === "orphaned";
-    const e = this.ensureStarted(idx, orphaned ? undefined : startMs);
+    const e = this.ensureStarted(idx, startMs);
     if (!e) return;
     for (const item of items) {
       if (item.output_type === "stream") {
@@ -297,9 +298,14 @@ class VSCodeCellSink implements CellSink {
       }
     }
     if (state === "done" || state === "error" || orphaned) {
-      // orphaned -> neutral end (success undefined) at ~now; done/error -> the real
-      // success flag and finish time so the cell shows its actual duration.
-      e.end(orphaned ? undefined : state === "done", orphaned ? Date.now() : (endMs ?? Date.now()));
+      // orphaned -> NEUTRAL success (it never formally completed); done/error ->
+      // the real success flag. Either way keep the REAL finish time so the cell
+      // shows its actual (frozen) duration. For an orphan with no recorded finish
+      // (an old journal predating the freeze), end at the start (0s) — never
+      // Date.now(), which would re-inflate to wall-clock-since-then.
+      const success = orphaned ? undefined : state === "done";
+      const fallback = orphaned ? (startMs ?? Date.now()) : Date.now();
+      e.end(success, endMs ?? fallback);
       this.execs.delete(idx);
       this.forgetStreams(idx);
       this.forgetDisplays(idx);

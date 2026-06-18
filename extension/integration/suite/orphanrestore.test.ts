@@ -87,7 +87,9 @@ describe("Tithon orphaned execution restores output without a stuck spinner (v38
     });
 
     const cell = () => nb.cellAt(cellIdx);
-    await waitFor(() => plainText(cell()).includes("ORPHANME"), 30000, "running output");
+    // Let the cell run a measurable while (it prints a tick every ~0.1s) so the
+    // orphan freezes a real, non-zero elapsed run time.
+    await waitFor(() => plainText(cell()).includes("tick 8"), 30000, "running output (tick 8)");
     // Sanity: while running, the cell DOES have an open execution (a live spinner).
     await waitFor(async () => (await activeExecCells()).includes(cellIdx), 30000, "running spinner");
 
@@ -115,6 +117,16 @@ describe("Tithon orphaned execution restores output without a stuck spinner (v38
       cell().executionSummary?.success,
       true,
       "orphaned cell must not be shown as a successful (✓) run",
+    );
+    // And it KEEPS its real elapsed run time (frozen): a plausible duration from
+    // the captured start to the last journaled activity — not 0.0s (the old
+    // neutral reset) and not wall-clock-since-then (the "26667s" spinner).
+    const timing = cell().executionSummary?.timing;
+    assert.ok(timing, "orphaned cell must carry execution timing (frozen duration)");
+    const durMs = timing!.endTime - timing!.startTime;
+    assert.ok(
+      durMs >= 300 && durMs < 60000,
+      `orphaned cell should show its real frozen run time (~0.8s+), got ${durMs}ms`,
     );
     // And outputs stayed transient (no autosave storm).
     assert.strictEqual(nb.isDirty, false, "notebook must not be dirty (transientOutputs)");

@@ -33,9 +33,11 @@ setup_env v38
 FIX="$WORK/orphan.py"
 cat >"$FIX" <<'PY'
 # %% orphan
-print("ORPHANME", flush=True)
 import time
-time.sleep(120)
+print("ORPHANME", flush=True)
+for i in range(200):
+    time.sleep(0.1)
+    print(f"tick {i}", flush=True)
 PY
 
 start_daemon || fail "daemon start failed"
