@@ -1,17 +1,74 @@
 #!/usr/bin/env bash
-# Runs verify scripts for a stage, prints per-test RESULT table + summary.
-# Usage: run_verify.sh a|b|all
+# Topic-based verification bundles. Run a focused bundle while developing that
+# area, or a meta-bundle (fast / vscode / all). Each run builds the VSCode
+# extension AT MOST ONCE (shared across every real-VSCode test in the bundle)
+# and prints a per-test RESULT table + summary.
+#
+# Usage: run_verify.sh <bundle>
+#   Topic bundles (a test lives in exactly one):
+#     core         v1 v2 v3 v4            journal / fold / artifact / daemon-crash survival   (hermetic)
+#     serializer   v6                     percent <-> notebook round-trip                      (hermetic)
+#     backpressure v9                     slow-client host protection                          (hermetic)
+#     widgets      v5 v29 v30             ipywidget mirror + html-manager render + live anim
+#     restore      v7 v8 v15 v16 v22 v38  reconnect: output + cell-state restore, orphan
+#     livesync     v10 v11 v12 v13 v14 v33 v37   live streaming into cells (native run, edits, display)
+#     kernels      v17 v18 v19 v20 v21 v23 v24 v26   per-file kernels + lifecycle (restart/interrupt/autostart)
+#     richoutputs  v27 v28 v31 v34 v35    matplotlib/tqdm images, live-plot GC, durable clear, storage
+#     cellview     v32 v39                text <-> Cell View, ruff/ty LSP   (v25/v36 merged into v39)
+#   Meta bundles:
+#     fast    every hermetic test (no VSCode/network/xvfb) — the quick gate
+#     vscode  every real-VSCode test (network + xvfb; builds the extension once)
+#     all     fast + vscode
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-case "${1:-a}" in
-  a) scripts="v1 v2 v3 v4"; label="VERIFY-A" ;;
-  b) scripts="v5 v6"; label="VERIFY-B" ;;
-  c) scripts="v7 v9 v17 v27 v31 v34 v35"; label="VERIFY-C" ;;   # client restore + backpressure + per-file kernels + rich outputs + live-plot artifact GC + durable clear + project-local storage (hermetic)
-  d) scripts="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v25 v26 v28 v29 v30 v32 v33 v36 v37 v38"; label="VERIFY-D" ;;  # real VSCode end-to-end (network + xvfb); v32 also needs ruff/ty/ms-python installed
-  all) scripts="v1 v2 v3 v4 v5 v6 v7 v9"; label="VERIFY" ;;
-  *) echo "usage: $0 a|b|c|d|all" >&2; exit 2 ;;
+# --- topic bundles -----------------------------------------------------------
+core_s="v1 v2 v3 v4"
+serializer_s="v6"
+backpressure_s="v9"
+widgets_s="v5 v29 v30"
+restore_s="v7 v8 v15 v16 v22 v38"
+livesync_s="v10 v11 v12 v13 v14 v33 v37"
+kernels_s="v17 v18 v19 v20 v21 v23 v24 v26"
+richoutputs_s="v27 v28 v31 v34 v35"
+cellview_s="v32 v39"
+
+# --- meta bundles ------------------------------------------------------------
+fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35"   # every hermetic test
+vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39"
+
+bundle="${1:-fast}"
+case "$bundle" in
+  core)         scripts="$core_s" ;;
+  serializer)   scripts="$serializer_s" ;;
+  backpressure) scripts="$backpressure_s" ;;
+  widgets)      scripts="$widgets_s" ;;
+  restore)      scripts="$restore_s" ;;
+  livesync)     scripts="$livesync_s" ;;
+  kernels)      scripts="$kernels_s" ;;
+  richoutputs)  scripts="$richoutputs_s" ;;
+  cellview)     scripts="$cellview_s" ;;
+  fast)         scripts="$fast_s" ;;
+  vscode)       scripts="$vscode_s" ;;
+  all)          scripts="$fast_s $vscode_s" ;;
+  *) echo "usage: $0 core|serializer|backpressure|widgets|restore|livesync|kernels|richoutputs|cellview|fast|vscode|all" >&2; exit 2 ;;
 esac
+label="$(echo "$bundle" | tr '[:lower:]' '[:upper:]')"
+
+# --- shared one-time extension build -----------------------------------------
+# Any bundle that includes a real-VSCode test builds the extension ONCE here;
+# the per-test scripts see TITHON_SKIP_BUILD=1 and reuse it (was: each of the 26
+# scripts ran `tsc` twice -> 52 redundant builds per full vscode run).
+ELECTRON=" v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 "
+need_build=0
+for s in $scripts; do case "$ELECTRON" in *" $s "*) need_build=1 ;; esac; done
+if [ "$need_build" -eq 1 ]; then
+  echo "===== shared extension build (once for the whole $label bundle) ====="
+  # shellcheck source=scripts/lib.sh
+  . "$ROOT/scripts/lib.sh"
+  ensure_extension_build || { echo "shared extension build failed; aborting $label" >&2; exit 1; }
+  export TITHON_SKIP_BUILD=1
+fi
 
 declare -a results=()
 pass=0

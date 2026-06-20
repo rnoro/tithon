@@ -13,6 +13,7 @@ import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
 import { ensureDaemon } from "./daemonProcess";
 import { registerRestore, workdirForUri } from "./sessionController";
+import { isPercentNotebookSource } from "./serializer";
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
@@ -82,6 +83,49 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
  * (go-to-definition into another file) still opens a normal text editor.
  */
 const cellViewUris = new Set<string>();
+
+/**
+ * URIs the user has explicitly chosen to view as plain TEXT this session (via
+ * "Open as Text Editor"). Auto-open (maybeAutoOpenCellView) skips these so the
+ * "Open as Text" toggle is not immediately reverted by the content heuristic —
+ * otherwise the two would fight in an endless text<->notebook loop. Cleared for a
+ * URI when the user opts back into the Cell View.
+ */
+const textPreferred = new Set<string>();
+
+/** Re-entrancy guard: URIs currently mid auto-convert (openWith is async). */
+const autoConverting = new Set<string>();
+
+/**
+ * Auto-switch a `.py` opened as TEXT to the Tithon Cell View when its content is
+ * percent-format (has a `# %%` cell marker). This saves the user from pressing
+ * "Open as Cell View" every time they reopen a notebook-style `.py` (a plain
+ * script, with no markers, stays text — the ADR-032 intent). Gated by the
+ * `tithon.autoOpenCellView` setting and skipped for files the user has chosen to
+ * keep as text this session (textPreferred), files already shown as a Cell View,
+ * and dirty buffers (avoid a reopen prompt / losing unsaved edits).
+ */
+async function maybeAutoOpenCellView(
+  editor: vscode.TextEditor | undefined,
+): Promise<void> {
+  if (!editor) return;
+  const doc = editor.document;
+  if (doc.uri.scheme !== "file" || doc.languageId !== "python") return;
+  if (doc.isDirty) return;
+  if (!vscode.workspace.getConfiguration("tithon").get<boolean>("autoOpenCellView", true)) return;
+  const key = doc.uri.toString();
+  if (textPreferred.has(key) || cellViewUris.has(key) || autoConverting.has(key)) return;
+  if (findNotebook(doc.uri)) return; // a Cell View is already open for it
+  if (!isPercentNotebookSource(doc.getText())) return;
+  autoConverting.add(key);
+  try {
+    await vscode.commands.executeCommand("tithon.openAsCellView", doc.uri);
+  } catch {
+    /* best-effort; the manual button / CodeLens still works */
+  } finally {
+    autoConverting.delete(key);
+  }
+}
 
 /** Close every plain-text editor tab showing `uriStr` (a coexisting text view
  * of a Cell View). Notebook/custom tabs are left untouched. */
@@ -180,6 +224,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
+  // Auto-open percent `.py` files (with a `# %%` marker) as the Cell View, so the
+  // user doesn't press "Open as Cell View" on every reopen. Fires when a text
+  // editor becomes active (explorer click, window restore) and once for the
+  // editor already active at activation (the file that triggered onLanguage).
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((e) => void maybeAutoOpenCellView(e)),
+  );
+  void maybeAutoOpenCellView(vscode.window.activeTextEditor);
+
   context.subscriptions.push(
     vscode.workspace.registerNotebookSerializer(
       "tithon-py",
@@ -245,6 +298,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage("Tithon: open a .py file first");
         return;
       }
+      // Opting into the Cell View clears any "keep as text" choice so auto-open
+      // resumes for this file.
+      textPreferred.delete(uri.toString());
       await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
       // Belt to the onDidOpenNotebookDocument hook: ensure no text view lingers.
       cellViewUris.add(uri.toString());
@@ -266,6 +322,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         cellViewUris.delete(uri.toString());
+        // Remember the user wants TEXT for this file this session, so auto-open
+        // (maybeAutoOpenCellView) does not immediately flip it back to Cell View.
+        textPreferred.add(uri.toString());
         await closeCellViewTabs(uri.toString());
         await vscode.commands.executeCommand("vscode.openWith", uri, "default");
       } catch (err) {

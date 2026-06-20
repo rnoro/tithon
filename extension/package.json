@@ -110,6 +110,11 @@
           "type": "string",
           "default": "",
           "description": "Python interpreter to run the daemon as `<python> -m tithon daemon` (works without activating the venv). Leave empty to use the interpreter selected by the Python extension."
+        },
+        "tithon.autoOpenCellView": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically open percent-format `.py` files (those with a `# %%` cell marker) in the Tithon Cell View instead of as plain text. Plain scripts with no markers are unaffected. Use the Cell View toolbar's \"Open as Text Editor\" to keep a given file as text for the session."
         }
       }
     },

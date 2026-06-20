@@ -88,6 +88,13 @@ describe("Tithon Cell View keeps ruff/ty LSP alive in cells (v32)", () => {
     const helperUri = vscode.Uri.file(process.env.TITHON_HELPER!);
     await ext().activate();
 
+    // This suite deliberately reproduces a text/notebook COEXISTENCE on the same
+    // URI; the percent-`.py` auto-open feature would convert the file to a Cell
+    // View before we can, so disable it here (covered on by default in v37).
+    await vscode.workspace
+      .getConfiguration("tithon")
+      .update("autoOpenCellView", false, vscode.ConfigurationTarget.Global);
+
     const ruff = vscode.extensions.getExtension("charliermarsh.ruff");
     const ty = vscode.extensions.getExtension("astral-sh.ty");
     assert.ok(ruff, "ruff extension must be installed in the test host");

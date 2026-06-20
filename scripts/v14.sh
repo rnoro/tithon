@@ -4,23 +4,13 @@
 #   - opens a 1-cell notebook, runs cell 0 (starts live sync),
 #   - inserts a NEW cell and runs it, asserting it shows output live with no
 #     tithon.restoreOutputs call (the live index must refresh to include it).
-# Needs network + xvfb (see scripts/v8.sh header); run via `make verify-d`.
+# Needs network + xvfb (see scripts/v8.sh header); run via `make vscode`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v14 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do
-    [ -x "$d/npx" ] && PATH="$d:$PATH" && break
-  done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v14-npm.log 2>&1) || fail "npm install failed"; }
-
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v14
 FIX="$WORK/addcell.py"

@@ -11,24 +11,14 @@
 #           spinner (the user-reported "clearing leaves the cell stuck running").
 # The durable-clear daemon path is unit/hermetic-verified (test_clear.py, v34);
 # this verifies the real-VSCode spinner + dirty behavior. Needs network + xvfb
-# (see scripts/v8.sh header for apt prerequisites); run via `make verify-d`.
+# (see scripts/v8.sh header for apt prerequisites); run via `make vscode`.
 . "$(dirname "$0")/lib.sh"
 
 fail() { echo "RESULT v37 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do
-    [ -x "$d/npx" ] && PATH="$d:$PATH" && break
-  done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v37-npm.log 2>&1) || fail "npm install failed"; }
-
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v37
 FIX="$WORK/clearme.py"

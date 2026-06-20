@@ -16,9 +16,6 @@ tunnel hours later, and your outputs are still there and still streaming.
 > moment the client disconnects. Tithon lifts the curse: _immortality, with
 > eternal youth this time._
 
-The authoritative design document is [`docs/SPEC.md`](docs/SPEC.md); it also
-covers current implementation maturity and the verification matrix.
-
 ---
 
 ## Features
@@ -30,15 +27,11 @@ covers current implementation maturity and the verification matrix.
   display state) for fast reconnects.
 - **Snapshot + delta sync.** Clients attach with a `last_seen_seq` and receive a
   snapshot followed by a monotonic-sequence delta stream — gapless and ordered.
-- **Live streaming with bounded cost.** Output streams to cells _as it runs_;
-  rendering is coalesced so a 50,000-iteration loop collapses to a handful of
-  UI updates instead of melting the renderer.
 - **Outputs live in the journal, not the file.** A percent-format `.py` stays
   pure source (byte-exact round-trip, clean diffs); outputs are reattached to
   cells by content hash. Rich outputs (images) are stored as files, not base64.
 - **Widget state mirror.** `ipywidgets` comm traffic is folded into a
-  `widget-state+json` snapshot — a `tqdm` bar with 50k updates reconnects as a
-  single bar, not 50k events.
+  `widget-state+json` snapshot — a `tqdm` bar.
 - **Host protection.** A slow or stalled client cannot grow daemon memory
   without bound or block other clients; the daemon caps per-subscriber buffers
   and drops clients that fall too far behind (they reconnect and resync).

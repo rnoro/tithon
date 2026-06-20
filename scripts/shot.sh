@@ -80,6 +80,8 @@ PY
     ;;
   opentextshot)
     printf '# %%%% greeting\nprint("HELLO_OPENTEXT", flush=True)\n\n# %%%% math\nx = 6 * 7\nprint(f"answer = {x}")\n' >"$FIX" ;;
+  autocellviewshot)
+    printf '# %%%% greeting\nprint("HELLO_AUTOCELL", flush=True)\n\n# %%%% math\nx = 6 * 7\nprint(f"answer = {x}")\n' >"$FIX" ;;
   orphanrestore)
     printf '# %%%% orphan\nimport time\nprint("ORPHANME", flush=True)\nfor i in range(200):\n    time.sleep(0.1)\n    print(f"tick {i}", flush=True)\n' >"$FIX" ;;
   *)

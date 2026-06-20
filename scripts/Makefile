@@ -1,22 +1,22 @@
 # Run from anywhere: paths are resolved relative to this Makefile's location.
+# Run a focused topic bundle while developing that area, or a meta-bundle.
+#   make fast            # every hermetic test (no VSCode) — the quick gate
+#   make restore         # just the reconnect/restore tests, etc.
+#   make vscode          # every real-VSCode test (network + xvfb; one shared build)
+#   make all             # fast + vscode
+# Topic bundles: core serializer backpressure widgets restore livesync kernels
+#                richoutputs cellview  (see run_verify.sh for membership).
 HERE := $(dir $(lastword $(MAKEFILE_LIST)))
 
-.PHONY: verify-a verify-b verify-c verify-d verify test shot
+BUNDLES := core serializer backpressure widgets restore livesync kernels \
+           richoutputs cellview fast vscode all
 
-verify-a:
-	bash $(HERE)run_verify.sh a
+.PHONY: $(BUNDLES) verify test shot
 
-verify-b:
-	bash $(HERE)run_verify.sh b
+$(BUNDLES):
+	bash $(HERE)run_verify.sh $@
 
-verify-c:
-	bash $(HERE)run_verify.sh c
-
-verify-d:
-	bash $(HERE)run_verify.sh d
-
-verify:
-	bash $(HERE)run_verify.sh all
+verify: fast        # convenience alias: the quick hermetic gate
 
 test:
 	cd $(HERE).. && uv run pytest -q

@@ -5,9 +5,10 @@
 #   (2) @jupyter-widgets/html-manager renders that mirror snapshot to a progress
 #       bar at the expected value under jsdom (vitest test/widget.test.ts).
 #   (3) Widget State Mirror unit tests incl. binary buffers (pytest).
-# The @vscode/test-electron integration cannot run here (no display/xvfb); the
-# sanctioned alternative (renderer renders without error + jsdom DOM check) is
-# used and the limitation is recorded in DECISIONS.md (ADR-012).
+# Bundle: widgets (hermetic — vitest jsdom + pytest, NO electron download). The
+# jsdom html-manager render (2) is now ALSO covered by a REAL webview render in
+# v29 (ADR-016 retired ADR-012's jsdom-only premise); v5 is kept as the fast
+# hermetic widget-mirror + render smoke that runs without a VSCode download.
 . "$(dirname "$0")/lib.sh"
 
 fail() { echo "RESULT v5 FAIL $1"; exit 1; }

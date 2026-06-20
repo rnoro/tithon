@@ -9,18 +9,7 @@ fail() { echo "RESULT v29 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do [ -x "$d/npx" ] && PATH="$d:$PATH" && break; done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-"$PY" -c "import ipywidgets, tqdm" 2>/dev/null || fail "ipywidgets/tqdm missing from daemon venv"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v29-npm.log 2>&1) || fail "npm install failed"; }
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-# The widget renderer runs in the webview: it MUST be the esbuild browser bundle.
-(cd "$EXT" && node esbuild.mjs >/tmp/v29-esbuild.log 2>&1) || { tail -20 /tmp/v29-esbuild.log; fail "renderer bundle failed"; }
-[ -s "$EXT/dist/widgetRenderer.js" ] || fail "dist/widgetRenderer.js not produced"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v29
 FIX="$WORK/widget.py"

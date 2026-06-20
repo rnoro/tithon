@@ -7,14 +7,7 @@ fail() { echo "RESULT v20 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do [ -x "$d/npx" ] && PATH="$d:$PATH" && break; done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v20-npm.log 2>&1) || fail "npm install failed"; }
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v20
 FIX="$WORK/dup.py"

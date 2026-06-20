@@ -402,13 +402,27 @@ extended, but never weakened to pass. For example, `v4` sends `kill -9` to the
 real daemon and double-checks kernel survival by *both* PID identity *and*
 in-kernel variable continuity.
 
+Tests are grouped into **topic bundles** — run the one for the area you are
+working on, or a meta-bundle. Any bundle with a real-VSCode test builds the
+extension **once** (shared across the bundle).
+
 ```bash
-make verify     # hermetic gate: v1–v7, v9 (no network/display)
-make verify-a   # v1–v4   daemon/CLI: persistence, restore, artifacts, crash survival
-make verify-b   # v5–v6   widget mirror + percent serialization
-make verify-c   # v7,v9,v17,v27  client restore, backpressure, per-file kernels, rich outputs
-make verify-d   # real VSCode end-to-end (needs network + xvfb)
-make test       # daemon unit tests (pytest)
+# meta-bundles
+make fast        # every hermetic test (no network/display) — the quick gate (alias: make verify)
+make vscode      # every real-VSCode test (needs network + xvfb; one shared build)
+make all         # fast + vscode
+
+# topic bundles (a test lives in exactly one)
+make core        # v1–v4    journal / fold / artifact / daemon-crash survival
+make serializer  # v6       percent <-> notebook round-trip
+make backpressure# v9       slow-client host protection
+make widgets     # v5 v29 v30           ipywidget mirror + render + live animation
+make restore     # v7 v8 v15 v16 v22 v38 reconnect: output + cell-state restore, orphan
+make livesync    # v10–v14 v33 v37       live streaming into cells
+make kernels     # v17–v21 v23 v24 v26   per-file kernels + lifecycle
+make richoutputs # v27 v28 v31 v34 v35   matplotlib/tqdm images, live-plot GC, clear, storage
+make cellview    # v32 v39              text <-> Cell View, ruff/ty LSP
+make test        # daemon unit tests (pytest)
 ```
 
 Capability → what it guarantees → how it is verified:
@@ -429,7 +443,7 @@ Capability → what it guarantees → how it is verified:
 | Host protection | Slow client can't grow memory or block others | `test_backpressure.py`, `v9` |
 | Widget rendering | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live) |
 
-`make verify-d` downloads VSCode and needs system libraries (Debian/Ubuntu):
+`make vscode` downloads VSCode and needs system libraries (Debian/Ubuntu):
 
 ```bash
 apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \

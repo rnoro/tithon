@@ -4,23 +4,13 @@
 #   - selects the Tithon kernel, runs ALL cells natively (no manual live step),
 #   - asserts EACH cell's output lands on its OWN cell (CELL0/1/2), not all
 #     collapsed onto the top cell.
-# Needs network + xvfb (see scripts/v8.sh header); run via `make verify-d`.
+# Needs network + xvfb (see scripts/v8.sh header); run via `make vscode`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v12 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do
-    [ -x "$d/npx" ] && PATH="$d:$PATH" && break
-  done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v12-npm.log 2>&1) || fail "npm install failed"; }
-
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v12
 FIX="$WORK/multi.py"

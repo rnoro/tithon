@@ -8,7 +8,11 @@
 #     the folded outputs (mocha test, in-host).
 # This supersedes the ADR-012 "no display" limitation FOR THIS ENVIRONMENT
 # (xvfb + electron libs installed). Needs network (downloads VSCode) + xvfb, so
-# it is NOT part of `make verify` (hermetic v1~v7); run via `make verify-d`.
+# it is NOT part of `make verify` (the hermetic fast bundle); run via
+# `make restore` (its topic bundle) or `make vscode`.
+# Bundle: restore. NOTE: drives the MANUAL tithon.restoreOutputs command — a
+# legacy path; the user-facing flow is auto-restore-on-open (v22). v8 is kept as
+# the canonical multi-KIND restore check (stdout + execute_result + error).
 #
 # System prerequisites (Debian/Ubuntu; install once, needs root):
 #   apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \
@@ -22,21 +26,7 @@ fail() { echo "RESULT v8 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-
-# Locate node/npx.
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do
-    [ -x "$d/npx" ] && PATH="$d:$PATH" && break
-  done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v node >/dev/null 2>&1 || fail "node not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v8-npm.log 2>&1) || fail "npm install failed"; }
-
-# Build the extension (dist/) and the integration sources (out-int/).
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 # Isolated daemon + a fixture workspace whose cell bodies are what we submit.
 setup_env v8

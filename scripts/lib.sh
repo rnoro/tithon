@@ -49,3 +49,25 @@ cleanup_procs() {
   [ -n "$dp" ] && kill -9 "$dp" 2>/dev/null
   return 0
 }
+
+ensure_extension_build() { # build the VSCode extension (dist/) + integration sources (out-int/)
+  # Locate node/npx (nvm), verify the electron prerequisites, then build.
+  # A BUNDLED run sets TITHON_SKIP_BUILD=1 (run_verify.sh builds ONCE before a
+  # vscode bundle) so the 26 real-VSCode scripts don't each re-run `tsc` twice;
+  # a standalone `bash vNN.sh` leaves it unset and builds itself. Returns
+  # nonzero on a missing tool / build failure — the caller maps it to its RESULT.
+  local ext="$ROOT/extension"
+  if ! command -v npx >/dev/null 2>&1; then
+    for d in "$HOME/.nvm/versions/node"/*/bin; do
+      [ -x "$d/npx" ] && PATH="$d:$PATH" && export PATH && break
+    done
+  fi
+  command -v npx >/dev/null 2>&1 || { echo "npx not found on PATH" >&2; return 1; }
+  command -v node >/dev/null 2>&1 || { echo "node not found on PATH" >&2; return 1; }
+  command -v xvfb-run >/dev/null 2>&1 || { echo "xvfb-run not found (install xvfb)" >&2; return 1; }
+  [ -d "$ext/node_modules" ] || { (cd "$ext" && npm install >/tmp/tithon-ext-npm.log 2>&1) || { echo "npm install failed" >&2; return 1; }; }
+  [ -n "${TITHON_SKIP_BUILD:-}" ] && return 0   # already built once by the bundle runner
+  (cd "$ext" && npx tsc -p ./) || { echo "extension build (dist) failed" >&2; return 1; }
+  (cd "$ext" && npx tsc -p tsconfig.integration.json) || { echo "integration build (out-int) failed" >&2; return 1; }
+  return 0
+}

@@ -9,24 +9,14 @@
 #     fix) and ends showing the LATEST frame (in-place replace, not append).
 # Coalescing bounds are unit-verified (test/liveSync.test.ts Fix E); this verifies
 # the real in-place render. Needs network + xvfb (see scripts/v8.sh header for the
-# apt prerequisites); run via `make verify-d`.
+# apt prerequisites); run via `make vscode`.
 . "$(dirname "$0")/lib.sh"
 
 fail() { echo "RESULT v33 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
 
 EXT="$ROOT/extension"
-if ! command -v npx >/dev/null 2>&1; then
-  for d in "$HOME/.nvm/versions/node"/*/bin; do
-    [ -x "$d/npx" ] && PATH="$d:$PATH" && break
-  done
-fi
-command -v npx >/dev/null 2>&1 || fail "npx not found on PATH"
-command -v xvfb-run >/dev/null 2>&1 || fail "xvfb-run not found (install xvfb)"
-[ -d "$EXT/node_modules" ] || { (cd "$EXT" && npm install >/tmp/v33-npm.log 2>&1) || fail "npm install failed"; }
-
-(cd "$EXT" && npx tsc -p ./) || fail "extension build (dist) failed"
-(cd "$EXT" && npx tsc -p tsconfig.integration.json) || fail "integration build (out-int) failed"
+ensure_extension_build || fail "extension build failed"
 
 setup_env v33
 FIX="$WORK/livedisplay.py"
