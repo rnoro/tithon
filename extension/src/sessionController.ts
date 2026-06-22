@@ -268,6 +268,7 @@ class VSCodeCellSink implements CellSink {
     state: "queued" | "running" | "done" | "error" | "orphaned",
     startMs?: number,
     endMs?: number,
+    stale = false,
   ): void {
     if (state === "queued") {
       this.create(idx); // pending clock, no output
@@ -288,22 +289,28 @@ class VSCodeCellSink implements CellSink {
         const out = new vscode.NotebookCellOutput([
           vscode.NotebookCellOutputItem.text(item.text, mime),
         ]);
+        // The cell was edited since this output was produced — flag it so the
+        // §3.2 stale badge shows instead of passing old output off as fresh.
+        if (stale) out.metadata = { tithonStale: true };
         this.streamOut.set(`${idx}:${item.name}`, out);
         void e.appendOutput(out);
       } else {
         // Image bytes were prefetched by startLive before seeding, so ctx() resolves.
         const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+        if (stale) out.metadata = { tithonStale: true };
         this.registerDisplay(idx, item, out); // a live update after reconnect replaces in place
         void e.appendOutput(out);
       }
     }
     if (state === "done" || state === "error" || orphaned) {
       // orphaned -> NEUTRAL success (it never formally completed); done/error ->
-      // the real success flag. Either way keep the REAL finish time so the cell
-      // shows its actual (frozen) duration. For an orphan with no recorded finish
-      // (an old journal predating the freeze), end at the start (0s) — never
-      // Date.now(), which would re-inflate to wall-clock-since-then.
-      const success = orphaned ? undefined : state === "done";
+      // the real success flag. A STALE restore (the cell was edited since the run)
+      // also ends NEUTRAL so a ✓ never implies the edited code was run. Either way
+      // keep the REAL finish time so the cell shows its actual (frozen) duration.
+      // For an orphan with no recorded finish (an old journal predating the
+      // freeze), end at the start (0s) — never Date.now(), which would re-inflate
+      // to wall-clock-since-then.
+      const success = orphaned || stale ? undefined : state === "done";
       const fallback = orphaned ? (startMs ?? Date.now()) : Date.now();
       e.end(success, endMs ?? fallback);
       this.execs.delete(idx);
@@ -467,6 +474,8 @@ export class TithonNotebookController {
   readonly widgetRenders: Array<{ model_id?: string; mode?: string }> = [];
   /** Count of live widget updates the renderer applied (live animation) — for verify. */
   widgetUpdatesApplied = 0;
+  /** Test-only: the most recent reconnect seed mapping (per notebook uri). */
+  readonly lastSeedTrace = new Map<string, Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }>>();
   // Coalesced live widget-state deltas pushed to the renderer (latest per comm id,
   // flushed ~50ms) so a 50k-update tqdm.notebook animates without flooding it.
   private readonly widgetUpdateBuf = new Map<string, Record<string, unknown>>();
@@ -816,6 +825,9 @@ export class TithonNotebookController {
     // attach() resolved, so no live event can slip in between capturing the
     // snapshot and wiring onEvent — no gap, no duplication.
     const toMs = (s: number | null) => (s != null ? s * 1000 : undefined);
+    const trace: Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }> = [];
+    for (const ex of execs) trace.push({ execId: ex.execId, originIndex: ex.origin?.index, cellHash: ex.cellHash, mappedCell: live.cellOf(ex.execId), staleMap: live.staleOf(ex.execId), status: ex.status });
+    this.lastSeedTrace.set(notebook.uri.toString(), trace);
     for (const ex of execs) {
       const idx = live.cellOf(ex.execId);
       if (idx === undefined) continue;
@@ -827,7 +839,9 @@ export class TithonNotebookController {
         // render output without a perpetual spinner (the "26667s running" bug).
         : ex.status === "orphaned" ? "orphaned"
         : "running";
-      sink.seedCell(idx, client.outputsOf(ex.execId), state, toMs(ex.startedAt), toMs(ex.finishedAt));
+      // staleOf: the cell was edited since this run (mapped by index, code gone) —
+      // restore the old output flagged stale, ending neutral (ADR-047).
+      sink.seedCell(idx, client.outputsOf(ex.execId), state, toMs(ex.startedAt), toMs(ex.finishedAt), live.staleOf(ex.execId));
     }
     const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
     // Keep the index current as cells are added/edited after live started
@@ -917,6 +931,11 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     vscode.commands.registerCommand("tithon._activeExecCells", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       return nb ? controller.activeExecCells(nb) : [];
+    }),
+    // Test-only: the most recent reconnect seed mapping for the active notebook.
+    vscode.commands.registerCommand("tithon._seedTrace", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.lastSeedTrace.get(nb.uri.toString()) ?? [] : [];
     }),
   );
   return controller;

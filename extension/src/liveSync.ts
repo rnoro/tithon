@@ -76,8 +76,12 @@ export interface LiveStats {
 
 export class LiveOutputSync {
   private readonly hashIndex = new Map<string, number>();
+  private readonly indexHash = new Map<number, string>();
   private readonly cellIndices = new Set<number>();
   private readonly execToCell = new Map<string, number>();
+  // execId -> the cell's code was EDITED since this run (mapped by index because
+  // the old code is gone): its restored output is stale (ADR-047).
+  private readonly execStale = new Map<string, boolean>();
   private readonly pending = new Map<number, PendingOp[]>();
   private readonly pendingClear = new Set<string>(); // execIds with deferred clear
   private readonly dirty = new Set<number>();
@@ -101,36 +105,60 @@ export class LiveOutputSync {
    */
   refreshCells(cells: Cell[]): void {
     this.hashIndex.clear();
+    this.indexHash.clear();
     this.cellIndices.clear();
     const docCells: DocCell[] = docCellsFromParsed(cells);
     for (const dc of docCells) {
       this.cellIndices.add(dc.index);
+      this.indexHash.set(dc.index, dc.cellHash);
       if (!this.hashIndex.has(dc.cellHash)) this.hashIndex.set(dc.cellHash, dc.index);
     }
   }
 
   /**
-   * Resolve an execution's cell: by recorded `index` first (authoritative —
-   * distinguishes identical-code cells, the duplicate-cell bug ADR-026), then by
-   * cell_hash. Returns undefined if neither maps to a present cell.
+   * Resolve an execution's cell in three tiers (ADR-047, refines ADR-019/026):
+   *   1. STRONG — the cell at `index` still has this code (hash matches): the
+   *      authoritative key, and it tells identical-code cells apart (ADR-026).
+   *   2. MOVED — the index'd cell's code differs but the exact code lives in
+   *      another cell now (a cell was inserted/removed above, shifting indices):
+   *      follow the content, not the stale index.
+   *   3. STALE — the index'd cell was edited and the old code is nowhere else:
+   *      attach to that same cell but flag it stale (the §3.2 stale badge).
+   * Returns undefined when there is no index match and no hash match.
    */
-  private resolveCell(index: number | null | undefined, cellHash: string | null | undefined): number | undefined {
-    if (index != null && this.cellIndices.has(index)) return index;
-    if (cellHash) return this.hashIndex.get(cellHash);
+  private resolveCell(
+    index: number | null | undefined,
+    cellHash: string | null | undefined,
+  ): { index: number; stale: boolean } | undefined {
+    const hasIndex = index != null && this.cellIndices.has(index);
+    if (hasIndex && cellHash && this.indexHash.get(index!) === cellHash) {
+      return { index: index!, stale: false }; // 1) strong
+    }
+    const moved = cellHash ? this.hashIndex.get(cellHash) : undefined;
+    if (moved !== undefined) return { index: moved, stale: false }; // 2) moved
+    if (hasIndex) return { index: index!, stale: true }; // 3) stale edit-in-place
     return undefined;
   }
 
   /** Seed exec->cell mappings from a snapshot (executions carry index + cell_hash). */
   seed(execs: Array<{ execId: string; cellHash: string | null; index?: number | null }>): void {
     for (const e of execs) {
-      const idx = this.resolveCell(e.index, e.cellHash);
-      if (idx !== undefined) this.execToCell.set(e.execId, idx);
+      const r = this.resolveCell(e.index, e.cellHash);
+      if (r !== undefined) {
+        this.execToCell.set(e.execId, r.index);
+        this.execStale.set(e.execId, r.stale);
+      }
     }
   }
 
   /** Cell index an execution maps to (after {@link seed}), or undefined. */
   cellOf(execId: string): number | undefined {
     return this.execToCell.get(execId);
+  }
+
+  /** True when an execution's mapped cell was edited since it ran (ADR-047). */
+  staleOf(execId: string): boolean {
+    return this.execStale.get(execId) ?? false;
   }
 
   /** Feed one wire event. Cheap: folds into pending ops + schedules a flush. */
@@ -144,8 +172,11 @@ export class LiveOutputSync {
       // cells with identical code — duplicate-cell bug ADR-026), else hash the code.
       const code = ev.payload?.code;
       const hash = typeof code === "string" ? computeCellHash(code) : null;
-      const idx = this.resolveCell(ev.payload?.origin?.index, hash);
-      if (idx !== undefined) this.execToCell.set(execId, idx);
+      const r = this.resolveCell(ev.payload?.origin?.index, hash);
+      if (r !== undefined) {
+        this.execToCell.set(execId, r.index);
+        this.execStale.set(execId, r.stale);
+      }
       // Reconnect restores the queued (pending) state via seedCell; for a fresh
       // live run the cell flips to "started" almost immediately, so we keep
       // queued map-only here (no extra sink op, preserves coalescing bounds).

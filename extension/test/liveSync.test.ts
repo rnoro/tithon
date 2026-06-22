@@ -175,6 +175,36 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     expect(sink.ops).toEqual([{ op: "appendStream", idx: 1, name: "stdout", text: "hello" }]);
   });
 
+  it("follows content to its moved cell on reconnect after a top insert — ADR-047 (#2)", () => {
+    // FIRST/SECOND ran at idx 0/1; a cell was inserted on top, so the document is
+    // now INSERTED(0) FIRST(1) SECOND(2). Seeding by the old indices must follow
+    // the cell_hash to the shifted cells, not misattribute by one.
+    const ran = parse(["# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n")).cells;
+    const after = parse(["# %% i", "ins = 0", "# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n")).cells;
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(after, sink, sched);
+    live.seed([
+      { execId: "e1", cellHash: computeCellHash(cellSource(ran[0])), index: 0 },
+      { execId: "e2", cellHash: computeCellHash(cellSource(ran[1])), index: 1 },
+    ]);
+    expect(live.cellOf("e1")).toBe(1); // FIRST moved to cell 1
+    expect(live.cellOf("e2")).toBe(2); // SECOND moved to cell 2
+    expect(live.staleOf("e1")).toBe(false);
+  });
+
+  it("maps an edited-in-place cell by index and marks it stale — ADR-047 (#3)", () => {
+    // The cell ran as code A, then was edited (hash differs) and the old code is
+    // nowhere else: map back to the same index, flagged stale.
+    const after = parse(["# %% a", "edited = 1", ""].join("\n")).cells;
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(after, sink, sched);
+    live.seed([{ execId: "e1", cellHash: computeCellHash("ran = 0\n"), index: 0 }]);
+    expect(live.cellOf("e1")).toBe(0);
+    expect(live.staleOf("e1")).toBe(true);
+  });
+
   it("normalizes a done(status:ok) event to 'done' so the cell shows ✓ not ✗", () => {
     const sched = new ManualScheduler();
     const sink = new TestSink();

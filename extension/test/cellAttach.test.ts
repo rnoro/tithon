@@ -94,6 +94,37 @@ describe("output -> cell attachment", () => {
     expect(att.get(1)?.outputs).toEqual(["second"]); // NOT collapsed onto cell 0
   });
 
+  it("follows content to its new cell after a top insert shifts indices — ADR-047 (#2)", () => {
+    // FIRST(idx0)/SECOND(idx1) ran, then a cell was INSERTED at the top, so the
+    // file now has INSERTED(0) FIRST(1) SECOND(2). The recorded indices (0,1) are
+    // stale; mapping must follow the cell_hash, NOT pile output onto the old index.
+    const ran = ["# %% a", 'print("FIRST")', "# %% b", 'print("SECOND")', ""].join("\n");
+    const after = ["# %% i", 'print("INSERTED")', "\n", ran].join("\n");
+    const rc = docCellsFromParsed(parse(ran).cells);
+    const cells = docCellsFromParsed(parse(after).cells);
+    const execs: JournalExecution[] = [
+      { execId: "e1", cellHash: rc[0].cellHash, index: 0, range: { start: 0, end: 1 }, outputs: ["FIRST"] },
+      { execId: "e2", cellHash: rc[1].cellHash, index: 1, range: { start: 2, end: 3 }, outputs: ["SECOND"] },
+    ];
+    const att = attachOutputs(execs, cells);
+    expect(att.has(0)).toBe(false); // INSERTED cell stays empty (not FIRST)
+    expect(att.get(1)?.outputs).toEqual(["FIRST"]); // followed to its real cell
+    expect(att.get(1)?.stale).toBe(false);
+    expect(att.get(2)?.outputs).toEqual(["SECOND"]);
+  });
+
+  it("flags a cell edited-in-place since its run as stale — ADR-047 (#3)", () => {
+    // cell 0 ran as ALPHA, then was edited to BETA without re-running. The old
+    // output attaches to that same cell but flagged stale (not a fresh ✓ run).
+    const after = docCellsFromParsed(parse(["# %% a", 'print("BETA")', ""].join("\n")).cells);
+    const execs: JournalExecution[] = [
+      { execId: "e1", cellHash: computeCellHash('print("ALPHA")\n'), index: 0, range: { start: 0, end: 1 }, outputs: ["ALPHA"] },
+    ];
+    const att = attachOutputs(execs, after);
+    expect(att.get(0)?.outputs).toEqual(["ALPHA"]);
+    expect(att.get(0)?.stale).toBe(true);
+  });
+
   it("falls back to cell_hash when no index is recorded (legacy/CLI runs)", () => {
     const cells = docCells();
     const cHash = cells[2].cellHash;

@@ -444,7 +444,14 @@ class Session:
     async def _exec_worker(self) -> None:
         while True:
             exec_id, code = await self._queue.get()
-            msg_id = self.kc.execute(code)
+            # allow_stdin=False: the daemon never services the kernel's STDIN
+            # channel, so a cell calling input()/getpass()/breakpoint()/pdb would
+            # otherwise issue an input_request that nobody answers — the kernel
+            # waits forever, the execute_reply never arrives, and this worker (plus
+            # every cell queued behind it) wedges with only an interrupt to escape.
+            # With stdin disabled the kernel raises StdinNotImplementedError at
+            # once, so the cell fails cleanly and the session keeps moving.
+            msg_id = self.kc.execute(code, allow_stdin=False)
             self._msgid_to_exec[msg_id] = exec_id
             started_at = self.journal.mark_started(exec_id)
             self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})

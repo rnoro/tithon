@@ -104,21 +104,27 @@ function proximity(a: LineRange, b: LineRange): number {
 /**
  * Attach each execution's outputs to a document cell.
  *
- * Identity is resolved in priority order:
- *   1. the recorded `index` (authoritative — captured at submit time, so two
- *      cells with IDENTICAL code map to the right one; the duplicate-cell bug,
- *      DECISIONS ADR-026), then
- *   2. EXACT cell_hash match (covers legacy/CLI runs that carry no index).
+ * Identity is resolved per execution in three tiers (DECISIONS ADR-047, which
+ * refines ADR-019/026):
+ *   1. STRONG — the cell at the recorded `index` still has the SAME code
+ *      (`cellHash` matches). This is authoritative and handles two cells with
+ *      IDENTICAL code (the duplicate-cell bug, ADR-026), since each carries its
+ *      own submit-time index.
+ *   2. MOVED — the index'd cell's code differs, but some OTHER cell still has
+ *      this execution's exact `cellHash` (the cell moved, e.g. a cell was
+ *      inserted above so every later cell shifted down). Attach to where the
+ *      content actually is, not the stale index → fixes the "insert a cell, then
+ *      reopen, and every output is off by one" misattribution.
+ *   3. STALE — the index'd cell exists but was EDITED since it ran and the old
+ *      code is nowhere else. Attach the old output to that same cell flagged
+ *      `stale: true`, so it renders with the §3.2 stale badge instead of
+ *      masquerading as a fresh successful run.
  *
- * An execution that matches neither is SKIPPED, not collapsed onto a nearby
- * cell. The old range-proximity fallback piled mismatched runs onto cell 0
- * (ADR-019); with index-or-exact-hash only, a cell edited since its run simply
- * restores nothing rather than the wrong output. Callers should also scope
- * `executions` to the current file's uri (see {@link SessionClient.restoreInto}).
- *
- * When several executions resolve to the same cell, the later one (array order)
- * wins. Range proximity only tiebreaks genuine duplicate-hash cells with no
- * index.
+ * Index-first alone (the old behavior) misattributed on inserts; pure exact-hash
+ * (ADR-019) dropped edited cells and collapsed duplicates. Cross-file collapse
+ * is prevented separately by uri-scoping the executions (see
+ * {@link SessionClient.restoreInto}). When several executions resolve to the
+ * same cell, the later one (array order) wins.
  */
 export function attachOutputs(
   executions: JournalExecution[],
@@ -134,26 +140,36 @@ export function attachOutputs(
     else byHash.set(dc.cellHash, [dc]);
   }
 
+  /** Pick the closest same-hash cell to a range (tiebreak duplicate-hash cells). */
+  const closestByHash = (cellHash: string, range: LineRange): DocCell | undefined => {
+    const matches = byHash.get(cellHash);
+    if (!matches || matches.length === 0) return undefined;
+    return matches
+      .slice()
+      .sort((a, b) => proximity(a.range, range) - proximity(b.range, range) || a.index - b.index)[0];
+  };
+
   for (const ex of executions) {
     let target: DocCell | undefined;
-    if (ex.index != null) target = byIndex.get(ex.index); // authoritative
-    if (!target) {
-      const hashMatches = byHash.get(ex.cellHash);
-      if (!hashMatches || hashMatches.length === 0) continue; // no match -> skip
-      // Among identical-hash (duplicate) cells, prefer the closest by range,
-      // then earliest index. For the common 1:1 case this picks that one cell.
-      target = hashMatches
-        .slice()
-        .sort(
-          (a, b) =>
-            proximity(a.range, ex.range) - proximity(b.range, ex.range) ||
-            a.index - b.index,
-        )[0];
+    let stale = false;
+    const atIndex = ex.index != null ? byIndex.get(ex.index) : undefined;
+    if (atIndex && atIndex.cellHash === ex.cellHash) {
+      target = atIndex; // 1) strong: right index, unchanged code
+    } else {
+      const moved = closestByHash(ex.cellHash, ex.range);
+      if (moved) {
+        target = moved; // 2) moved: follow the content to its new cell
+      } else if (atIndex) {
+        target = atIndex; // 3) stale: edited in place, old code gone elsewhere
+        stale = true;
+      } else {
+        continue; // no index and no hash match -> skip (don't guess a cell)
+      }
     }
     byCell.set(target.index, {
       cellIndex: target.index,
       execId: ex.execId,
-      stale: false,
+      stale,
       outputs: ex.outputs,
     });
   }
