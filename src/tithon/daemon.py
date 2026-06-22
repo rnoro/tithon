@@ -443,41 +443,75 @@ class Session:
 
     async def _exec_worker(self) -> None:
         while True:
-            exec_id, code = await self._queue.get()
-            # allow_stdin=False: the daemon never services the kernel's STDIN
-            # channel, so a cell calling input()/getpass()/breakpoint()/pdb would
-            # otherwise issue an input_request that nobody answers — the kernel
-            # waits forever, the execute_reply never arrives, and this worker (plus
-            # every cell queued behind it) wedges with only an interrupt to escape.
-            # With stdin disabled the kernel raises StdinNotImplementedError at
-            # once, so the cell fails cleanly and the session keeps moving.
-            msg_id = self.kc.execute(code, allow_stdin=False)
-            self._msgid_to_exec[msg_id] = exec_id
-            started_at = self.journal.mark_started(exec_id)
-            self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
-            log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
-            while True:
-                reply = await self.kc.shell_channel.get_msg()
-                if (
-                    reply["header"]["msg_type"] == "execute_reply"
-                    and (reply.get("parent_header") or {}).get("msg_id") == msg_id
-                ):
-                    break
-            content = reply["content"]
-            status = content.get("status", "ok")
-            ec = content.get("execution_count")
-            # tiny grace so trailing iopub lands before the folded cache persists
-            await asyncio.sleep(0.05)
-            folded = json.dumps(self._folds[exec_id].outputs())
-            finished_at = self.journal.mark_done(
-                exec_id, "done" if status == "ok" else "error", ec, folded
-            )
-            self._journal_lifecycle(
-                exec_id,
-                "tithon.done",
-                {"status": status, "execution_count": ec, "ts": finished_at},
-            )
-            log.info("[%s] exec %s done status=%s", self.session_id, exec_id, status)
+            batch, stop_on_error = await self._queue.get()
+            # A batch is one user action (a single cell, or a "Run All" / multi-cell
+            # run). For a Run-All, native Jupyter STOPS at the first cell that
+            # raises and skips the rest; we honor that here, in the daemon, so it
+            # holds even if the client disconnects mid-run (the persistence premise).
+            # Processing the batch as one queue item makes "which cells belong to
+            # this run" unambiguous — no run-id bookkeeping, no skip-the-wrong-cell
+            # race with cells of a later, independent run.
+            skip_rest = False
+            for exec_id, code in batch:
+                if skip_rest:
+                    self._mark_skipped(exec_id)
+                    continue
+                status = await self._run_one(exec_id, code)
+                if status != "ok" and stop_on_error:
+                    skip_rest = True
+
+    async def _run_one(self, exec_id: str, code: str) -> str:
+        """Execute one cell on the kernel; journal its lifecycle; return the
+        kernel's reply status ("ok"/"error"). allow_stdin=False: the daemon never
+        services the kernel's STDIN channel, so a cell calling input()/getpass()/
+        breakpoint()/pdb would otherwise issue an input_request that nobody answers
+        — the kernel waits forever, the execute_reply never arrives, and this
+        worker (plus every cell queued behind it) wedges with only an interrupt to
+        escape. With stdin disabled the kernel raises StdinNotImplementedError at
+        once, so the cell fails cleanly and the session keeps moving."""
+        msg_id = self.kc.execute(code, allow_stdin=False)
+        self._msgid_to_exec[msg_id] = exec_id
+        started_at = self.journal.mark_started(exec_id)
+        self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
+        log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
+        while True:
+            reply = await self.kc.shell_channel.get_msg()
+            if (
+                reply["header"]["msg_type"] == "execute_reply"
+                and (reply.get("parent_header") or {}).get("msg_id") == msg_id
+            ):
+                break
+        content = reply["content"]
+        status = content.get("status", "ok")
+        ec = content.get("execution_count")
+        # tiny grace so trailing iopub lands before the folded cache persists
+        await asyncio.sleep(0.05)
+        folded = json.dumps(self._folds[exec_id].outputs())
+        finished_at = self.journal.mark_done(
+            exec_id, "done" if status == "ok" else "error", ec, folded
+        )
+        self._journal_lifecycle(
+            exec_id,
+            "tithon.done",
+            {"status": status, "execution_count": ec, "ts": finished_at},
+        )
+        log.info("[%s] exec %s done status=%s", self.session_id, exec_id, status)
+        return status
+
+    def _mark_skipped(self, exec_id: str) -> None:
+        """Terminate a queued cell that a Run-All skipped after an earlier error.
+        It never runs, but must reach a TERMINAL status (not linger as 'queued',
+        which a fresh attach would restore as a pending clock and orphan_inflight
+        would later flip to 'orphaned'). The client renders 'skipped' as a blank,
+        un-run cell."""
+        finished_at = self.journal.mark_done(exec_id, "skipped", None, "[]")
+        self._journal_lifecycle(
+            exec_id,
+            "tithon.done",
+            {"status": "skipped", "execution_count": None, "ts": finished_at},
+        )
+        log.info("[%s] exec %s skipped (run stopped on an earlier error)",
+                 self.session_id, exec_id)
 
     # -- protocol helpers ------------------------------------------------------
     def _journal_lifecycle(self, exec_id, msg_type: str, payload: dict) -> None:
@@ -500,22 +534,40 @@ class Session:
 
     def submit(self, code: str, submitted_by: str | None = None,
                origin: dict | None = None) -> str:
-        self._exec_counter += 1
-        exec_id = f"e{self._exec_counter}"
-        # cell_hash is computed daemon-side from the submitted code (authoritative,
-        # matches the extension's sha256(code)) so output<->cell attachment works
-        # even for CLI runs that send no origin (SPEC.md).
-        cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
-        self.journal.insert_execution(
-            exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
-        )
-        self._folds[exec_id] = ExecutionFold()
-        # The queued event carries the origin so a live client can map this
-        # execution to the right cell by index — not by code hash, which is
-        # ambiguous when two cells hold identical code (duplicate-cell bug).
-        self._journal_lifecycle(exec_id, "tithon.queued", {"code": code, "origin": origin})
-        self._queue.put_nowait((exec_id, code))
-        return exec_id
+        """Submit one cell (CLI / single play). A one-cell batch has nothing to
+        stop, so stop_on_error is moot."""
+        return self.submit_batch(
+            [{"code": code, "origin": origin}], submitted_by, stop_on_error=False
+        )[0]
+
+    def submit_batch(self, cells: list[dict], submitted_by: str | None = None,
+                     stop_on_error: bool = False) -> list[str]:
+        """Submit a batch of cells as ONE queue item (one user action). When
+        ``stop_on_error`` and a cell raises, the worker skips the remaining cells
+        of this batch (native "Run All" semantics — see _exec_worker)."""
+        batch: list[tuple[str, str]] = []
+        exec_ids: list[str] = []
+        for cell in cells:
+            code = cell.get("code", "")
+            origin = cell.get("origin")
+            self._exec_counter += 1
+            exec_id = f"e{self._exec_counter}"
+            # cell_hash is computed daemon-side from the submitted code (authoritative,
+            # matches the extension's sha256(code)) so output<->cell attachment works
+            # even for CLI runs that send no origin (SPEC.md).
+            cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+            self.journal.insert_execution(
+                exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
+            )
+            self._folds[exec_id] = ExecutionFold()
+            # The queued event carries the origin so a live client can map this
+            # execution to the right cell by index — not by code hash, which is
+            # ambiguous when two cells hold identical code (duplicate-cell bug).
+            self._journal_lifecycle(exec_id, "tithon.queued", {"code": code, "origin": origin})
+            batch.append((exec_id, code))
+            exec_ids.append(exec_id)
+        self._queue.put_nowait((batch, stop_on_error))
+        return exec_ids
 
     def snapshot(self) -> dict:
         execs = []
@@ -778,6 +830,16 @@ class Daemon:
                     log.info("[%s] execute queued exec_id=%s queue_len=%d code=%r",
                              session.session_id, exec_id, session._queue.qsize(), preview)
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
+                elif op == "execute_batch":
+                    cells = msg.get("cells", [])
+                    stop_on_error = bool(msg.get("stop_on_error", True))
+                    exec_ids = session.submit_batch(
+                        cells, msg.get("submitted_by"), stop_on_error
+                    )
+                    log.info("[%s] execute_batch queued %d cells stop_on_error=%s queue_len=%d",
+                             session.session_id, len(exec_ids), stop_on_error,
+                             session._queue.qsize())
+                    await ws.send(json.dumps({"op": "execute_ack", "exec_ids": exec_ids}))
                 elif op == "interrupt":
                     ok = session.interrupt()
                     log.info("[%s] interrupt ok=%s", session.session_id, ok)

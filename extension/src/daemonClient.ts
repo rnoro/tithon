@@ -61,6 +61,33 @@ export class DaemonClient {
     }
   }
 
+  /**
+   * Submit a batch of cells as ONE action (a "Run All" / multi-cell run). With
+   * `stopOnError` (the default) the daemon stops at the first cell that raises and
+   * skips the rest — native Jupyter semantics — and, because the daemon owns the
+   * batch, this holds even if the client disconnects mid-run. Resolves with the
+   * assigned exec_ids (submission order).
+   */
+  async executeBatch(
+    cells: { code: string; origin?: ExecOrigin }[],
+    session: string,
+    workdir?: string,
+    stopOnError = true,
+  ): Promise<string[]> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
+      await this.waitFor(ws, (m) => m.op === "sync");
+      ws.send(JSON.stringify({
+        op: "execute_batch", cells, stop_on_error: stopOnError, session, workdir,
+      }));
+      const ack = await this.waitFor(ws, (m) => m.op === "execute_ack");
+      return (ack.exec_ids ?? []) as string[];
+    } finally {
+      ws.close();
+    }
+  }
+
   /** Restart a file's kernel (fresh namespace). `session` is the file uri. */
   async restartKernel(session: string): Promise<void> {
     const ws = await this.open();

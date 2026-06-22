@@ -1,14 +1,13 @@
 /**
- * BUG HUNT H1 — "Run All" semantics on an error.
+ * REGRESSION (was BUG H1) — "Run All" STOPS at the first cell that raises.
  *
- * In Jupyter/VSCode-native notebooks, "Run All" STOPS at the first cell that
- * raises (later cells are skipped). Tithon's daemon serializes every submitted
- * cell through a FIFO exec worker that has no cross-cell "stop on error" notion,
- * and the controller's executeHandler submits ALL cells in one loop. So a middle
- * cell raising should NOT prevent later cells from running.
+ * Like native Jupyter/VSCode, a middle cell raising must skip the later cells.
+ * The controller submits the whole action as ONE batch with stop_on_error, and
+ * the daemon worker, on the first error, marks the rest "skipped" (blank, never
+ * run) — and because the daemon owns the batch this holds even if the client
+ * disconnects mid-run (ADR-051).
  *
- * This test RUNS ALL three cells (cell 1 raises) and reports whether cell 2 ran.
- * A divergence from native Run All is the finding.
+ * This RUNS ALL three cells (cell 1 raises) and asserts cell 2 did NOT run.
  */
 import * as assert from "assert";
 import * as vscode from "vscode";
@@ -31,8 +30,8 @@ function ext(): vscode.Extension<unknown> {
   return e;
 }
 
-describe("BUG H1: Run All does not stop on a cell error", () => {
-  it("a middle cell raising still lets later cells run (divergence from native Run All)", async () => {
+describe("REGRESSION H1: Run All stops at the first cell error", () => {
+  it("a middle cell raising skips the later cells (native Run All semantics)", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
     const nb = await vscode.workspace.openNotebookDocument(uri);
@@ -46,24 +45,22 @@ describe("BUG H1: Run All does not stop on a cell error", () => {
     edr.selections = [new vscode.NotebookRange(0, nb.cellCount)];
     await vscode.commands.executeCommand("notebook.execute");
 
-    // Wait until cell 1 (the raising cell) has errored.
+    // Wait until cell 1 (the raising cell) has errored, then give the worker
+    // ample time to (incorrectly) run cell 2 if stop-on-error were broken.
     await waitFor(() => /BOOM/.test(cellText(nb.cellAt(1))), 30000, "cell 1 error");
-    // Give the worker time to (not) run cell 2.
-    await waitFor(() => cellText(nb.cellAt(2)).includes("C_RAN"), 30000,
-      "cell 2 to run after the error (this is the divergence we expect)").catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 4000));
 
     const t0 = cellText(nb.cellAt(0));
     const t1 = cellText(nb.cellAt(1));
     const t2 = cellText(nb.cellAt(2));
-    console.log(`[H1] cell0=${JSON.stringify(t0.trim())} cell1=${JSON.stringify(t1.trim().slice(0, 40))} cell2=${JSON.stringify(t2.trim())}`);
+    console.log(`[H1] cell0=${JSON.stringify(t0.trim())} cell1=${JSON.stringify(t1.trim().slice(0, 40))} cell2=${JSON.stringify(t2.trim())} cell2Summary=${nb.cellAt(2).executionSummary?.success}`);
 
     assert.ok(t0.includes("A_OK"), "cell 0 should have run");
     assert.ok(/BOOM/.test(t1), "cell 1 should have errored");
     const cell2Ran = t2.includes("C_RAN");
-    console.log(`[H1] FINDING: after the error in cell 1, cell 2 ${cell2Ran ? "DID run (diverges from native Run All — later cells are NOT skipped)" : "did NOT run (matches native Run All)"}`);
-    // The point of the test is to surface the behavior; assert the observed
-    // (divergent) reality so a future change here is caught.
-    assert.strictEqual(cell2Ran, true, "expected Tithon to keep running later cells after an error");
+    console.log(`[H1] FINDING: after the error in cell 1, cell 2 ${cell2Ran ? "DID run (REGRESSION — stop-on-error broken)" : "did NOT run (native Run All; skipped)"}`);
+    // Stop-on-error: cell 2 must be skipped — no output and no completed execution.
+    assert.strictEqual(cell2Ran, false, "later cells must be SKIPPED after an error (native Run All)");
+    assert.strictEqual(nb.cellAt(2).executionSummary?.success, undefined, "skipped cell must not show a completed run");
   });
 });

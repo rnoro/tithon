@@ -190,10 +190,14 @@ export class LiveOutputSync {
     if (ev.kind === "started") {
       this.queue(idx, { t: "status", status: "running", tsMs });
     } else if (ev.kind === "done") {
+      const st = ev.payload?.status ?? "ok";
+      // "skipped": a Run-All cell the daemon skipped after an earlier error. It
+      // never started (no execution was created), so leave the cell blank — emit
+      // no status op (a ✓/✗ would imply it ran).
+      if (st === "skipped") return;
       // The daemon reports kernel status "ok" on success; normalize to the
       // sink's vocabulary ("done"/"error") so a successful cell shows ✓, not ✗.
-      const ok = (ev.payload?.status ?? "ok") === "ok";
-      this.queue(idx, { t: "status", status: ok ? "done" : "error", tsMs });
+      this.queue(idx, { t: "status", status: st === "ok" ? "done" : "error", tsMs });
     } else if (ev.kind === "output") {
       this.handleOutput(execId, idx, ev.payload?.msg_type, ev.payload?.content ?? {});
     }

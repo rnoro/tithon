@@ -543,15 +543,23 @@ export class TithonNotebookController {
       // doc-cell ranges restore uses), not a cell-index range — see ADR-019.
       const ranges = await this.cellLineRanges(notebook);
       const workdir = workdirForUri(notebook.uri);
-      for (const cell of cells) {
+      const session = notebook.uri.toString();
+      const batch = cells.map((cell) => {
         const code = cell.document.getText();
-        await this.daemon.execute(code, {
-          uri: notebook.uri.toString(),
-          range: ranges[cell.index] ?? { start: cell.index, end: cell.index },
-          cell_hash: computeCellHash(code),
-          index: cell.index, // authoritative cell identity (duplicate-code fix)
-        }, workdir);
-      }
+        return {
+          code,
+          origin: {
+            uri: session,
+            range: ranges[cell.index] ?? { start: cell.index, end: cell.index },
+            cell_hash: computeCellHash(code),
+            index: cell.index, // authoritative cell identity (duplicate-code fix)
+          },
+        };
+      });
+      // Submit the whole action as ONE batch so a "Run All" stops at the first
+      // error and skips the rest (native Jupyter; #4). stop_on_error only matters
+      // for >1 cell — a single play has nothing to stop.
+      await this.daemon.executeBatch(batch, session, workdir, batch.length > 1);
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
     }
@@ -831,6 +839,9 @@ export class TithonNotebookController {
     for (const ex of execs) {
       const idx = live.cellOf(ex.execId);
       if (idx === undefined) continue;
+      // "skipped": a Run-All cell that never ran (the run stopped on an earlier
+      // error). Leave the cell blank — nothing to restore.
+      if (ex.status === "skipped") continue;
       const state =
         ex.status === "done" ? "done"
         : ex.status === "error" ? "error"

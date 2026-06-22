@@ -226,6 +226,19 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     expect(sink2.ops.filter((o) => o.op === "status").map((o) => o.status)).toContain("error");
   });
 
+  it("emits no status op for a 'skipped' cell — Run-All stop-on-error (ADR-051)", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    // The daemon skipped this cell after an earlier error in the same Run-All.
+    live.onEvent({ seq: 3, exec_id: "e1", kind: "done", payload: { status: "skipped" } });
+    sched.tick();
+    // No status op -> the cell is left blank (a ✓/✗ would imply it ran).
+    expect(sink.ops.filter((o) => o.op === "status").length).toBe(0);
+    expect(sink.ops.length).toBe(0);
+  });
+
   it("routes duplicate-code cells by recorded index, not hash — ADR-026 (#2 repro)", () => {
     // Two cells with IDENTICAL code. The second cell's output must NOT collapse
     // onto the first; the queued event's origin.index disambiguates them.
