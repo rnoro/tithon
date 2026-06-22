@@ -39,8 +39,9 @@ def test_submit_batch_enqueues_one_item_with_all_cells_and_flag(tmp_path):
     assert len(ids) == 3
     # ONE queue item = the whole batch (so the worker sees the run atomically).
     assert s._queue.qsize() == 1
-    batch, stop_on_error = s._queue.get_nowait()
+    batch, stop_on_error, allow_stdin = s._queue.get_nowait()
     assert stop_on_error is True
+    assert allow_stdin is False
     assert [e for e, _ in batch] == ids
     assert [code for _, code in batch] == ["a = 1\n", "b = 2\n", "c = 3\n"]
     # Every cell is journaled queued + each carries its own cell_hash.
@@ -51,8 +52,9 @@ def test_submit_batch_enqueues_one_item_with_all_cells_and_flag(tmp_path):
 def test_submit_single_is_a_one_cell_batch_without_stop_on_error(tmp_path):
     s = make_session(tmp_path)
     e = s.submit("x = 1\n", origin={"index": 0})
-    batch, stop_on_error = s._queue.get_nowait()
+    batch, stop_on_error, allow_stdin = s._queue.get_nowait()
     assert stop_on_error is False          # nothing to stop in a 1-cell run
+    assert allow_stdin is False
     assert [eid for eid, _ in batch] == [e]
 
 

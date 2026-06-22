@@ -240,16 +240,23 @@ class VSCodeCellSink implements CellSink {
     const e = this.ensureStarted(idx);
     if (!e) return;
     const mime = name === "stderr" ? STDERR_MIME : STDOUT_MIME;
-    const item = vscode.NotebookCellOutputItem.text(text, mime);
     const key = `${idx}:${name}`;
-    const out = this.streamOut.get(key);
-    if (!out) {
-      const fresh = new vscode.NotebookCellOutput([item]);
-      this.streamOut.set(key, fresh);
-      void e.appendOutput(fresh); // append the delta only — never the whole buffer
-    } else {
-      void e.appendOutputItems(item, out);
-    }
+    // Queue on the cell's chain so a stream delta stays ordered relative to an
+    // image append (which awaits a byte fetch on the same chain). Doing it
+    // directly let a `print` jump ahead of a still-fetching figure, so e.g.
+    // `display(fig); print("done")` rendered the print ABOVE the figure (a live
+    // matplotlib loss-plot + log line — the ADR-038 scenario).
+    this.chain(idx, async () => {
+      const item = vscode.NotebookCellOutputItem.text(text, mime);
+      const out = this.streamOut.get(key);
+      if (!out) {
+        const fresh = new vscode.NotebookCellOutput([item]);
+        this.streamOut.set(key, fresh);
+        await e.appendOutput(fresh); // append the delta only — never the whole buffer
+      } else {
+        await e.appendOutputItems(item, out);
+      }
+    });
   }
 
   /**
@@ -326,20 +333,19 @@ class VSCodeCellSink implements CellSink {
     const pending = imageRefsOf(item)
       .map((r) => r.artifact_id)
       .filter((id) => this.client.cachedArtifact(id) === undefined);
-    if (pending.length) {
-      // A live matplotlib figure: fetch its bytes, then append — queued on the
-      // cell's chain so the trailing `done` end() waits for the image to land.
-      this.chain(idx, async () => {
-        await this.client.prefetchArtifacts(pending);
-        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
-        this.registerDisplay(idx, item, out);
-        await e.appendOutput(out);
-      });
-    } else {
+    // Always queue on the cell's chain (even when no image bytes need fetching),
+    // so a discrete output stays ordered relative to BOTH a preceding figure
+    // (which awaits) and a following `print`. A non-stream output also breaks the
+    // active stdout/stderr block, so the next stream delta starts a fresh block
+    // BELOW it — giving Jupyter-style interleaving (`print; display(fig); print`
+    // renders as three blocks in order, not the two prints merged above the fig).
+    this.chain(idx, async () => {
+      if (pending.length) await this.client.prefetchArtifacts(pending);
       const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
       this.registerDisplay(idx, item, out);
-      void e.appendOutput(out);
-    }
+      await e.appendOutput(out);
+      this.forgetStreams(idx); // a later stream delta opens a new block after this output
+    });
   }
 
   /**
@@ -354,16 +360,25 @@ class VSCodeCellSink implements CellSink {
   updateDisplay(idx: number, displayId: string, item: OutputItem): void {
     const e = this.ensureStarted(idx);
     if (!e) return;
-    const existing = this.displayOut.get(`${idx}:${displayId}`);
-    if (!existing) {
-      this.appendOutput(idx, item);
-      return;
-    }
     const pending = imageRefsOf(item)
       .map((r) => r.artifact_id)
       .filter((id) => this.client.cachedArtifact(id) === undefined);
+    // Resolve the target output INSIDE the chain: a create (appendOutput) on the
+    // same display_id registers it from its own chained closure, so looking up
+    // synchronously here could miss a create still pending earlier in the chain
+    // (e.g. a figure create awaiting bytes) and wrongly append a new output.
     this.chain(idx, async () => {
       if (pending.length) await this.client.prefetchArtifacts(pending);
+      const existing = this.displayOut.get(`${idx}:${displayId}`);
+      if (!existing) {
+        // Update before its create (or a foreign display): append + register so a
+        // further update replaces in place.
+        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+        this.registerDisplay(idx, item, out);
+        await e.appendOutput(out);
+        this.forgetStreams(idx);
+        return;
+      }
       await e.replaceOutputItems(toOutputItems(item, this.ctx()), existing);
     });
   }
@@ -372,8 +387,9 @@ class VSCodeCellSink implements CellSink {
     const rec = this.execs.get(idx);
     if (rec?.started) {
       // A kernel-driven clear_output WHILE the cell is running: clear via the live
-      // execution, keeping its spinner.
-      void rec.exec.clearOutput();
+      // execution, keeping its spinner. Queue on the chain so it lands after any
+      // in-flight append (e.g. a figure still fetching) rather than racing ahead.
+      this.chain(idx, async () => { await rec.exec.clearOutput(); });
     } else {
       // No live execution for this cell — e.g. the daemon echoing back a user's
       // own "Clear Outputs" (a tombstone broadcast), or another window's clear.
@@ -558,8 +574,10 @@ export class TithonNotebookController {
       });
       // Submit the whole action as ONE batch so a "Run All" stops at the first
       // error and skips the rest (native Jupyter; #4). stop_on_error only matters
-      // for >1 cell — a single play has nothing to stop.
-      await this.daemon.executeBatch(batch, session, workdir, batch.length > 1);
+      // for >1 cell — a single play has nothing to stop. allow_stdin=true since the
+      // Cell View can present an input box for input()/getpass() (the bridge);
+      // ensureLive above attached the subscriber that receives the prompt event.
+      await this.daemon.executeBatch(batch, session, workdir, batch.length > 1, true);
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
     }
@@ -725,6 +743,40 @@ export class TithonNotebookController {
     await this.daemon.interrupt(notebook.uri.toString());
   }
 
+  /** Notebook uris with an input box currently open (one prompt at a time). */
+  private readonly inputBoxOpen = new Set<string>();
+
+  /**
+   * Present a cell's input()/getpass() prompt as a VSCode input box and answer
+   * the daemon with the result, so the blocked cell continues (the stdin bridge).
+   * Cancelling (Escape) interrupts the kernel — aborting the waiting cell rather
+   * than feeding it bogus input. One box per notebook at a time; a duplicate
+   * prompt (e.g. a snapshot + a live event) is ignored while one is open.
+   */
+  private async promptForInput(
+    notebook: vscode.NotebookDocument,
+    client: SessionClient,
+    pending: { prompt: string; password: boolean },
+  ): Promise<void> {
+    const key = notebook.uri.toString();
+    if (this.inputBoxOpen.has(key)) return;
+    this.inputBoxOpen.add(key);
+    try {
+      const value = await vscode.window.showInputBox({
+        prompt: pending.prompt || "Input requested by the running cell",
+        password: pending.password,
+        ignoreFocusOut: true, // a blocked cell must not lose its prompt on focus change
+      });
+      if (value === undefined) {
+        await this.interruptKernel(notebook).catch(() => undefined);
+      } else {
+        client.sendInput(value);
+      }
+    } finally {
+      this.inputBoxOpen.delete(key);
+    }
+  }
+
   /**
    * Refresh the live cell-hash index for a notebook from its current cells
    * (no-op if live sync isn't running). Call right before submitting so cells
@@ -868,7 +920,19 @@ export class TithonNotebookController {
       // renderer (the display_data already rendered the widget; this just updates
       // the model so e.g. a tqdm.notebook bar fills in real time).
       if (ev.kind === "widget") this.queueWidgetUpdate(ev.payload);
+      // A cell hit input()/getpass(): present an input box and answer the daemon
+      // so the blocked cell continues (the stdin bridge).
+      if (ev.kind === "input_request") {
+        void this.promptForInput(notebook, client, {
+          prompt: ev.payload?.prompt ?? "",
+          password: !!ev.payload?.password,
+        });
+      }
     });
+    // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
+    // so re-present the prompt from the snapshot (the live event won't replay).
+    const pi = client.pendingInput();
+    if (pi) void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
     return {
       dispose: () => {
         changeSub.dispose();

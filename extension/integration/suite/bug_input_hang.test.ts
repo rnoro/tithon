@@ -1,14 +1,17 @@
 /**
- * REGRESSION (was BUG H3) — a cell calling input() (or getpass/breakpoint/pdb)
- * must NOT deadlock the session.
+ * REGRESSION (was BUG H3) — a cell calling input()/getpass() must not deadlock
+ * the session, and in the Cell View it now bridges to a VSCode input box.
  *
- * The daemon submits kc.execute(code, allow_stdin=False) (ADR-048), so the kernel
- * cannot issue an input_request that nobody answers. input() raises
- * StdinNotImplementedError immediately: the cell ERRORS fast and a later cell runs
- * normally — the session is never wedged and no interrupt is needed.
+ * The Cell View submits with allow_stdin=true, so input() raises an input_request
+ * that the daemon's stdin pump surfaces as a `tithon.input_request` event. The
+ * controller presents a VSCode input box; the user's answer is sent back as an
+ * input_reply, the blocked input() returns it, and the cell completes normally.
+ * Cancelling instead interrupts the kernel (no bogus input). A bare text-editor
+ * run (no Cell View attached) keeps allow_stdin off so input() still fails fast
+ * rather than hanging (ADR-050) — covered hermetically by _check_input_bridge.py.
  *
- * Pre-fix (allow_stdin defaulted True) this hung forever: no input box, an endless
- * spinner, every queued cell blocked, only an interrupt escaping.
+ * Pre-bridge this either hung forever (allow_stdin=True with nobody answering) or
+ * errored with StdinNotImplementedError (allow_stdin=False); now it round-trips.
  */
 import * as assert from "assert";
 import * as vscode from "vscode";
@@ -39,8 +42,8 @@ async function runCell(uri: vscode.Uri, i: number): Promise<void> {
   await vscode.commands.executeCommand("notebook.cell.execute", { ranges: [new vscode.NotebookRange(i, i + 1)], document: uri });
 }
 
-describe("REGRESSION H3: input() errors fast and does not wedge the session", () => {
-  it("input() ends with an error quickly, and a later cell still runs (no interrupt)", async () => {
+describe("REGRESSION H3: input() bridges to an input box and the cell continues", () => {
+  it("answers input() via the input box, the cell completes, and a later cell runs", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
     const nb = await vscode.workspace.openNotebookDocument(uri);
@@ -48,18 +51,28 @@ describe("REGRESSION H3: input() errors fast and does not wedge the session", ()
     await waitFor(() => nb.cellCount >= 2, 15000, "cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
 
-    // (a) The input() cell completes (does NOT hang) and is an ERROR.
-    await runCell(uri, 0);
-    await waitFor(() => nb.cellAt(0).executionSummary?.success !== undefined, 15000, "input() cell completes fast");
-    const cell0 = cellText(nb.cellAt(0));
-    console.log(`[H3] input() cell success=${nb.cellAt(0).executionSummary?.success} output=${JSON.stringify(cell0.trim().slice(0, 120))}`);
-    assert.strictEqual(nb.cellAt(0).executionSummary?.success, false, "input() cell should ERROR (allow_stdin=False), not hang");
-    assert.ok(/StdinNotImplementedError|stdin/i.test(cell0), "the error should explain stdin is unavailable");
+    // Stub the input box: capture the prompt and answer it.
+    const orig = vscode.window.showInputBox;
+    let seenPrompt: string | undefined;
+    (vscode.window as unknown as { showInputBox: unknown }).showInputBox =
+      async (opts?: vscode.InputBoxOptions) => { seenPrompt = opts?.prompt; return "Ada"; };
+    try {
+      // (a) The input() cell bridges to the box and completes SUCCESSFULLY with
+      //     the answered value bound (output "GOT Ada"), not an error or a hang.
+      await runCell(uri, 0);
+      await waitFor(() => nb.cellAt(0).executionSummary?.success !== undefined, 30000, "input() cell completes");
+      const cell0 = cellText(nb.cellAt(0));
+      console.log(`[H3] input() cell success=${nb.cellAt(0).executionSummary?.success} prompt=${JSON.stringify(seenPrompt)} output=${JSON.stringify(cell0.trim().slice(0, 120))}`);
+      assert.ok(seenPrompt && /name/.test(seenPrompt), `the input box should show the cell's prompt; got ${JSON.stringify(seenPrompt)}`);
+      assert.strictEqual(nb.cellAt(0).executionSummary?.success, true, "input() cell should COMPLETE via the bridge, not error/hang");
+      assert.ok(/GOT Ada/.test(cell0), `the answered value should be bound; got ${JSON.stringify(cell0)}`);
+    } finally {
+      (vscode.window as unknown as { showInputBox: unknown }).showInputBox = orig;
+    }
 
     // (b) A later cell runs normally — the session was never wedged.
     await runCell(uri, 1);
     await waitFor(() => cellText(nb.cellAt(1)).includes("AFTER_INPUT"), 20000, "later cell runs");
-    console.log(`[H3] FINDING: later cell ran with no interrupt = ${cellText(nb.cellAt(1)).includes("AFTER_INPUT")}`);
-    assert.ok(cellText(nb.cellAt(1)).includes("AFTER_INPUT"), "a later cell must run after input() errored");
+    assert.ok(cellText(nb.cellAt(1)).includes("AFTER_INPUT"), "a later cell must run after input() was answered");
   });
 });

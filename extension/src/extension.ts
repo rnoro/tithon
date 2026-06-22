@@ -270,7 +270,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
 
           const workdir = workdirForUri(vscode.Uri.parse(arg.origin.uri));
-          const execId = await client.execute(arg.code, arg.origin, workdir);
+          // Enable the input()/getpass() bridge only when a Cell View is attached
+          // to present the input box; without one (a bare text-editor run) keep
+          // allow_stdin off so input() fails fast instead of hanging (ADR-050).
+          const execId = await client.execute(arg.code, arg.origin, workdir, nb !== undefined);
           vscode.window.setStatusBarMessage(`Tithon: submitted ${execId}`, 3000);
         } catch (err) {
           vscode.window.showErrorMessage(`Tithon: ${String(err)}`);

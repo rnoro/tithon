@@ -57,6 +57,12 @@ WRITE_BUFFER_HIGH = int(os.environ.get("TITHON_WRITE_BUFFER_HIGH", str(1 << 20))
 # Cap the kernel socket send buffer per connection too (the kernel can otherwise
 # hold tens of MB of undelivered data for a stalled client). Bounds host memory.
 SOCK_SNDBUF = int(os.environ.get("TITHON_SOCK_SNDBUF", str(1 << 20)))  # bytes
+# After (re)creating the kernel client, give the STDIN DEALER a moment to register
+# at the kernel's ROUTER before any cell can run. The kernel's stdin ROUTER drops
+# an input_request to a not-yet-registered peer (ZMQ default), so an input()/
+# getpass() executed in the first tens of ms after channel start could lose its
+# prompt and hang. A short settle closes that connection race (measured reliable).
+STDIN_SETTLE_S = float(os.environ.get("TITHON_STDIN_SETTLE", "0.3"))  # seconds
 
 
 def _safe_component(s: str) -> str:
@@ -161,6 +167,10 @@ class Session:
         self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
+        # The unanswered input()/getpass() prompt, if a cell is blocked waiting on
+        # stdin: {exec_id, prompt, password}. Surfaced live (tithon.input_request)
+        # and in the snapshot (pending_input) so a reconnecting client re-prompts.
+        self._pending_input: dict | None = None
         self._subs: set[Subscriber] = set()
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
@@ -175,6 +185,9 @@ class Session:
         # Capture the kernel's Python version (before the exec worker contends on
         # the shell channel) so the client can label the kernel "Python 3.x.y".
         await self._capture_kernel_info()
+        # Let the stdin DEALER finish registering at the kernel ROUTER so the first
+        # cell's input()/getpass() can't lose its prompt to the connection race.
+        await asyncio.sleep(STDIN_SETTLE_S)
         orphaned = self.journal.orphan_inflight()
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
@@ -190,6 +203,7 @@ class Session:
     def _start_tasks(self) -> None:
         self._tasks = [
             asyncio.create_task(self._iopub_pump(), name=f"iopub-{self.session_id}"),
+            asyncio.create_task(self._stdin_pump(), name=f"stdin-{self.session_id}"),
             asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
         ]
 
@@ -230,9 +244,19 @@ class Session:
         except Exception:  # pragma: no cover - defensive
             pass
         self.journal.orphan_inflight()
+        # Discard batches still WAITING in the queue (submitted behind the cell that
+        # was running): orphan_inflight already flipped their queued execs to
+        # 'orphaned', so leaving them in the queue would make the fresh worker run
+        # stale pre-restart cells on the NEW kernel and re-journal an already-
+        # orphaned exec. A restart means a clean slate — drop them.
+        dropped = self._drain_queue()
+        if dropped:
+            log.info("[%s] dropped %d queued batch(es) on restart", self.session_id, dropped)
+        self._pending_input = None  # a restart abandons any waiting prompt
         self.kernel.restart()
         self.kc = self.kernel.make_client()
         await self._wait_kernel_ready(timeout=120)
+        await asyncio.sleep(STDIN_SETTLE_S)  # stdin DEALER registers before the next run
         self.kernel_status = "starting"
         self._msgid_to_exec.clear()
         self._start_tasks()
@@ -441,9 +465,74 @@ class Session:
             }
         )
 
+    async def _stdin_pump(self) -> None:
+        """Service the kernel's STDIN channel so input()/getpass() works.
+
+        When a cell calls input() (possible only when it was submitted with
+        allow_stdin=True), the kernel emits an ``input_request`` here and blocks
+        until it receives an ``input_reply``. We surface the prompt to clients as
+        a ``tithon.input_request`` event (and ``snapshot.pending_input`` for a
+        reconnecting client) and unblock the kernel when a client answers via the
+        ``input_reply`` op -> :meth:`send_input`. With no client answering, the
+        cell simply waits at the prompt — the user can abandon it with the stop
+        button (interrupt), so a missing/closed client never permanently wedges
+        the session (the ADR-050 concern). A cell submitted WITHOUT allow_stdin
+        never reaches here: the kernel raises StdinNotImplementedError instead."""
+        while True:
+            try:
+                msg = await self.kc.stdin_channel.get_msg()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("[%s] stdin recv failed", self.session_id)
+                await asyncio.sleep(0.2)
+                continue
+            if msg.get("header", {}).get("msg_type") != "input_request":
+                continue
+            parent = (msg.get("parent_header") or {}).get("msg_id")
+            exec_id = self._msgid_to_exec.get(parent)
+            content = msg.get("content", {})
+            self._pending_input = {
+                "exec_id": exec_id,
+                "prompt": content.get("prompt", ""),
+                "password": bool(content.get("password", False)),
+            }
+            self._journal_lifecycle(exec_id, "tithon.input_request", dict(self._pending_input))
+            log.info("[%s] input_request exec=%s password=%s",
+                     self.session_id, exec_id, self._pending_input["password"])
+
+    def send_input(self, value: str) -> bool:
+        """Answer a pending input()/getpass() prompt (client `input_reply` op).
+
+        Sends ``input_reply`` on the kernel's stdin channel so the blocked
+        input() returns ``value`` and the cell continues. No-op (returns False)
+        when no prompt is pending."""
+        if self._pending_input is None:
+            return False
+        exec_id = self._pending_input.get("exec_id")
+        try:
+            self.kc.input(value)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("[%s] failed to send input_reply", self.session_id)
+            return False
+        self._pending_input = None
+        self._journal_lifecycle(exec_id, "tithon.input_resolved", {"exec_id": exec_id})
+        log.info("[%s] input_reply sent exec=%s", self.session_id, exec_id)
+        return True
+
+    def _clear_pending_input(self, exec_id: str | None) -> None:
+        """Drop a pending prompt that belongs to a finishing/aborted exec (e.g. it
+        was interrupted while waiting on input) and tell clients to dismiss it."""
+        if self._pending_input is None:
+            return
+        if exec_id is None or self._pending_input.get("exec_id") == exec_id:
+            stale = self._pending_input.get("exec_id")
+            self._pending_input = None
+            self._journal_lifecycle(stale, "tithon.input_resolved", {"exec_id": stale})
+
     async def _exec_worker(self) -> None:
         while True:
-            batch, stop_on_error = await self._queue.get()
+            batch, stop_on_error, allow_stdin = await self._queue.get()
             # A batch is one user action (a single cell, or a "Run All" / multi-cell
             # run). For a Run-All, native Jupyter STOPS at the first cell that
             # raises and skips the rest; we honor that here, in the daemon, so it
@@ -456,20 +545,23 @@ class Session:
                 if skip_rest:
                     self._mark_skipped(exec_id)
                     continue
-                status = await self._run_one(exec_id, code)
+                status = await self._run_one(exec_id, code, allow_stdin)
                 if status != "ok" and stop_on_error:
                     skip_rest = True
 
-    async def _run_one(self, exec_id: str, code: str) -> str:
+    async def _run_one(self, exec_id: str, code: str, allow_stdin: bool = False) -> str:
         """Execute one cell on the kernel; journal its lifecycle; return the
-        kernel's reply status ("ok"/"error"). allow_stdin=False: the daemon never
-        services the kernel's STDIN channel, so a cell calling input()/getpass()/
-        breakpoint()/pdb would otherwise issue an input_request that nobody answers
-        — the kernel waits forever, the execute_reply never arrives, and this
-        worker (plus every cell queued behind it) wedges with only an interrupt to
-        escape. With stdin disabled the kernel raises StdinNotImplementedError at
-        once, so the cell fails cleanly and the session keeps moving."""
-        msg_id = self.kc.execute(code, allow_stdin=False)
+        kernel's reply status ("ok"/"error").
+
+        allow_stdin gates input()/getpass()/breakpoint()/pdb. When False (CLI /
+        default), the kernel raises StdinNotImplementedError at once so the cell
+        fails cleanly and the session keeps moving — without this, an unanswered
+        input_request would wedge the worker and every queued cell (ADR-050).
+        When True (a VSCode client that can present an input box), the
+        :meth:`_stdin_pump` bridges the prompt to the client; an unanswered prompt
+        merely waits and is abandonable via interrupt, so it still cannot wedge
+        the session permanently."""
+        msg_id = self.kc.execute(code, allow_stdin=allow_stdin)
         self._msgid_to_exec[msg_id] = exec_id
         started_at = self.journal.mark_started(exec_id)
         self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
@@ -484,6 +576,9 @@ class Session:
         content = reply["content"]
         status = content.get("status", "ok")
         ec = content.get("execution_count")
+        # If the cell ended while still blocked at a prompt (interrupted, or the
+        # kernel aborted input), drop the stale prompt so the client dismisses it.
+        self._clear_pending_input(exec_id)
         # tiny grace so trailing iopub lands before the folded cache persists
         await asyncio.sleep(0.05)
         folded = json.dumps(self._folds[exec_id].outputs())
@@ -513,6 +608,23 @@ class Session:
         log.info("[%s] exec %s skipped (run stopped on an earlier error)",
                  self.session_id, exec_id)
 
+    def _drain_queue(self) -> int:
+        """Drop every batch still waiting in the exec queue; return the count.
+
+        Used on kernel restart: the waiting batches' executions are already
+        journaled 'queued' (and flipped to 'orphaned' by orphan_inflight), so the
+        fresh worker must NOT pick them up and run pre-restart cells on the new
+        kernel. The currently-running cell's remaining batch lives in the worker
+        coroutine's local list (lost when its task is cancelled), not here."""
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            dropped += 1
+        return dropped
+
     # -- protocol helpers ------------------------------------------------------
     def _journal_lifecycle(self, exec_id, msg_type: str, payload: dict) -> None:
         seq = self.journal.append_message(exec_id, msg_type, payload)
@@ -533,18 +645,22 @@ class Session:
                 )
 
     def submit(self, code: str, submitted_by: str | None = None,
-               origin: dict | None = None) -> str:
+               origin: dict | None = None, allow_stdin: bool = False) -> str:
         """Submit one cell (CLI / single play). A one-cell batch has nothing to
         stop, so stop_on_error is moot."""
         return self.submit_batch(
-            [{"code": code, "origin": origin}], submitted_by, stop_on_error=False
+            [{"code": code, "origin": origin}], submitted_by,
+            stop_on_error=False, allow_stdin=allow_stdin,
         )[0]
 
     def submit_batch(self, cells: list[dict], submitted_by: str | None = None,
-                     stop_on_error: bool = False) -> list[str]:
+                     stop_on_error: bool = False, allow_stdin: bool = False) -> list[str]:
         """Submit a batch of cells as ONE queue item (one user action). When
         ``stop_on_error`` and a cell raises, the worker skips the remaining cells
-        of this batch (native "Run All" semantics — see _exec_worker)."""
+        of this batch (native "Run All" semantics — see _exec_worker).
+        ``allow_stdin`` (per user action) enables the input()/getpass() bridge —
+        a client that can present an input box opts in; CLI/default stays off so
+        an unanswered prompt can't wedge the session (ADR-050)."""
         batch: list[tuple[str, str]] = []
         exec_ids: list[str] = []
         for cell in cells:
@@ -566,7 +682,7 @@ class Session:
             self._journal_lifecycle(exec_id, "tithon.queued", {"code": code, "origin": origin})
             batch.append((exec_id, code))
             exec_ids.append(exec_id)
-        self._queue.put_nowait((batch, stop_on_error))
+        self._queue.put_nowait((batch, stop_on_error, allow_stdin))
         return exec_ids
 
     def snapshot(self) -> dict:
@@ -611,6 +727,9 @@ class Session:
             "queue_len": self._queue.qsize(),
             "executions": execs,
             "widgets": self._mirror.snapshot(),
+            # A cell blocked on input()/getpass() at attach time, so a reconnecting
+            # client re-presents the prompt (None when nothing is waiting).
+            "pending_input": self._pending_input,
         }
 
     def status(self) -> dict:
@@ -826,7 +945,10 @@ class Daemon:
                 elif op == "execute":
                     code = msg.get("code", "")
                     preview = code[:80].replace("\n", "↵")
-                    exec_id = session.submit(code, msg.get("submitted_by"), msg.get("origin"))
+                    exec_id = session.submit(
+                        code, msg.get("submitted_by"), msg.get("origin"),
+                        allow_stdin=bool(msg.get("allow_stdin", False)),
+                    )
                     log.info("[%s] execute queued exec_id=%s queue_len=%d code=%r",
                              session.session_id, exec_id, session._queue.qsize(), preview)
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
@@ -834,7 +956,8 @@ class Daemon:
                     cells = msg.get("cells", [])
                     stop_on_error = bool(msg.get("stop_on_error", True))
                     exec_ids = session.submit_batch(
-                        cells, msg.get("submitted_by"), stop_on_error
+                        cells, msg.get("submitted_by"), stop_on_error,
+                        allow_stdin=bool(msg.get("allow_stdin", False)),
                     )
                     log.info("[%s] execute_batch queued %d cells stop_on_error=%s queue_len=%d",
                              session.session_id, len(exec_ids), stop_on_error,
@@ -844,6 +967,11 @@ class Daemon:
                     ok = session.interrupt()
                     log.info("[%s] interrupt ok=%s", session.session_id, ok)
                     await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
+                elif op == "input_reply":
+                    # Answer a pending input()/getpass() prompt. Sent over the live
+                    # attach connection (fire-and-forget); ack so a caller can await.
+                    ok = session.send_input(str(msg.get("value", "")))
+                    await ws.send(json.dumps({"op": "input_ack", "ok": ok}))
                 elif op == "clear_output":
                     # User cleared cell output(s): persist it so a resync does not
                     # restore them. `all` clears every execution; else `exec_ids`.

@@ -60,6 +60,13 @@ export interface LiveEvent {
   payload: any;
 }
 
+/** A pending input()/getpass() prompt the kernel is blocked on. */
+export interface PendingInput {
+  exec_id: string | null;
+  prompt: string;
+  password: boolean;
+}
+
 /** Live state the client tracks per execution. */
 export interface ExecState {
   execId: string;
@@ -95,6 +102,10 @@ export class SessionClient {
   private onEventCb: ((ev: LiveEvent) => void) | null = null;
   private kernelInfoData: { status?: string; pid?: number | null; python?: string | null } | null = null;
   private widgetState: WidgetState | null = null;
+  /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
+   *  Seeded from the snapshot (reconnect re-prompts) and kept current by the
+   *  tithon.input_request / input_resolved events. Null when nothing is waiting. */
+  private pendingInputData: PendingInput | null = null;
   /** id -> resolved bytes (null = fetched but not found). Dedupes refetches and,
    *  being byte-budgeted LRU, bounds memory when a live plot yields a new image
    *  every step (each a distinct sha → otherwise cached forever). */
@@ -302,10 +313,13 @@ export class SessionClient {
     executions?: SnapshotExecWire[];
     kernel?: { status?: string; pid?: number | null; python?: string | null };
     widgets?: WidgetState;
+    pending_input?: PendingInput | null;
   }): void {
     this.syncSeq = snap.max_seq ?? this.syncSeq;
     if (snap.kernel) this.kernelInfoData = snap.kernel;
     if (snap.widgets) this.widgetState = snap.widgets;
+    // A reconnecting client re-presents a prompt the kernel is still blocked on.
+    this.pendingInputData = snap.pending_input ?? null;
     for (const e of snap.executions ?? []) {
       const st = this.ensureExec(e.exec_id, e.seq);
       st.seq = e.seq;
@@ -323,6 +337,20 @@ export class SessionClient {
   }
 
   private applyEvent(ev: { seq: number; exec_id: string | null; kind: string; payload: any }): void {
+    // Stdin bridge: track the pending input()/getpass() prompt (these carry an
+    // exec_id but need no ExecState — they gate a separate UI affordance).
+    if (ev.kind === "input_request") {
+      this.pendingInputData = {
+        exec_id: ev.exec_id,
+        prompt: ev.payload?.prompt ?? "",
+        password: !!ev.payload?.password,
+      };
+      return;
+    }
+    if (ev.kind === "input_resolved") {
+      this.pendingInputData = null;
+      return;
+    }
     if (!ev.exec_id) return;
     const st = this.ensureExec(ev.exec_id, ev.seq);
     st.seq = Math.max(st.seq, ev.seq ?? st.seq);
@@ -458,6 +486,24 @@ export class SessionClient {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN || execIds.length === 0) return;
     ws.send(JSON.stringify({ op: "clear_output", session: this.session, exec_ids: execIds }));
+  }
+
+  /** The unanswered input()/getpass() prompt the kernel is blocked on, or null. */
+  pendingInput(): PendingInput | null {
+    return this.pendingInputData;
+  }
+
+  /**
+   * Answer a pending input()/getpass() prompt so the blocked cell continues.
+   * Fire-and-forget over the live attach socket (already bound to this session);
+   * the daemon's `input_ack` reply is ignored by {@link handle}. Clears the local
+   * pending marker optimistically so a stale box doesn't re-fire.
+   */
+  sendInput(value: string): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    this.pendingInputData = null;
+    ws.send(JSON.stringify({ op: "input_reply", session: this.session, value }));
   }
 
   close(): void {
