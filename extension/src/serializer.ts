@@ -261,8 +261,9 @@ export function synthesizeCell(value: string, isMarkup: boolean): Cell {
 
 /**
  * Resolve a Cell View notebook cell back to its percent-format {@link Cell} for
- * serialization, given its current display text, kind, and the verbatim
- * structure stored at parse time (absent for a freshly added cell).
+ * serialization, given its current display text, kind, the verbatim structure
+ * stored at parse time (absent for a freshly added cell), and whether it is the
+ * first cell of the notebook.
  *
  * - **Unedited** (text matches the stored cell's display source): the stored
  *   structure is returned verbatim → byte-exact round-trip (the Phase 0 ⑥ /
@@ -272,12 +273,33 @@ export function synthesizeCell(value: string, isMarkup: boolean): Cell {
  *   (Without this, an edited existing cell silently saved its OLD content —
  *   data loss; ADR-020 backlog item.)
  * - **New cell** (no stored structure): synthesized with a fresh marker.
+ *
+ * Only the FIRST cell may be marker-less (a leading module header). If a
+ * marker-less header cell stops being first — the user inserted a cell above it
+ * or reordered it down — it is given a `# %%` marker, otherwise on reparse its
+ * body would merge into the cell above (silent cell-merge corruption).
  */
 export function resolveCell(
   value: string,
   isMarkup: boolean,
   stored: Cell | undefined,
+  isFirst = true,
 ): Cell {
+  const base = baseCell(value, isMarkup, stored);
+  if (!isFirst && !base.hasMarker) {
+    return {
+      ...base,
+      hasMarker: true,
+      markerLine: {
+        text: base.kind === "markdown" ? "# %% [markdown]" : "# %%",
+        terminator: "\n",
+      },
+    };
+  }
+  return base;
+}
+
+function baseCell(value: string, isMarkup: boolean, stored: Cell | undefined): Cell {
   if (!stored) return synthesizeCell(value, isMarkup);
   const raw = cellSource(stored);
   const display = stored.kind === "markdown" ? uncommentMarkdown(raw) : raw;

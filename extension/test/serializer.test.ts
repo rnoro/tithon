@@ -274,3 +274,39 @@ describe("resolveCell — edited existing cells persist to disk", () => {
     expect(cellSource(resolved)).toBe('print("added")\n');
   });
 });
+
+// --- marker-less leading cell must not merge when it stops being first --------
+describe("resolveCell — a marker-less cell that is no longer first gets a marker", () => {
+  const HEADER = "import os\n# %%\nprint(os.getcwd())\n";
+
+  it("keeps the marker-less header cell marker-less when it IS first", () => {
+    const head = parse(HEADER).cells[0];
+    expect(head.hasMarker).toBe(false);
+    const resolved = resolveCell(cellSource(head), false, head, /*isFirst*/ true);
+    expect(resolved.hasMarker).toBe(false); // still a module header
+  });
+
+  it("promotes the header cell to a `# %%` marker when it is NOT first", () => {
+    const head = parse(HEADER).cells[0];
+    const resolved = resolveCell(cellSource(head), false, head, /*isFirst*/ false);
+    expect(resolved.hasMarker).toBe(true);
+    expect(resolved.markerLine!.text).toBe("# %%");
+    // body preserved verbatim
+    expect(cellSource(resolved)).toBe("import os\n");
+  });
+
+  it("inserting a cell ABOVE a header cell still reparses to all cells (no merge)", () => {
+    const nb = parse(HEADER);
+    // Simulate: user inserts a new cell at index 0; the former header cell shifts
+    // to index 1 (no longer first); cell 2 is the original print cell.
+    const inserted = resolveCell('print("NEW")', false, undefined, true);
+    const header = resolveCell(cellSource(nb.cells[0]), false, nb.cells[0], false);
+    const tail = resolveCell(cellSource(nb.cells[1]), false, nb.cells[1], false);
+    const out = serialize({ cells: [inserted, header, tail] });
+    const reparsed = parse(out).cells;
+    expect(reparsed.length).toBe(3); // pre-fix this collapses to 2 (header merges up)
+    expect(out).toContain('print("NEW")');
+    expect(out).toContain("import os");
+    expect(out).toContain("print(os.getcwd())");
+  });
+});

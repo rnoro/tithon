@@ -49,10 +49,12 @@ export class PercentNotebookSerializer implements vscode.NotebookSerializer {
     // (byte-exact round-trip), but rebuilds the body from the cell's current
     // text when it was edited — so an edit to an existing cell is actually
     // persisted instead of silently reverting to the old metadata content.
-    const cells: Cell[] = data.cells.map((c) => {
+    const cells: Cell[] = data.cells.map((c, i) => {
       const stored = c.metadata?.[META_KEY] as Cell | undefined;
       const isMarkup = c.kind === vscode.NotebookCellKind.Markup;
-      return resolveCell(c.value, isMarkup, stored);
+      // Only the first cell may be marker-less; pass the position so a header
+      // cell moved off the top gets a marker instead of merging upward.
+      return resolveCell(c.value, isMarkup, stored, i === 0);
     });
     return enc.encode(serialize({ cells }));
   }
