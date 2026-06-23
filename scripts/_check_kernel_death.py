@@ -51,7 +51,38 @@ async def _wait(pred, timeout=20.0, label=""):
         await asyncio.sleep(0.05)
 
 
+async def check_startup_failure() -> None:
+    """A kernel that exits during startup (e.g. the interpreter lacks ipykernel)
+    must fail FAST with a clear message, not poll the full 120s readiness timeout.
+    Simulated by spawning then immediately killing the kernel before it is ready.
+    """
+    import time
+    tmp = Path(tempfile.mkdtemp(prefix="tithon-startfail-"))
+    work = tmp / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    s = Session("default", tmp / "sess", work)
+    s.kernel.ensure()
+    s.kc = s.kernel.make_client()
+    s.kernel.kill()  # kernel dies before becoming ready
+    t0 = time.monotonic()
+    raised = ""
+    try:
+        await s._wait_kernel_ready(timeout=120)  # production timeout
+        raise AssertionError("expected a fast failure, but it became ready")
+    except RuntimeError as e:
+        raised = str(e)
+    dt = time.monotonic() - t0
+    try:
+        s.kc.stop_channels()
+    except Exception:
+        pass
+    assert dt < 10, f"startup failure took {dt:.1f}s — should fail fast, not poll 120s"
+    assert "ipykernel" in raised or "exited during startup" in raised, raised
+    print(f"[startup] dead-on-startup kernel failed fast in {dt:.1f}s: {raised[:60]!r}")
+
+
 async def main() -> int:
+    await check_startup_failure()
     tmp = Path(tempfile.mkdtemp(prefix="tithon-kerneldeath-"))
     work = tmp / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -87,7 +118,7 @@ async def main() -> int:
         assert "ALIVE_AGAIN 42" in text, f"expected output after restart, got {text!r}"
         print(f"[restart] fresh kernel runs: {text.strip()!r}")
 
-        print("PASS: kernel death errors the cell (no wedge) + fails fast + restart recovers")
+        print("PASS: startup-failure fast-fail + kernel death errors the cell (no wedge) + restart recovers")
         return 0
     finally:
         await s.stop(kill_kernel=True)

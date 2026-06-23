@@ -361,6 +361,14 @@ class Session:
             ):
                 log.info("[%s] kernel ready", self.session_id)
                 return
+            # Fail fast if the kernel process exited during startup instead of
+            # polling the full (120s) timeout — the common cause is the selected
+            # interpreter lacking ipykernel, or a crashing startup file.
+            if not self.kernel.is_alive():
+                raise RuntimeError(
+                    "kernel process exited during startup — is ipykernel installed "
+                    f"for this interpreter? (see {self.kernel.log_path})"
+                )
             if loop.time() > deadline:
                 raise RuntimeError("kernel did not become ready in time")
             await asyncio.sleep(0.2)
