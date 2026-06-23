@@ -228,6 +228,70 @@ export function bodyLinesFromText(value: string): PhysicalLine[] {
   return lines.map((text) => ({ text, terminator: "\n" }));
 }
 
+/** Display source of a markdown cell: drop the leading `# ` jupytext comment. */
+export function uncommentMarkdown(src: string): string {
+  return src.replace(/^# ?/gm, "");
+}
+
+/**
+ * Inverse of {@link uncommentMarkdown}: re-add the jupytext `# ` comment prefix
+ * to every line of a markdown cell's display text. An empty line becomes a bare
+ * `#` (no trailing space) so uncomment->comment is a fixed point.
+ */
+export function commentMarkdown(value: string): string {
+  return value
+    .split("\n")
+    .map((l) => (l === "" ? "#" : "# " + l))
+    .join("\n");
+}
+
+/**
+ * Synthesize a percent-format {@link Cell} from a cell's plain display text (a
+ * cell newly added in the Cell View — it carries no stored structure). Every
+ * body line is newline-terminated (see {@link bodyLinesFromText}).
+ */
+export function synthesizeCell(value: string, isMarkup: boolean): Cell {
+  return {
+    kind: isMarkup ? "markdown" : "code",
+    hasMarker: true,
+    markerLine: { text: isMarkup ? "# %% [markdown]" : "# %%", terminator: "\n" },
+    body: bodyLinesFromText(isMarkup ? commentMarkdown(value) : value),
+  };
+}
+
+/**
+ * Resolve a Cell View notebook cell back to its percent-format {@link Cell} for
+ * serialization, given its current display text, kind, and the verbatim
+ * structure stored at parse time (absent for a freshly added cell).
+ *
+ * - **Unedited** (text matches the stored cell's display source): the stored
+ *   structure is returned verbatim → byte-exact round-trip (the Phase 0 ⑥ /
+ *   v6 guarantee holds for files opened and saved without changes).
+ * - **Edited**: the stored marker line and kind are preserved, but the body is
+ *   rebuilt from the new text so the user's edit is actually persisted to disk.
+ *   (Without this, an edited existing cell silently saved its OLD content —
+ *   data loss; ADR-020 backlog item.)
+ * - **New cell** (no stored structure): synthesized with a fresh marker.
+ */
+export function resolveCell(
+  value: string,
+  isMarkup: boolean,
+  stored: Cell | undefined,
+): Cell {
+  if (!stored) return synthesizeCell(value, isMarkup);
+  const raw = cellSource(stored);
+  const display = stored.kind === "markdown" ? uncommentMarkdown(raw) : raw;
+  if (value === display) return stored; // unedited -> byte-exact
+  // Edited: keep the marker line + kind, rebuild the body from the new text.
+  const bodyText = stored.kind === "markdown" ? commentMarkdown(value) : value;
+  return {
+    kind: stored.kind,
+    hasMarker: stored.hasMarker,
+    markerLine: stored.markerLine,
+    body: bodyLinesFromText(bodyText),
+  };
+}
+
 /**
  * True if the source is percent-notebook format — it has at least one top-level
  * `# %%` cell marker. Used to decide whether a `.py` opened as text should

@@ -7,17 +7,19 @@
  * 0-byte diff (the Phase 0 ⑥ guarantee, verified by scripts/v6.sh).
  */
 import * as vscode from "vscode";
-import { parse, serialize, cellSource, bodyLinesFromText, type Cell } from "./serializer";
+import {
+  parse,
+  serialize,
+  cellSource,
+  uncommentMarkdown,
+  resolveCell,
+  type Cell,
+} from "./serializer";
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
 
 const META_KEY = "tithonCell";
-
-/** Display source for a markdown cell: drop the leading `# ` jupytext comment. */
-function uncommentMarkdown(src: string): string {
-  return src.replace(/^# ?/gm, "");
-}
 
 export class PercentNotebookSerializer implements vscode.NotebookSerializer {
   deserializeNotebook(content: Uint8Array): vscode.NotebookData {
@@ -43,26 +45,15 @@ export class PercentNotebookSerializer implements vscode.NotebookSerializer {
   }
 
   serializeNotebook(data: vscode.NotebookData): Uint8Array {
+    // resolveCell returns the stored structure verbatim for an UNEDITED cell
+    // (byte-exact round-trip), but rebuilds the body from the cell's current
+    // text when it was edited — so an edit to an existing cell is actually
+    // persisted instead of silently reverting to the old metadata content.
     const cells: Cell[] = data.cells.map((c) => {
       const stored = c.metadata?.[META_KEY] as Cell | undefined;
-      if (stored) return stored;
-      // a cell the user added in the Cell View: synthesize a percent cell.
-      return synthesizeCell(c);
+      const isMarkup = c.kind === vscode.NotebookCellKind.Markup;
+      return resolveCell(c.value, isMarkup, stored);
     });
     return enc.encode(serialize({ cells }));
   }
-}
-
-function synthesizeCell(c: vscode.NotebookCellData): Cell {
-  const isMarkup = c.kind === vscode.NotebookCellKind.Markup;
-  // A cell added via the Cell View carries no line terminators; bodyLinesFromText
-  // ensures each line ends with "\n" so the next `# %%` marker isn't glued onto
-  // the last code line (which would collapse the file back to one cell).
-  const body = bodyLinesFromText(c.value);
-  return {
-    kind: isMarkup ? "markdown" : "code",
-    hasMarker: true,
-    markerLine: { text: isMarkup ? "# %% [markdown]" : "# %%", terminator: "\n" },
-    body,
-  };
 }

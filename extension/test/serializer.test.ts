@@ -2,7 +2,16 @@ import { describe, it, expect } from "vitest";
 import * as fc from "fast-check";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { parse, serialize, countMarkers, bodyLinesFromText } from "../src/serializer";
+import {
+  parse,
+  serialize,
+  countMarkers,
+  bodyLinesFromText,
+  resolveCell,
+  cellSource,
+  uncommentMarkdown,
+  commentMarkdown,
+} from "../src/serializer";
 
 const CORPUS_DIR = join(__dirname, "..", "..", "scripts", "corpus");
 
@@ -192,5 +201,76 @@ describe("Cell View added cells — synthesize -> serialize -> parse (ADR-019 / 
     const out = serialize({ cells: [synthCell('print("x")\n'), synthCell('print("y")')] });
     expect(out).toBe('# %%\nprint("x")\n# %%\nprint("y")\n');
     expect(parse(out).cells.length).toBe(2);
+  });
+});
+
+// --- resolveCell: edited existing cells must persist (ADR-020 data-loss fix) --
+describe("resolveCell — edited existing cells persist to disk", () => {
+  const SRC = '# %%\nprint("old")\n# %%\nx = 1\n';
+
+  it("returns the stored structure VERBATIM for an unedited cell", () => {
+    const nb = parse(SRC);
+    const cell0 = nb.cells[0];
+    // value == the deserialized display source -> unedited -> identity (byte-exact).
+    const resolved = resolveCell(cellSource(cell0), false, cell0);
+    expect(resolved).toBe(cell0); // same object reference: nothing rebuilt
+  });
+
+  it("a full unedited notebook round-trips byte-exactly through resolveCell", () => {
+    const nb = parse(SRC);
+    const cells = nb.cells.map((c) => resolveCell(cellSource(c), false, c));
+    expect(serialize({ cells })).toBe(SRC);
+  });
+
+  it("REBUILDS the body from new text when a code cell is edited (no stale revert)", () => {
+    const nb = parse(SRC);
+    const cell0 = nb.cells[0];
+    // The user changed the cell text in the Cell View.
+    const resolved = resolveCell('print("NEW")', false, cell0);
+    expect(resolved).not.toBe(cell0);
+    expect(cellSource(resolved)).toBe('print("NEW")\n');
+    // Marker line + kind are preserved from the stored structure.
+    expect(resolved.hasMarker).toBe(true);
+    expect(resolved.markerLine!.text).toBe(cell0.markerLine!.text);
+    // And the whole file reflects the edit, not the old "old" content.
+    const cells = [resolved, resolveCell(cellSource(nb.cells[1]), false, nb.cells[1])];
+    const out = serialize({ cells });
+    expect(out).toBe('# %%\nprint("NEW")\n# %%\nx = 1\n');
+    expect(out).not.toContain("old");
+  });
+
+  it("preserves a marker-less leading cell when edited (no spurious marker)", () => {
+    const nb = parse('import os\n# %%\nx = 1\n');
+    const head = nb.cells[0];
+    expect(head.hasMarker).toBe(false);
+    const resolved = resolveCell("import sys", false, head);
+    expect(resolved.hasMarker).toBe(false);
+    expect(resolved.markerLine).toBeUndefined();
+    expect(cellSource(resolved)).toBe("import sys\n");
+  });
+
+  it("re-comments an edited markdown cell (jupytext `# ` prefix)", () => {
+    const nb = parse("# %% [markdown]\n# Title\n# body\n");
+    const md = nb.cells[0];
+    expect(md.kind).toBe("markdown");
+    // display source is the uncommented text
+    expect(uncommentMarkdown(cellSource(md))).toBe("Title\nbody\n");
+    const resolved = resolveCell("New Title\n\nsecond line", true, md);
+    // body is re-commented; empty line becomes a bare "#"
+    expect(cellSource(resolved)).toBe("# New Title\n#\n# second line\n");
+    expect(resolved.kind).toBe("markdown");
+  });
+
+  it("commentMarkdown / uncommentMarkdown round-trip", () => {
+    for (const v of ["a\nb", "Title\n\nbody", "  indented", ""]) {
+      expect(uncommentMarkdown(commentMarkdown(v))).toBe(v);
+    }
+  });
+
+  it("synthesizes a fresh cell when there is no stored structure", () => {
+    const resolved = resolveCell('print("added")', false, undefined);
+    expect(resolved.hasMarker).toBe(true);
+    expect(resolved.markerLine!.text).toBe("# %%");
+    expect(cellSource(resolved)).toBe('print("added")\n');
   });
 });
