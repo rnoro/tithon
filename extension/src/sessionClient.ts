@@ -100,6 +100,12 @@ export class SessionClient {
   private order: string[] = [];
   private onChangeCb: (() => void) | null = null;
   private onEventCb: ((ev: LiveEvent) => void) | null = null;
+  private onDisconnectCb: ((reason: string) => void) | null = null;
+  /** True once close() was called intentionally — suppresses the disconnect cb. */
+  private closing = false;
+  /** One-shot guard so an `overflow` op and the following socket close don't both
+   *  fire the disconnect callback. */
+  private disconnected = false;
   private kernelInfoData: { status?: string; pid?: number | null; python?: string | null } | null = null;
   private widgetState: WidgetState | null = null;
   /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
@@ -145,6 +151,23 @@ export class SessionClient {
   /** Raw per-event hook (fires for every `event` op) — used by LiveOutputSync. */
   onEvent(cb: (ev: LiveEvent) => void): void {
     this.onEventCb = cb;
+  }
+
+  /**
+   * Notified when the daemon connection is lost AFTER the initial sync — either
+   * the daemon dropped us for backpressure (`op:"overflow"`, ADR-018) or the
+   * socket closed unexpectedly (daemon restart/crash). The controller reconnects
+   * and resyncs from a fresh folded snapshot (cheap; ADR-018's design intent).
+   * Not fired for an intentional {@link close}. Fires at most once per client.
+   */
+  onDisconnect(cb: (reason: string) => void): void {
+    this.onDisconnectCb = cb;
+  }
+
+  private fireDisconnect(reason: string): void {
+    if (this.disconnected || this.closing) return;
+    this.disconnected = true;
+    this.onDisconnectCb?.(reason);
   }
 
   /** Executions in submission order. */
@@ -291,6 +314,9 @@ export class SessionClient {
       });
       ws.once("close", () => {
         if (!synced) reject(new Error("daemon closed connection before sync"));
+        // Lost the connection after we were live (daemon restart/crash, or the
+        // backpressure drop's close) — let the controller reconnect + resync.
+        else this.fireDisconnect("close");
       });
     });
   }
@@ -303,6 +329,11 @@ export class SessionClient {
       case "event":
         this.applyEvent(m);
         this.onEventCb?.(m as LiveEvent);
+        break;
+      case "overflow":
+        // The daemon dropped us for backpressure (ADR-018) and is about to close;
+        // surface it so the controller reconnects and resyncs (folded → cheap).
+        this.fireDisconnect("overflow");
         break;
       // "sync" handled by the caller; status_reply/execute_ack ignored here.
     }
@@ -507,6 +538,7 @@ export class SessionClient {
   }
 
   close(): void {
+    this.closing = true; // suppress the disconnect callback for an intentional close
     this.ws?.close();
     this.ws = null;
     this.artifactWs?.close();

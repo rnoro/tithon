@@ -496,6 +496,12 @@ export class TithonNotebookController {
   // flushed ~50ms) so a 50k-update tqdm.notebook animates without flooding it.
   private readonly widgetUpdateBuf = new Map<string, Record<string, unknown>>();
   private widgetFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  // Auto-reconnect bookkeeping (per notebook uri). When the daemon drops a live
+  // client (backpressure / restart / crash — ADR-018), we re-attach and resync
+  // from a fresh folded snapshot, with capped exponential backoff so a sustained
+  // overload doesn't thrash. A pending timer is cleared on an explicit disposeLive.
+  private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly reconnectAttempts = new Map<string, number>();
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
@@ -693,6 +699,9 @@ export class TithonNotebookController {
     this.selectionSub.dispose();
     this.pyStatus.dispose();
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
+    for (const t of this.reconnectTimers.values()) clearTimeout(t);
+    this.reconnectTimers.clear();
+    this.reconnecting.clear();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
     this.controller.dispose();
@@ -722,11 +731,63 @@ export class TithonNotebookController {
    */
   disposeLive(uri: vscode.Uri): void {
     const key = uri.toString();
+    // An explicit dispose (deselect / close / restart) is user intent to stop —
+    // cancel any in-flight auto-reconnect so we don't resurrect the session.
+    this.reconnecting.delete(key);
+    const t = this.reconnectTimers.get(key);
+    if (t) {
+      clearTimeout(t);
+      this.reconnectTimers.delete(key);
+    }
+    this.reconnectAttempts.delete(key);
     const s = this.liveSessions.get(key);
     if (s) {
       s.dispose();
       this.liveSessions.delete(key);
     }
+  }
+
+  /** URIs currently in an auto-reconnect cycle (lets a retry proceed even after
+   *  a failed ensureLive cleared the liveSessions entry). */
+  private readonly reconnecting = new Set<string>();
+
+  /**
+   * Re-attach a live session the daemon dropped (backpressure / restart / crash),
+   * resyncing from a fresh folded snapshot so the live view does not freeze
+   * (ADR-018). Capped exponential backoff (1s,2s,4s…30s) avoids hammering a
+   * still-down daemon or thrashing under a sustained high-output burst; a clean
+   * reconnect resets the backoff (startLive clears reconnectAttempts). An explicit
+   * disposeLive cancels the cycle.
+   */
+  private scheduleReconnect(notebook: vscode.NotebookDocument, reason: string): void {
+    const key = notebook.uri.toString();
+    if (!this.liveSessions.has(key) && !this.reconnecting.has(key)) return; // user stopped
+    if (this.reconnectTimers.has(key)) return; // already scheduled
+    this.reconnecting.add(key);
+    const attempt = (this.reconnectAttempts.get(key) ?? 0) + 1;
+    this.reconnectAttempts.set(key, attempt);
+    const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
+    console.log(`[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`);
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(key);
+      if (!this.reconnecting.has(key)) return; // cancelled by disposeLive
+      const nb = vscode.workspace.notebookDocuments.find((d) => d.uri.toString() === key);
+      if (!nb) {
+        this.reconnecting.delete(key);
+        return; // notebook closed
+      }
+      // Tear down the dead session, then re-attach fresh (startLive resyncs).
+      const dead = this.liveSessions.get(key);
+      if (dead) {
+        dead.dispose();
+        this.liveSessions.delete(key);
+      }
+      this.ensureLive(nb).then(
+        () => this.reconnecting.delete(key),
+        () => this.scheduleReconnect(nb, "retry"), // daemon still unreachable: back off
+      );
+    }, delay);
+    this.reconnectTimers.set(key, timer);
   }
 
   /** Restart a file's kernel (fresh namespace), then resync the live view. */
@@ -929,6 +990,12 @@ export class TithonNotebookController {
         });
       }
     });
+    // The daemon dropped us for backpressure or restarted/crashed (ADR-018): the
+    // live view would otherwise freeze forever. Reconnect and resync from a fresh
+    // folded snapshot (cheap). A clean attach resets the backoff so a later,
+    // independent drop reconnects promptly again.
+    client.onDisconnect((reason) => this.scheduleReconnect(notebook, reason));
+    this.reconnectAttempts.delete(notebook.uri.toString());
     // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
     // so re-present the prompt from the snapshot (the live event won't replay).
     const pi = client.pendingInput();
