@@ -73,6 +73,9 @@ async def _run(args) -> int:
         await ws.send(json.dumps({"op": "attach", "last_seen_seq": -1, "session": args.session}))
         while True:
             m = json.loads(await ws.recv())
+            if m.get("op") == "error":
+                print(f"tithon: {m.get('message', 'daemon error')}", file=sys.stderr)
+                return 2
             if m.get("op") == "sync":
                 break
         await ws.send(json.dumps({"op": "execute", "code": args.code, "session": args.session}))

@@ -294,6 +294,13 @@ export class SessionClient {
         } catch {
           return;
         }
+        // The daemon couldn't start this session (e.g. the kernel exited during
+        // startup — ADR-059/060). Reject with its actionable message so the
+        // controller surfaces it instead of a generic "connection closed".
+        if (m.op === "error" && !synced) {
+          reject(new Error(m.message || "daemon error"));
+          return;
+        }
         try {
           this.handle(m);
         } catch (err) {

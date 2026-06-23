@@ -22,23 +22,15 @@ function tmpSock(): string {
   return path.join(os.tmpdir(), `tithon-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
 }
 
-async function fakeDaemon(
-  onAttach: (ws: WS) => void,
+/** Bare unix-socket ws server; `onConnection` gets full control of each socket. */
+async function fakeDaemonRaw(
+  onConnection: (ws: WS) => void,
 ): Promise<{ sock: string; close: () => Promise<void> }> {
   const sock = tmpSock();
   try { fs.unlinkSync(sock); } catch { /* fresh */ }
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
-  wss.on("connection", (ws) => {
-    ws.on("message", (raw) => {
-      const m = JSON.parse(raw.toString());
-      if (m.op === "attach") {
-        ws.send(JSON.stringify({ op: "snapshot", max_seq: 0, executions: [] }));
-        ws.send(JSON.stringify({ op: "sync", seq: 0 }));
-        onAttach(ws);
-      }
-    });
-  });
+  wss.on("connection", onConnection);
   await new Promise<void>((res) => server.listen(sock, res));
   return {
     sock,
@@ -51,6 +43,38 @@ async function fakeDaemon(
         });
       }),
   };
+}
+
+/** A daemon that answers attach with snapshot+sync, then runs `onAttach`. */
+async function fakeDaemon(
+  onAttach: (ws: WS) => void,
+): Promise<{ sock: string; close: () => Promise<void> }> {
+  return fakeDaemonRaw((ws) => {
+    ws.on("message", (raw) => {
+      const m = JSON.parse(raw.toString());
+      if (m.op === "attach") {
+        ws.send(JSON.stringify({ op: "snapshot", max_seq: 0, executions: [] }));
+        ws.send(JSON.stringify({ op: "sync", seq: 0 }));
+        onAttach(ws);
+      }
+    });
+  });
+}
+
+/** A daemon that, on attach, replies with an `error` op and closes (a
+ *  session-start failure — e.g. the kernel exited on startup, ADR-059/060). */
+async function fakeErrorDaemon(
+  message: string,
+): Promise<{ sock: string; close: () => Promise<void> }> {
+  return fakeDaemonRaw((ws) => {
+    ws.on("message", (raw) => {
+      const m = JSON.parse(raw.toString());
+      if (m.op === "attach") {
+        ws.send(JSON.stringify({ op: "error", message }));
+        ws.close();
+      }
+    });
+  });
 }
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -90,6 +114,16 @@ describe("SessionClient — disconnect surfacing for reconnect", () => {
     await c.attach(0);
     await settle();
     expect(reason).toBe("close");
+    c.close();
+    await d.close();
+  });
+
+  it("attach rejects with the daemon's message on an error op (ADR-060)", async () => {
+    const d = await fakeErrorDaemon("kernel process exited during startup — is ipykernel installed?");
+    const c = new SessionClient(d.sock, "s");
+    let msg = "";
+    await c.attach(0).catch((e: Error) => { msg = e.message; });
+    expect(msg).toContain("ipykernel");
     c.close();
     await d.close();
   });

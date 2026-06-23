@@ -152,6 +152,13 @@ export class DaemonClient {
         } catch {
           return;
         }
+        // Session start failed (e.g. kernel exited on startup — ADR-059/060):
+        // reject with the daemon's actionable reason, not a generic close error.
+        if (m.op === "error") {
+          ws.off("message", onMsg);
+          reject(new Error(m.message || "daemon error"));
+          return;
+        }
         if (pred(m)) {
           ws.off("message", onMsg);
           resolve(m);

@@ -959,9 +959,21 @@ class Daemon:
                 # The first op may carry the client's project root (`workdir`) so
                 # a freshly-created session roots its artifacts/kernel there.
                 if session is None:
-                    session = await self._get_session(
-                        msg.get("session", DEFAULT_SESSION), msg.get("workdir")
-                    )
+                    try:
+                        session = await self._get_session(
+                            msg.get("session", DEFAULT_SESSION), msg.get("workdir")
+                        )
+                    except Exception as e:
+                        # Session creation failed (e.g. the kernel exited during
+                        # startup — ADR-059). Tell the client WHY before closing,
+                        # so VSCode can show the actionable reason instead of a
+                        # generic "connection closed".
+                        log.exception("[%s] session start failed", msg.get("session"))
+                        try:
+                            await ws.send(json.dumps({"op": "error", "message": str(e)}))
+                        except Exception:
+                            pass
+                        return
 
                 if op == "attach":
                     if sub is None:
