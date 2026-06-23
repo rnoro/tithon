@@ -64,6 +64,13 @@ SOCK_SNDBUF = int(os.environ.get("TITHON_SOCK_SNDBUF", str(1 << 20)))  # bytes
 # prompt and hang. A short settle closes that connection race (measured reliable).
 STDIN_SETTLE_S = float(os.environ.get("TITHON_STDIN_SETTLE", "0.3"))  # seconds
 
+# How often, while waiting for a cell's execute_reply, to wake and check the
+# kernel is still alive. A kernel that dies mid-run (crash / OOM-kill / os._exit)
+# never sends a reply; without this the exec worker would block forever and the
+# whole session (incl. queued cells) wedges. Small enough to surface the death
+# quickly, large enough not to busy-poll.
+KERNEL_REPLY_POLL = float(os.environ.get("TITHON_KERNEL_REPLY_POLL", "1.0"))  # seconds
+
 
 def _safe_component(s: str) -> str:
     """One filesystem-safe path component (readable, bounded)."""
@@ -561,21 +568,18 @@ class Session:
         :meth:`_stdin_pump` bridges the prompt to the client; an unanswered prompt
         merely waits and is abandonable via interrupt, so it still cannot wedge
         the session permanently."""
-        msg_id = self.kc.execute(code, allow_stdin=allow_stdin)
-        self._msgid_to_exec[msg_id] = exec_id
         started_at = self.journal.mark_started(exec_id)
         self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
-        log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
-        while True:
-            reply = await self.kc.shell_channel.get_msg()
-            if (
-                reply["header"]["msg_type"] == "execute_reply"
-                and (reply.get("parent_header") or {}).get("msg_id") == msg_id
-            ):
-                break
-        content = reply["content"]
-        status = content.get("status", "ok")
-        ec = content.get("execution_count")
+        # A kernel that already died (a previous cell crashed it) can't run this
+        # cell — fail fast instead of executing into the void and timing out.
+        if not self.kernel.is_alive():
+            self._emit_kernel_dead(exec_id)
+            status, ec = "error", None
+        else:
+            msg_id = self.kc.execute(code, allow_stdin=allow_stdin)
+            self._msgid_to_exec[msg_id] = exec_id
+            log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
+            status, ec = await self._await_reply(msg_id, exec_id)
         # If the cell ended while still blocked at a prompt (interrupted, or the
         # kernel aborted input), drop the stale prompt so the client dismisses it.
         self._clear_pending_input(exec_id)
@@ -592,6 +596,50 @@ class Session:
         )
         log.info("[%s] exec %s done status=%s", self.session_id, exec_id, status)
         return status
+
+    async def _await_reply(self, msg_id: str, exec_id: str) -> tuple[str, int | None]:
+        """Wait for this cell's ``execute_reply``, watching for kernel death.
+
+        Polls with a timeout so that if the kernel dies mid-run (crash /
+        OOM-kill / ``os._exit``) — in which case no reply is ever sent — we
+        detect it and surface an error instead of blocking the exec worker (and
+        every queued cell) forever. Returns ``(status, execution_count)``.
+        """
+        while True:
+            try:
+                reply = await asyncio.wait_for(
+                    self.kc.shell_channel.get_msg(), KERNEL_REPLY_POLL
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                if not self.kernel.is_alive():
+                    self._emit_kernel_dead(exec_id)
+                    return "error", None
+                continue  # still running, just slow — keep waiting
+            if (
+                reply["header"]["msg_type"] == "execute_reply"
+                and (reply.get("parent_header") or {}).get("msg_id") == msg_id
+            ):
+                content = reply["content"]
+                return content.get("status", "ok"), content.get("execution_count")
+
+    def _emit_kernel_dead(self, exec_id: str) -> None:
+        """Journal + broadcast a synthetic error for a cell whose kernel died, so
+        the cell stops spinning and shows why. ``mark_done`` is left to the
+        caller (shared with the normal path). Marks the kernel status ``dead``."""
+        self.kernel_status = "dead"
+        content = {
+            "ename": "KernelDied",
+            "evalue": "the kernel died during execution (crash, OOM-kill, or os._exit)",
+            "traceback": [
+                "KernelDied: the kernel process exited during execution.",
+                "Restart the kernel (Tithon: Restart Kernel) to continue.",
+            ],
+        }
+        seq = self.journal.append_message(exec_id, "error", content)
+        self._folds[exec_id].apply("error", content)
+        self._broadcast(event_from_message(seq, exec_id, "error", content))
+        log.warning("[%s] kernel died during exec %s (pid=%s)",
+                    self.session_id, exec_id, self.kernel.pid)
 
     def _mark_skipped(self, exec_id: str) -> None:
         """Terminate a queued cell that a Run-All skipped after an earlier error.

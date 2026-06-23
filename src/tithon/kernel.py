@@ -50,6 +50,18 @@ class KernelHandle:
             return None  # pid was recycled by an unrelated process
         return pid
 
+    def is_alive(self) -> bool:
+        """True iff our kernel process is still running.
+
+        Uses the same pid-file + ``/proc`` cmdline check as :meth:`_alive_pid`,
+        so a DEAD-but-unreaped kernel (a zombie, whose ``/proc/<pid>/cmdline`` is
+        empty) reads as not-alive — ``os.kill(pid, 0)`` alone would wrongly
+        succeed for a zombie. Used by the exec worker to detect a kernel that
+        died mid-execution (crash / OOM-kill / ``os._exit``) so the cell errors
+        out instead of waiting forever for an ``execute_reply`` that never comes.
+        """
+        return self._alive_pid() is not None
+
     def ensure(self) -> bool:
         """Re-attach to a live kernel if possible, else spawn. True if spawned."""
         pid = self._alive_pid()
@@ -98,22 +110,46 @@ class KernelHandle:
             return False
 
     def kill(self) -> None:
-        """Terminate the current kernel process (best effort: TERM then KILL)."""
+        """Terminate the current kernel process (best effort: TERM then KILL),
+        then reap it so a crashed/killed kernel doesn't linger as a zombie.
+
+        Liveness is checked via ``_alive_pid`` (``/proc`` cmdline), not
+        ``os.kill(pid, 0)``: a dead-but-unreaped child is a ZOMBIE whose pid
+        ``os.kill(.., 0)`` still answers, so the old check spun the full
+        TERM→KILL→"did not exit" path on every crash and left the zombie behind.
+        """
         if self.pid is None:
             return
+        gone = self._alive_pid() is None  # already dead (e.g. it crashed)
         for sig in (signal.SIGTERM, signal.SIGKILL):
+            if gone:
+                break
             try:
                 os.kill(self.pid, sig)
             except OSError:
-                return  # already gone
+                gone = True
+                break  # already gone
             for _ in range(20):  # up to ~1s for it to exit between TERM and KILL
-                try:
-                    os.kill(self.pid, 0)
-                except OSError:
-                    log.info("killed kernel pid=%d", self.pid)
-                    return
+                if self._alive_pid() is None:
+                    gone = True
+                    break
                 time.sleep(0.05)
-        log.warning("kernel pid=%s did not exit after SIGKILL", self.pid)
+        self._reap()
+        if gone:
+            log.info("killed kernel pid=%d", self.pid)
+        else:
+            log.warning("kernel pid=%s did not exit after SIGKILL", self.pid)
+
+    def _reap(self) -> None:
+        """Reap our now-dead kernel child so it doesn't linger as a zombie. No-op
+        if it isn't our child (re-attached across a daemon restart) or already
+        reaped (``waitpid`` raises ``ChildProcessError``)."""
+        if self.pid is None:
+            return
+        try:
+            os.waitpid(self.pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass
 
     def restart(self) -> None:
         """Kill the running kernel and spawn a fresh one (new namespace)."""
