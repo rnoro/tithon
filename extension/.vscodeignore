@@ -5,5 +5,8 @@
 **
 !package.json
 !README.md
+!CHANGELOG.md
+!LICENSE
+!icon.png
 !dist/extension.js
 !dist/widgetRenderer.js

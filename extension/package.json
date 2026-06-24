@@ -1,13 +1,32 @@
 {
-  "name": "tithon-extension",
+  "name": "tithon",
   "displayName": "Tithon",
-  "version": "0.0.14",
+  "version": "0.1.0",
   "private": true,
-  "publisher": "tithon",
+  "publisher": "rnoro",
+  "license": "MIT",
+  "icon": "icon.png",
+  "categories": [
+    "Notebooks",
+    "Data Science",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "jupyter",
+    "notebook",
+    "kernel",
+    "remote",
+    "persistent",
+    "ipywidgets"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/rnoro/tithon.git"
   },
+  "bugs": {
+    "url": "https://github.com/rnoro/tithon/issues"
+  },
+  "homepage": "https://github.com/rnoro/tithon#readme",
   "description": "Tithon VSCode extension — percent Cell View + matplotlib/tqdm output + output restore",
   "engines": {
     "vscode": "^1.85.0"
@@ -168,14 +187,14 @@
     "jsdom": "^24.0.0",
     "mocha": "^11.7.6",
     "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
+    "vitest": "^1.6.0",
+    "@types/ws": "^8.18.1",
+    "vsce": "^2.15.0"
   },
   "dependencies": {
     "@jupyter-widgets/base": "^6.0.11",
     "@jupyter-widgets/controls": "^5.0.12",
     "@jupyter-widgets/html-manager": "^1.0.14",
-    "@types/ws": "^8.18.1",
-    "vsce": "^2.15.0",
     "ws": "^8.21.0"
   }
 }
