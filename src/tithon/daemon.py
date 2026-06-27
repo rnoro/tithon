@@ -931,6 +931,30 @@ class Daemon:
             "sessions": [s.status() for s in self._sessions.values()],
         }
 
+    async def _kill_session(self, session_id: str | None) -> bool:
+        """Terminate a session's kernel and drop it from the manager.
+
+        Pops the session under the lock so a concurrent op can't reuse a
+        half-stopped session, tells any attached client the kernel is gone (a
+        ``tithon.kernel`` ``killed`` event so spinners clear), then stops the
+        session and kills its kernel. The journal/session dir stay on disk, so
+        reopening the file re-creates the session lazily with a fresh kernel and
+        the restored output history. Returns False if no such live session.
+        """
+        if not session_id:
+            return False
+        async with self._sessions_lock:
+            s = self._sessions.pop(session_id, None)
+        if s is None:
+            return False
+        try:
+            s._journal_lifecycle(None, "tithon.kernel", {"status": "killed"})
+        except Exception:  # pragma: no cover - defensive
+            log.exception("[%s] kill lifecycle broadcast failed", session_id)
+        await s.stop(kill_kernel=True)
+        log.info("killed kernel for session %s (pid=%s)", session_id, s.kernel.pid)
+        return True
+
     async def _handler(self, ws) -> None:
         session: Session | None = None
         sub: Subscriber | None = None
@@ -955,6 +979,17 @@ class Daemon:
                     log.info("shutdown requested (kill_kernels=%s)", self._kill_kernels_on_stop)
                     self._stop.set()
                     return
+                # Terminate ONE session's kernel by id (frees host/GPU resources).
+                # Global op (no session bind) so a client can kill any file's
+                # kernel, including one it isn't attached to. The session is
+                # dropped; reopening that file later restores its output history
+                # under a fresh kernel.
+                if op == "kill_kernel":
+                    target = msg.get("target")
+                    ok = await self._kill_session(target)
+                    await ws.send(json.dumps(
+                        {"op": "kernel_killed", "ok": ok, "session": target}))
+                    continue
                 # A connection is bound to one session, fixed on the first op.
                 # The first op may carry the client's project root (`workdir`) so
                 # a freshly-created session roots its artifacts/kernel there.

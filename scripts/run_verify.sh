@@ -12,7 +12,7 @@
 #     widgets      v5 v29 v30             ipywidget mirror + html-manager render + live anim
 #     restore      v7 v8 v15 v16 v22 v38  reconnect: output + cell-state restore, orphan
 #     livesync     v10 v11 v12 v13 v14 v33 v37   live streaming into cells (native run, edits, display)
-#     kernels      v17 v18 v19 v20 v21 v23 v24 v26   per-file kernels + lifecycle (restart/interrupt/autostart)
+#     kernels      v17 v18 v19 v20 v21 v23 v24 v26 v40   per-file kernels + lifecycle (restart/interrupt/terminate/autostart)
 #     richoutputs  v27 v28 v31 v34 v35    matplotlib/tqdm images, live-plot GC, durable clear, storage
 #     cellview     v32 v39                text <-> Cell View, ruff/ty LSP   (v25/v36 merged into v39)
 #   Meta bundles:
@@ -29,12 +29,12 @@ backpressure_s="v9"
 widgets_s="v5 v29 v30"
 restore_s="v7 v8 v15 v16 v22 v38"
 livesync_s="v10 v11 v12 v13 v14 v33 v37"
-kernels_s="v17 v18 v19 v20 v21 v23 v24 v26"
+kernels_s="v17 v18 v19 v20 v21 v23 v24 v26 v40"
 richoutputs_s="v27 v28 v31 v34 v35"
 cellview_s="v32 v39"
 
 # --- meta bundles ------------------------------------------------------------
-fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35"   # every hermetic test
+fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40"   # every hermetic test
 vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39"
 
 bundle="${1:-fast}"

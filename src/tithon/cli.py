@@ -172,6 +172,18 @@ def cmd_interrupt(args) -> int:
     return asyncio.run(_kernel_op("interrupt", args.session))
 
 
+async def _kill(target: str) -> int:
+    async with await _connect() as ws:
+        await ws.send(json.dumps({"op": "kill_kernel", "target": target}))
+        m = json.loads(await ws.recv())
+        print(json.dumps(m, indent=2))
+    return 0 if m.get("ok") else 1
+
+
+def cmd_kill(args) -> int:
+    return asyncio.run(_kill(args.session))
+
+
 async def _shutdown(kill_kernels: bool) -> int:
     async with await _connect() as ws:
         await ws.send(json.dumps({"op": "shutdown", "kill_kernels": kill_kernels}))
@@ -225,6 +237,10 @@ def main(argv=None) -> None:
     sp = sub.add_parser("interrupt", help="interrupt the running cell (SIGINT)")
     sp.add_argument("--session", default="default", help="session id (file uri)")
     sp.set_defaults(fn=cmd_interrupt)
+
+    sp = sub.add_parser("kill", help="terminate one session's kernel and drop the session")
+    sp.add_argument("--session", required=True, help="session id (file uri) to terminate")
+    sp.set_defaults(fn=cmd_kill)
 
     sp = sub.add_parser("shutdown", help="stop the daemon (kernels stay detached unless --kill-kernels)")
     sp.add_argument("--kill-kernels", action="store_true",

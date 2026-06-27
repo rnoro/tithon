@@ -11,7 +11,7 @@
  */
 import * as vscode from "vscode";
 import { SessionClient } from "./sessionClient";
-import { DaemonClient, defaultSocketPath } from "./daemonClient";
+import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
 import { ensureDaemon, waitForDaemonStop, listPythonEnvironments } from "./daemonProcess";
 import { parse, type Cell } from "./serializer";
 import type { OutputItem } from "./outputFold";
@@ -686,6 +686,65 @@ export class TithonNotebookController {
     }
   }
 
+  /**
+   * Show the daemon's running kernels and terminate the one the user picks.
+   * Driven by a command/toolbar button: list → pick → confirm → kill. The kernel
+   * is killed host-side (freeing GPU memory) and its session dropped; reopening
+   * the file later restores its output under a fresh kernel. Works for any
+   * running kernel, including files this window doesn't have open.
+   */
+  async pickAndKillKernel(): Promise<void> {
+    await ensureDaemon(this.sockPath);
+    let kernels: KernelInfo[];
+    try {
+      kernels = await this.daemon.listKernels();
+    } catch (err) {
+      vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
+      return;
+    }
+    const running = kernels.filter((k) => k.kernel_pid != null);
+    if (running.length === 0) {
+      vscode.window.showInformationMessage("Tithon: no running kernels.");
+      return;
+    }
+    type Item = vscode.QuickPickItem & { session: string };
+    const items: Item[] = running.map((k) => ({
+      label: `$(circle-filled) ${kernelLabel(k.session)}`,
+      description: `Python ${k.kernel_python ?? "?"} · pid ${k.kernel_pid}`,
+      detail:
+        `${k.executions} execution(s)` +
+        (k.queue_len ? `, ${k.queue_len} queued` : "") +
+        ` · ${k.kernel_status}`,
+      session: k.session,
+    }));
+    const pick = await vscode.window.showQuickPick(items, {
+      placeHolder: "Select a running kernel to terminate",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!pick) return;
+    const answer = await vscode.window.showWarningMessage(
+      `Terminate the kernel for ${kernelLabel(pick.session)}? Any running cell stops and the namespace is lost.`,
+      { modal: true },
+      "Terminate",
+    );
+    if (answer !== "Terminate") return;
+    const ok = await this.daemon.killKernel(pick.session);
+    // Tear down our live view for that file (if any) so the UI resets — the next
+    // run/open spawns a fresh kernel.
+    try {
+      this.disposeLive(vscode.Uri.parse(pick.session));
+    } catch {
+      /* "default"/CLI session isn't a real uri — nothing to dispose */
+    }
+    vscode.window.setStatusBarMessage(
+      ok
+        ? `Tithon: kernel terminated (${kernelLabel(pick.session)})`
+        : "Tithon: kernel was not running",
+      4000,
+    );
+  }
+
   /** Line range of each cell (by index) in the on-disk percent file. */
   private async cellLineRanges(
     notebook: vscode.NotebookDocument,
@@ -1021,6 +1080,17 @@ export class TithonNotebookController {
   }
 }
 
+/** A readable name for a session id (file uri) in the kernel picker. */
+function kernelLabel(session: string): string {
+  if (session === "default") return "CLI session";
+  try {
+    const uri = vscode.Uri.parse(session);
+    return uri.path.split("/").pop() || session;
+  } catch {
+    return session;
+  }
+}
+
 /** Register the controller + restore/live commands for the Cell View. */
 export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
   const controller = new TithonNotebookController();
@@ -1065,6 +1135,15 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         vscode.window.setStatusBarMessage("Tithon: daemon restarted", 3000);
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon daemon restart: ${String(err)}`);
+      }
+    }),
+    // List the daemon's running kernels and terminate the one the user picks
+    // (frees host/GPU memory). No active notebook needed — works for any kernel.
+    vscode.commands.registerCommand("tithon.killKernel", async () => {
+      try {
+        await controller.pickAndKillKernel();
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon terminate kernel: ${String(err)}`);
       }
     }),
     // Test-only: lets the integration suite confirm the widget renderer painted

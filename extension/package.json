@@ -40,6 +40,7 @@
     "onCommand:tithon.restoreOutputs",
     "onCommand:tithon.restartKernel",
     "onCommand:tithon.interruptKernel",
+    "onCommand:tithon.killKernel",
     "onCommand:tithon.runCell"
   ],
   "contributes": {
@@ -110,6 +111,12 @@
         "command": "tithon.restartDaemon",
         "title": "Tithon: Restart Daemon",
         "category": "Tithon"
+      },
+      {
+        "command": "tithon.killKernel",
+        "title": "Tithon: Terminate Kernel…",
+        "category": "Tithon",
+        "icon": "$(trash)"
       }
     ],
     "configuration": {
@@ -165,6 +172,16 @@
           "command": "tithon.openAsText",
           "when": "notebookType == tithon-py",
           "group": "navigation/view@2"
+        },
+        {
+          "command": "tithon.killKernel",
+          "when": "notebookType == tithon-py",
+          "group": "kernel@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "tithon.killKernel"
         }
       ]
     }

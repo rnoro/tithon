@@ -16,6 +16,19 @@ export interface ExecOrigin {
   index?: number;
 }
 
+/** One live kernel as reported by the daemon's global status (`sessions[]`). */
+export interface KernelInfo {
+  /** The session id = the file uri (or "default" for the CLI session). */
+  session: string;
+  kernel_pid: number | null;
+  kernel_status: string;
+  kernel_python: string | null;
+  kernel_reattached: boolean;
+  queue_len: number;
+  executions: number;
+  widget_models: number;
+}
+
 /** The session id is the file uri: one kernel + journal per file (like Jupyter). */
 function sessionOf(origin?: ExecOrigin): string {
   return origin?.uri ?? "default";
@@ -99,6 +112,27 @@ export class DaemonClient {
     try {
       ws.send(JSON.stringify({ op: "restart_kernel", session }));
       await this.waitFor(ws, (m) => m.op === "kernel_restarted");
+    } finally {
+      ws.close();
+    }
+  }
+
+  /** List the daemon's running kernels (one per file session) — the picker's
+   *  source for "which kernel to terminate". */
+  async listKernels(): Promise<KernelInfo[]> {
+    const reply = await this.status();
+    return (reply.sessions ?? []) as KernelInfo[];
+  }
+
+  /** Terminate a file's kernel and drop its session (frees host/GPU memory).
+   *  `session` is the file uri. Resolves true if a live kernel was killed,
+   *  false if no such session was running. */
+  async killKernel(session: string): Promise<boolean> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "kill_kernel", target: session }));
+      const m = await this.waitFor(ws, (m) => m.op === "kernel_killed");
+      return !!m.ok;
     } finally {
       ws.close();
     }

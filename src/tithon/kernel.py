@@ -143,13 +143,24 @@ class KernelHandle:
     def _reap(self) -> None:
         """Reap our now-dead kernel child so it doesn't linger as a zombie. No-op
         if it isn't our child (re-attached across a daemon restart) or already
-        reaped (``waitpid`` raises ``ChildProcessError``)."""
+        reaped (``waitpid`` raises ``ChildProcessError``).
+
+        ``waitpid(WNOHANG)`` can return 0 (not yet waitable) in the brief window
+        between the process emptying its ``/proc`` cmdline — which is what made
+        :meth:`kill` consider it gone — and the kernel delivering SIGCHLD, so a
+        single non-blocking call could leave a zombie behind. Retry the
+        non-blocking reap for a short bounded window; it never blocks (WNOHANG),
+        so a pid that is somehow not our child / not yet dead can't hang us."""
         if self.pid is None:
             return
-        try:
-            os.waitpid(self.pid, os.WNOHANG)
-        except (ChildProcessError, OSError):
-            pass
+        for _ in range(20):  # up to ~0.2s for the dead child to become waitable
+            try:
+                pid, _status = os.waitpid(self.pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                return  # not our child / already reaped
+            if pid != 0:
+                return  # reaped
+            time.sleep(0.01)
 
     def restart(self) -> None:
         """Kill the running kernel and spawn a fresh one (new namespace)."""
