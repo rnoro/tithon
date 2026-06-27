@@ -153,6 +153,52 @@ function trackCellView(nb: vscode.NotebookDocument): void {
 }
 
 /**
+ * Redirect Pylance's `<notebook>.py.py` pseudo-path go-to-definition.
+ *
+ * For an in-notebook definition Pylance answers with a `file://` Location whose
+ * path is the notebook uri's path plus an EXTRA `.py`, carrying the target
+ * cell's handle in the fragment — e.g. `file:///x/a.py.py#W0sZmlsZQ==`. For a
+ * normal `.ipynb` notebook (`a.ipynb` → `a.ipynb.py`) that pseudo-path round-
+ * trips back to a `vscode-notebook-cell:` uri and navigation stays in-notebook;
+ * but a tithon-py notebook reuses the `.py`'s OWN uri (ADR-041), so the pseudo-
+ * path is `a.py.py` and the round-trip never fires — VSCode instead opens a
+ * phantom text tab for the non-existent `a.py.py` file ("go-to-def opens
+ * a.py.py"). We detect that phantom tab, close it, and reveal the real cell the
+ * fragment points at. Scheme-agnostic across the LSP: anything that routes a
+ * definition/declaration/reference through the pseudo-path lands here.
+ *
+ * Guarded so it can never hijack a genuine user file literally named `*.py.py`:
+ * it acts ONLY when the de-doubled path is an OPEN tithon-py notebook AND the
+ * fragment matches one of that notebook's live cells.
+ */
+async function redirectPseudoPathDefinition(tab: vscode.Tab): Promise<void> {
+  if (!(tab.input instanceof vscode.TabInputText)) return;
+  const uri = tab.input.uri;
+  if (uri.scheme !== "file" || !uri.path.endsWith(".py.py") || !uri.fragment) return;
+  // De-double: drop the trailing extra ".py" to recover the notebook path.
+  const nbPath = uri.fsPath.slice(0, -3); // ".../a.py.py" -> ".../a.py"
+  const nb = vscode.workspace.notebookDocuments.find(
+    (n) => n.notebookType === "tithon-py" && n.uri.fsPath === nbPath,
+  );
+  if (!nb) return; // not a tithon-py pseudo-path
+  const cell = nb.getCells().find((c) => c.document.uri.fragment === uri.fragment);
+  if (!cell) return; // fragment is not a live cell handle — leave the tab alone
+  try {
+    await vscode.window.tabGroups.close(tab, true);
+  } catch {
+    /* a dirty/locked tab may refuse; the reveal below still helps */
+  }
+  try {
+    const ed = await vscode.window.showNotebookDocument(nb);
+    const range = new vscode.NotebookRange(cell.index, cell.index + 1);
+    ed.selection = range;
+    ed.revealRange(range, vscode.NotebookEditorRevealType.InCenter);
+  } catch {
+    /* best-effort navigation */
+  }
+}
+
+/**
  * Make .py open as TEXT by default. The tithon-py notebook needs a `*.py`
  * selector so `Open as Cell View` (vscode.openWith) works, but a notebook
  * selector also makes it the DEFAULT editor for .py — which the user does not
@@ -220,6 +266,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ) {
           void closeStaleTextTabs(tab.input.uri.toString());
         }
+      }
+      // Redirect Pylance's `<notebook>.py.py` go-to-definition phantom tab to the
+      // real cell (the pseudo-path never round-trips for a tithon-py notebook).
+      for (const tab of e.opened) {
+        void redirectPseudoPathDefinition(tab);
       }
     }),
   );
