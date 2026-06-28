@@ -37,10 +37,6 @@
     "onStartupFinished",
     "onLanguage:python",
     "onNotebook:tithon-py",
-    "onCommand:tithon.restoreOutputs",
-    "onCommand:tithon.restartKernel",
-    "onCommand:tithon.interruptKernel",
-    "onCommand:tithon.killKernel",
     "onCommand:tithon.runCell"
   ],
   "contributes": {
@@ -91,13 +87,13 @@
       },
       {
         "command": "tithon.openAsCellView",
-        "title": "Tithon: Open as Cell View",
+        "title": "Open as Cell View",
         "category": "Tithon",
         "icon": "$(notebook)"
       },
       {
         "command": "tithon.openAsText",
-        "title": "Tithon: Open as Text Editor",
+        "title": "Open as Text Editor",
         "category": "Tithon",
         "icon": "$(file-code)"
       },
@@ -150,6 +146,11 @@
           "command": "tithon.openAsCellView",
           "when": "resourceExtname == .py && activeEditor == workbench.editors.files.textFileEditor",
           "group": "navigation"
+        },
+        {
+          "command": "tithon.openAsText",
+          "when": "notebookType == tithon-py",
+          "group": "navigation"
         }
       ],
       "notebook/toolbar": [
@@ -167,11 +168,6 @@
           "command": "tithon.selectInterpreter",
           "when": "notebookType == tithon-py",
           "group": "navigation/view@1"
-        },
-        {
-          "command": "tithon.openAsText",
-          "when": "notebookType == tithon-py",
-          "group": "navigation/view@2"
         },
         {
           "command": "tithon.killKernel",
