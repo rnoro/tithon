@@ -146,6 +146,33 @@ async function closeStaleTextTabs(uriStr: string): Promise<void> {
   }
 }
 
+/**
+ * Close every plain-text editor for `uriStr` AND wait until its underlying text
+ * DOCUMENT is gone from the workspace — i.e. the LSP `textDocument/didClose` has
+ * been dispatched.
+ *
+ * A tithon-py notebook reuses the .py's OWN file:// URI (ADR-041), so a
+ * notebook-aware Python LSP (ty/ruff) keys both representations under one URI. ty
+ * REJECTS a `notebookDocument/didOpen` for a URI it still holds as a text
+ * document, then errors every later `notebookDocument/didChange`
+ * ("document not found …baseline.py") and go-to-definition dies. So a Cell View
+ * must only open once NO file-scheme text document for the URI remains — closing
+ * the tab is not enough, the document close (which drives the LSP didClose) lands
+ * a tick later. Bounded by a short deadline so a stuck/dirty buffer can't hang
+ * the switch (worst case we fall back to the old racy order, never a freeze).
+ */
+async function closeTextDocsAndWait(uriStr: string): Promise<void> {
+  await closeStaleTextTabs(uriStr);
+  const stillOpen = (): boolean =>
+    vscode.workspace.textDocuments.some(
+      (d) => d.uri.scheme === "file" && d.uri.toString() === uriStr,
+    );
+  const deadline = Date.now() + 3000;
+  while (stillOpen() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 30));
+  }
+}
+
 function trackCellView(nb: vscode.NotebookDocument): void {
   if (!isTithon(nb)) return;
   cellViewUris.add(nb.uri.toString());
@@ -355,10 +382,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Opting into the Cell View clears any "keep as text" choice so auto-open
       // resumes for this file.
       textPreferred.delete(uri.toString());
-      await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
-      // Belt to the onDidOpenNotebookDocument hook: ensure no text view lingers.
+      // Single representation per URI (ADR-041/ADR-064): close any coexisting
+      // text editor and wait for its textDocument/didClose BEFORE opening the
+      // notebook, so ty/ruff never see a notebookDocument/didOpen for a URI they
+      // still hold as a text document (which they reject -> every later didChange
+      // is "document not found" -> go-to-definition dies). This is the failing
+      // open-as-text -> back-to-Cell-View round trip. Arm the guard first so
+      // onDidChangeTabs also keeps the URI text-free across the switch.
       cellViewUris.add(uri.toString());
-      await closeStaleTextTabs(uri.toString());
+      await closeTextDocsAndWait(uri.toString());
+      await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
     }),
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the
     // notebook/toolbar button, which forwards a `{ notebookEditor: {...} }`

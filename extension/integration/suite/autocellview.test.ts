@@ -81,7 +81,12 @@ describe("Tithon auto-opens percent .py as Cell View (v39)", () => {
     // (1) Open the percent .py the way a user does — it must AUTO-open as a Cell
     // View with no manual command, and leave no coexisting text tab.
     await vscode.commands.executeCommand("vscode.open", uri);
-    await waitFor(() => notebookTabsFor(uri).length > 0, 20000,
+    // Wait for BOTH the notebook tab AND the notebook DOCUMENT: opening the Cell
+    // View closes the coexisting text editor first and only then opens the
+    // notebook (ADR-064 single-representation ordering), so the TabInputNotebook
+    // can appear a tick before the document registers in workspace.notebookDocuments.
+    // Step (2) dereferences notebookFor(uri), so require the document here.
+    await waitFor(() => notebookTabsFor(uri).length > 0 && !!notebookFor(uri), 20000,
       "percent .py auto-opened as a Cell View");
     await waitFor(() => textTabsFor(uri).length === 0, 15000,
       "no text tab lingers after auto-open (single representation)");
