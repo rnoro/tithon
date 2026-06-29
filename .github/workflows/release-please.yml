@@ -1,0 +1,24 @@
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # Uses the default GITHUB_TOKEN (release PR + GitHub release only).
+          # NOTE: releases created with GITHUB_TOKEN do NOT trigger other workflows.
+          # If you later add a PyPI / VS Code Marketplace publish workflow that should
+          # fire on release, create a PAT and pass it here as `token: ${{ secrets.... }}`.

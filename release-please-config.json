@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "tithon",
+      "component": "tithon",
+      "include-component-in-tag": false,
+      "extra-files": [
+        { "type": "generic", "path": "src/tithon/__init__.py" }
+      ]
+    },
+    "extension": {
+      "release-type": "node",
+      "package-name": "tithon-extension",
+      "component": "extension"
+    }
+  }
+}
