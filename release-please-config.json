@@ -3,15 +3,14 @@
   "separate-pull-requests": true,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
+  "pull-request-header": "🚀 New version unlocked. Check out what's inside!",
   "packages": {
     ".": {
       "release-type": "python",
       "package-name": "tithon",
       "component": "tithon",
       "include-component-in-tag": false,
-      "extra-files": [
-        { "type": "generic", "path": "src/tithon/__init__.py" }
-      ]
+      "extra-files": [{ "type": "generic", "path": "src/tithon/__init__.py" }]
     },
     "extension": {
       "release-type": "node",
