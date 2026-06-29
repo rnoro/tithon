@@ -23,6 +23,27 @@ function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined 
 }
 
 /**
+ * Is a tithon-py Cell View TAB currently on screen for this URI? Deliberately
+ * distinct from `findNotebook` (which finds a notebook DOCUMENT): overlapping
+ * fast toggles can strand a TABLESS "zombie" notebook document (ADR-065) that
+ * lingers in `workspace.notebookDocuments` with no editor. The single-
+ * representation guard must key off a real, VISIBLE notebook tab — not a zombie
+ * document — otherwise it auto-closes a reopened text editor for a file that has
+ * no Cell View on screen, and the .py becomes un-openable.
+ */
+function hasCellViewTab(fileUri: vscode.Uri): boolean {
+  const key = fileUri.toString();
+  return vscode.window.tabGroups.all
+    .flatMap((g) => g.tabs)
+    .some(
+      (t) =>
+        t.input instanceof vscode.TabInputNotebook &&
+        t.input.notebookType === "tithon-py" &&
+        t.input.uri.toString() === key,
+    );
+}
+
+/**
  * Resolve a notebook URI from a command argument.
  *
  * Different invokers hand a command different shapes: the `editor/title` menu and
@@ -95,6 +116,30 @@ const textPreferred = new Set<string>();
 
 /** Re-entrancy guard: URIs currently mid auto-convert (openWith is async). */
 const autoConverting = new Set<string>();
+
+/**
+ * Per-URI serialization of the text<->Cell-View toggle. `openAsCellView` and
+ * `openAsText` both issue async `vscode.openWith` calls plus tab closes, and
+ * ADR-064's `closeTextDocsAndWait` keeps `openAsCellView` running for up to 3s.
+ * So if the user toggles fast, command N's async tail can still be in flight when
+ * command N+1 starts — two conflicting `openWith` calls interleave and strand a
+ * TABLESS "zombie" notebook document: `findNotebook` then returns it forever, so
+ * `cellViewUris` never clears, the single-representation guard auto-closes every
+ * reopened text editor, and the .py won't reopen (ADR-065). Chaining both
+ * commands through one per-URI queue makes rapid toggles apply sequentially so
+ * the last toggle wins deterministically and no half-open state is left behind.
+ */
+const toggleQueues = new Map<string, Promise<unknown>>();
+function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
+  const prev = toggleQueues.get(uriStr) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(op);
+  toggleQueues.set(uriStr, next);
+  // Drop the entry once this op is the tail, so the map can't grow unbounded.
+  void next.catch(() => {}).finally(() => {
+    if (toggleQueues.get(uriStr) === next) toggleQueues.delete(uriStr);
+  });
+  return next;
+}
 
 /**
  * Auto-switch a `.py` opened as TEXT to the Tithon Cell View when its content is
@@ -291,7 +336,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           tab.input instanceof vscode.TabInputText &&
           cellViewUris.has(tab.input.uri.toString())
         ) {
-          void closeStaleTextTabs(tab.input.uri.toString());
+          // Close the coexisting text editor ONLY when a real Cell View notebook
+          // TAB is on screen for this URI (the genuine text+notebook LSP
+          // collision, ADR-041). If cellViewUris still holds the URI but NO
+          // notebook tab is visible, the entry is STALE — a ghost left by a torn-
+          // down round trip, or a tabless "zombie" notebook document stranded by
+          // overlapping fast toggles (ADR-065). Closing the text editor then would
+          // make the .py un-openable: it flashes in the tab bar and vanishes. So
+          // self-heal the stale entry instead of eating the user's editor. Keying
+          // off a VISIBLE tab (not findNotebook, which a zombie document poisons)
+          // is what makes the reopen reliable.
+          if (hasCellViewTab(tab.input.uri)) {
+            void closeStaleTextTabs(tab.input.uri.toString());
+          } else {
+            cellViewUris.delete(tab.input.uri.toString());
+          }
         }
       }
       // Redirect Pylance's `<notebook>.py.py` go-to-definition phantom tab to the
@@ -379,19 +438,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage("Tithon: open a .py file first");
         return;
       }
-      // Opting into the Cell View clears any "keep as text" choice so auto-open
-      // resumes for this file.
-      textPreferred.delete(uri.toString());
-      // Single representation per URI (ADR-041/ADR-064): close any coexisting
-      // text editor and wait for its textDocument/didClose BEFORE opening the
-      // notebook, so ty/ruff never see a notebookDocument/didOpen for a URI they
-      // still hold as a text document (which they reject -> every later didChange
-      // is "document not found" -> go-to-definition dies). This is the failing
-      // open-as-text -> back-to-Cell-View round trip. Arm the guard first so
-      // onDidChangeTabs also keeps the URI text-free across the switch.
-      cellViewUris.add(uri.toString());
-      await closeTextDocsAndWait(uri.toString());
-      await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
+      // Serialize against a concurrent openAsText for the same URI (ADR-065) so
+      // rapid toggles can't interleave into a stranded zombie notebook.
+      return queueToggle(uri.toString(), async () => {
+        // Opting into the Cell View clears any "keep as text" choice so auto-open
+        // resumes for this file.
+        textPreferred.delete(uri.toString());
+        // Single representation per URI (ADR-041/ADR-064): close any coexisting
+        // text editor and wait for its textDocument/didClose BEFORE opening the
+        // notebook, so ty/ruff never see a notebookDocument/didOpen for a URI they
+        // still hold as a text document (which they reject -> every later didChange
+        // is "document not found" -> go-to-definition dies). This is the failing
+        // open-as-text -> back-to-Cell-View round trip. Arm the guard first so
+        // onDidChangeTabs also keeps the URI text-free across the switch.
+        cellViewUris.add(uri.toString());
+        await closeTextDocsAndWait(uri.toString());
+        await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
+      });
     }),
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the
     // notebook/toolbar button, which forwards a `{ notebookEditor: {...} }`
@@ -407,16 +470,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showInformationMessage("Tithon: no Cell View to open as text");
         return;
       }
-      try {
-        cellViewUris.delete(uri.toString());
-        // Remember the user wants TEXT for this file this session, so auto-open
-        // (maybeAutoOpenCellView) does not immediately flip it back to Cell View.
-        textPreferred.add(uri.toString());
-        await closeCellViewTabs(uri.toString());
-        await vscode.commands.executeCommand("vscode.openWith", uri, "default");
-      } catch (err) {
-        vscode.window.showErrorMessage(`Tithon open as text: ${String(err)}`);
-      }
+      // Serialize against a concurrent openAsCellView for the same URI (ADR-065)
+      // so rapid toggles can't interleave into a stranded zombie notebook.
+      return queueToggle(uri.toString(), async () => {
+        try {
+          cellViewUris.delete(uri.toString());
+          // Remember the user wants TEXT for this file this session, so auto-open
+          // (maybeAutoOpenCellView) does not immediately flip it back to Cell View.
+          textPreferred.add(uri.toString());
+          await closeCellViewTabs(uri.toString());
+          await vscode.commands.executeCommand("vscode.openWith", uri, "default");
+        } catch (err) {
+          vscode.window.showErrorMessage(`Tithon open as text: ${String(err)}`);
+        }
+      });
     }),
     vscode.commands.registerCommand("tithon.interruptKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
@@ -428,6 +495,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showErrorMessage(`Tithon interrupt: ${String(err)}`);
       }
     }),
+    // Test affordance (like tithon._activeExecCells): expose the single-
+    // representation bookkeeping so integration tests can assert a URI is not
+    // left "stuck" in cellViewUris (which would make the guard auto-close every
+    // later text editor for that file — the "file won't reopen" bug, ADR-065).
+    vscode.commands.registerCommand("tithon._cellViewState", () => ({
+      cellViewUris: [...cellViewUris],
+      textPreferred: [...textPreferred],
+    })),
   );
 }
 
