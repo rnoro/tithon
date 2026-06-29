@@ -33,8 +33,9 @@ directly — no port forwarding.
 
 1. Connect to the host (▸ *Connect to Tunnel…* or *Remote-SSH*) and open your
    project folder.
-2. Open a percent-format `.py` — a file with `# %%` cell markers. Tithon opens
-   it in **Cell View** automatically.
+2. Open a percent-format `.py` — a file with `# %%` cell markers. It opens as
+   plain text; click **Open as Cell View** in the editor title bar (or run
+   *Tithon: Open as Cell View*) to switch to notebook-style cells.
 3. Run a cell with the **Run Cell** CodeLens, then run **Tithon: Start Live
    Output Sync** to stream output into the cells as it is produced.
 4. Close the laptop or drop the connection. The daemon and kernel keep running.
@@ -77,7 +78,6 @@ stays pure source — outputs never touch the file, so diffs stay clean.
 | `tithon.autoStartDaemon` | `true` | Start the daemon on the host when it isn't already running (spawned detached, so it survives reconnects). |
 | `tithon.daemonCommand` | `tithon` | Command used to launch the daemon (run as `<command> daemon`). Set an absolute path if `tithon` isn't on `PATH`. |
 | `tithon.pythonPath` | `""` | Run the daemon as `<python> -m tithon daemon`. Leave empty to use the Python extension's selected interpreter. |
-| `tithon.autoOpenCellView` | `true` | Open percent-format `.py` files (those with a `# %%` marker) in Cell View instead of plain text. Scripts with no markers are unaffected. |
 
 ## How it pairs with the daemon
 

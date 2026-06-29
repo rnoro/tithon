@@ -99,11 +99,6 @@ describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", 
     const helperUri = vscode.Uri.file(process.env.TITHON_HELPER!);
     await ext().activate();
 
-    // Explicit transitions only; the percent auto-open would race our switches.
-    await vscode.workspace
-      .getConfiguration("tithon")
-      .update("autoOpenCellView", false, vscode.ConfigurationTarget.Global);
-
     const ruff = vscode.extensions.getExtension("charliermarsh.ruff");
     const ty = vscode.extensions.getExtension("astral-sh.ty");
     assert.ok(ty, "ty extension must be installed in the test host");

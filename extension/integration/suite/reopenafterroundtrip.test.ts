@@ -55,10 +55,9 @@ const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
     (d) => d.uri.toString() === uri.toString() && d.notebookType === "tithon-py",
   );
 
-async function cellViewState(): Promise<{ cellViewUris: string[]; textPreferred: string[] }> {
+async function cellViewState(): Promise<{ cellViewUris: string[] }> {
   return (await vscode.commands.executeCommand("tithon._cellViewState")) as {
     cellViewUris: string[];
-    textPreferred: string[];
   };
 }
 
@@ -66,9 +65,6 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
   it("the .py reopens and stays open; no stuck cellViewUris entry", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
-    await vscode.workspace
-      .getConfiguration("tithon")
-      .update("autoOpenCellView", true, vscode.ConfigurationTarget.Global);
 
     // Open as Cell View, then round-trip through text and back.
     await vscode.commands.executeCommand("tithon.openAsCellView", uri);
@@ -92,7 +88,7 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     // guard will auto-close every reopened text editor).
     const st = await cellViewState();
     // eslint-disable-next-line no-console
-    console.log(`v44: after close: cellViewUris=${JSON.stringify(st.cellViewUris)} textPreferred=${JSON.stringify(st.textPreferred)} notebookOpen=${!!notebookFor(uri)}`);
+    console.log(`v44: after close: cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`);
     assert.ok(
       !st.cellViewUris.includes(uri.toString()) || !!notebookFor(uri),
       `URI is stuck in cellViewUris with no live notebook -> the guard will eat reopened text editors (cellViewUris=${JSON.stringify(st.cellViewUris)})`,
@@ -137,7 +133,7 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
 
     const st = await cellViewState();
     // eslint-disable-next-line no-console
-    console.log(`v44 RACE: after close cellViewUris=${JSON.stringify(st.cellViewUris)} textPreferred=${JSON.stringify(st.textPreferred)} notebookOpen=${!!notebookFor(uri)}`);
+    console.log(`v44 RACE: after close cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`);
     assert.ok(
       !st.cellViewUris.includes(uri.toString()) || !!notebookFor(uri),
       `RACE stranded the URI in cellViewUris with no live notebook (cellViewUris=${JSON.stringify(st.cellViewUris)})`,

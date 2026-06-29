@@ -118,9 +118,6 @@ describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
-    await vscode.workspace
-      .getConfiguration("tithon")
-      .update("autoOpenCellView", false, vscode.ConfigurationTarget.Global);
 
     const ty = vscode.extensions.getExtension("astral-sh.ty");
     assert.ok(ty, "ty extension must be installed in the test host");

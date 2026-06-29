@@ -76,9 +76,6 @@ describe("same-file go-to-definition stays in the Cell View (v41, Pylance)", () 
   it("redirects Pylance's a.py.py pseudo-path to the defining cell", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
-    await vscode.workspace
-      .getConfiguration("tithon")
-      .update("autoOpenCellView", false, vscode.ConfigurationTarget.Global);
 
     const py = vscode.extensions.getExtension("ms-python.python");
     const pylance = vscode.extensions.getExtension("ms-python.vscode-pylance");

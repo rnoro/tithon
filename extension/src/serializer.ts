@@ -314,16 +314,6 @@ function baseCell(value: string, isMarkup: boolean, stored: Cell | undefined): C
   };
 }
 
-/**
- * True if the source is percent-notebook format — it has at least one top-level
- * `# %%` cell marker. Used to decide whether a `.py` opened as text should
- * auto-switch to the Tithon Cell View (a plain script with no markers stays
- * text). See extension.ts maybeAutoOpenCellView.
- */
-export function isPercentNotebookSource(text: string): boolean {
-  return countMarkers(text) > 0;
-}
-
 /** Number of top-level cell markers in the source (for structural checks). */
 export function countMarkers(text: string): number {
   const lines = splitPhysicalLines(text);
