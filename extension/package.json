@@ -27,7 +27,7 @@
     "url": "https://github.com/rnoro/tithon/issues"
   },
   "homepage": "https://github.com/rnoro/tithon#readme",
-  "description": "Tithon VSCode extension — percent Cell View + matplotlib/tqdm output + output restore",
+  "description": "Tithon VSCode extension — percent-format notebook + matplotlib/tqdm output + output restore",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -43,7 +43,7 @@
     "notebooks": [
       {
         "type": "tithon-py",
-        "displayName": "Tithon Cell View",
+        "displayName": "Tithon Notebook",
         "selector": [
           {
             "filenamePattern": "*.py"
@@ -76,18 +76,8 @@
         "icon": "$(debug-stop)"
       },
       {
-        "command": "tithon.restoreOutputs",
-        "title": "Tithon: Resync Outputs from Daemon",
-        "category": "Tithon"
-      },
-      {
-        "command": "tithon.startLive",
-        "title": "Tithon: Start Live Output Sync",
-        "category": "Tithon"
-      },
-      {
-        "command": "tithon.openAsCellView",
-        "title": "Open as Cell View",
+        "command": "tithon.openAsNotebook",
+        "title": "Open as Notebook",
         "category": "Tithon",
         "icon": "$(notebook)"
       },
@@ -138,7 +128,7 @@
     "menus": {
       "editor/title": [
         {
-          "command": "tithon.openAsCellView",
+          "command": "tithon.openAsNotebook",
           "when": "resourceExtname == .py && activeEditor == workbench.editors.files.textFileEditor",
           "group": "navigation"
         },

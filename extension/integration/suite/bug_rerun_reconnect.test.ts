@@ -25,7 +25,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.startLive"));
+    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -58,10 +58,9 @@ describe("BUG H4b: duplicate-code cell identity (ADR-026) on GENUINE reconnect",
     console.log(`[H4b] seeded e1=${e1}(RUN ${JSON.stringify(cellOut(driver, e1))}) e2=${e2}(RUN ${JSON.stringify(cellOut(driver, e2))})`);
     driver.close();
 
-    // 2) Now select the kernel -> startLive attach(0) = the genuine reconnect.
+    // 2) Now select the kernel -> the auto path attaches(0) = the genuine reconnect.
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
-    // Ensure live/seed actually ran (auto path is kernel-selection driven).
-    await vscode.commands.executeCommand("tithon.startLive");
+    // selectKernel drives the auto live/seed (re-attach) path; settle for it.
     await new Promise((r) => setTimeout(r, 4000));
 
     const trace = (await vscode.commands.executeCommand("tithon._seedTrace")) as Array<{ staleMap?: boolean }>;

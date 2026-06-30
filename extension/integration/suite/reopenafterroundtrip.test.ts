@@ -23,7 +23,7 @@ import * as vscode from "vscode";
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -67,14 +67,14 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     await ext().activate();
 
     // Open as Cell View, then round-trip through text and back.
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened (1)");
 
     await vscode.commands.executeCommand("tithon.openAsText", uri);
     await waitFor(() => textTabsFor(uri).length > 0, 15000, "text editor opened");
     await waitFor(() => !notebookFor(uri), 15000, "notebook closed");
 
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View reopened (2)");
     await waitFor(() => textTabsFor(uri).length === 0, 15000, "no coexisting text editor (2)");
 
@@ -113,19 +113,19 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     await ext().activate();
 
     // Settle to a known Cell View state first.
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened");
 
-    // Fast user: fire opposite toggles overlapping (openAsCellView's 3s
+    // Fast user: fire opposite toggles overlapping (openAsNotebook's 3s
     // closeTextDocsAndWait window lets a "click Open as Text 1s later" interleave).
     for (let i = 0; i < 4; i++) {
       const a = vscode.commands.executeCommand("tithon.openAsText", uri);
-      const b = vscode.commands.executeCommand("tithon.openAsCellView", uri);
+      const b = vscode.commands.executeCommand("tithon.openAsNotebook", uri);
       await Promise.allSettled([a, b]);
       await new Promise((r) => setTimeout(r, 250));
     }
     // End on Cell View deterministically, then close everything.
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await new Promise((r) => setTimeout(r, 1500));
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitFor(() => anyTabsFor(uri).length === 0, 15000, "all closed after race");

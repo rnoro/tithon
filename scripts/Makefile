@@ -5,11 +5,11 @@
 #   make vscode          # every real-VSCode test (network + xvfb; one shared build)
 #   make all             # fast + vscode
 # Topic bundles: core serializer backpressure widgets restore livesync kernels
-#                richoutputs cellview  (see run_verify.sh for membership).
+#                richoutputs notebook  (see run_verify.sh for membership).
 HERE := $(dir $(lastword $(MAKEFILE_LIST)))
 
 BUNDLES := core serializer backpressure widgets restore livesync kernels \
-           richoutputs cellview fast vscode all
+           richoutputs notebook fast vscode all
 
 .PHONY: $(BUNDLES) verify test shot
 

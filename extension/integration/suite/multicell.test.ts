@@ -34,7 +34,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");

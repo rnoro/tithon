@@ -45,7 +45,7 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");
@@ -69,7 +69,6 @@ describe("Tithon orphaned execution restores output without a stuck spinner (v38
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
-    await vscode.commands.executeCommand("tithon.startLive");
 
     // Drive a cell that prints, then sleeps — so it is RUNNING with output.
     const text = readFileSync(fixture, "utf8");

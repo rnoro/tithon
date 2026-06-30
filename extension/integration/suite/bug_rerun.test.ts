@@ -25,7 +25,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.startLive"));
+    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -51,7 +51,6 @@ describe("BUG H2: re-run + GENUINE reconnect shows only the latest run", () => {
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
-    await vscode.commands.executeCommand("tithon.startLive");
     await new Promise((r) => setTimeout(r, 4000));
 
     const trace = await vscode.commands.executeCommand("tithon._seedTrace");

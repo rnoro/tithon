@@ -33,7 +33,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.startLive"));
+    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -77,7 +77,6 @@ describe("Tithon mid-run reconnect: restore prior + continue live (v15)", () => 
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
-    await vscode.commands.executeCommand("tithon.startLive");
 
     // 4) The cell must end up with the FULL 0..29 — early (restored) + late (live).
     await waitFor(() => cellText(nb.cellAt(loopIdx)).includes("29"), 30000, "loop to finish in the cell");
