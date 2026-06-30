@@ -42,7 +42,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");
@@ -63,8 +63,8 @@ describe("Tithon in-place update_display_data inside a real VSCode host (v33)", 
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
 
-    // Start live sync BEFORE submitting so the extension catches the whole stream.
-    await vscode.commands.executeCommand("tithon.startLive");
+    // selectKernel auto-starts live sync (ensureLive); attach is snapshot+delta
+    // from seq 0, so the whole stream is captured without a manual start.
 
     // Drive the display/update loop from a separate client (runs on the daemon).
     const text = readFileSync(fixture, "utf8");

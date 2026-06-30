@@ -1091,37 +1091,20 @@ function kernelLabel(session: string): string {
   }
 }
 
-/** Register the controller + restore/live commands for the Cell View. */
+/**
+ * Register the controller + Tithon commands. Restore and live sync are NOT
+ * user commands — they run automatically: selecting the kernel
+ * (onDidChangeSelectedNotebooks) and executing a cell both call ensureLive,
+ * which restores the folded snapshot and starts live mirroring with no manual
+ * step. The former `tithon.startLive` palette command was wholly redundant with
+ * that auto path and was removed; `tithon.restoreOutputs` was likewise removed
+ * from the user surface, surviving only as the test-only `tithon._restore`
+ * handle the restore-path suites use to force a re-seed (ADR-068).
+ */
 export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
   const controller = new TithonNotebookController();
   context.subscriptions.push(
     controller,
-    vscode.commands.registerCommand("tithon.restoreOutputs", async () => {
-      const nb = vscode.window.activeNotebookEditor?.notebook;
-      if (!nb) {
-        vscode.window.showInformationMessage("Tithon: no active notebook to restore");
-        return;
-      }
-      try {
-        await controller.restore(nb);
-        vscode.window.setStatusBarMessage("Tithon: outputs restored from daemon", 3000);
-      } catch (err) {
-        vscode.window.showErrorMessage(`Tithon restore: ${String(err)}`);
-      }
-    }),
-    vscode.commands.registerCommand("tithon.startLive", async () => {
-      const nb = vscode.window.activeNotebookEditor?.notebook;
-      if (!nb) {
-        vscode.window.showInformationMessage("Tithon: no active notebook for live sync");
-        return;
-      }
-      try {
-        await controller.ensureLive(nb);
-        vscode.window.setStatusBarMessage("Tithon: live output sync started", 3000);
-      } catch (err) {
-        vscode.window.showErrorMessage(`Tithon live: ${String(err)}`);
-      }
-    }),
     vscode.commands.registerCommand("tithon.selectInterpreter", async () => {
       try {
         await controller.selectInterpreter();
@@ -1145,6 +1128,14 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon terminate kernel: ${String(err)}`);
       }
+    }),
+    // Test-only: force a one-shot restore (fresh attach -> re-seed the folded
+    // snapshot into the cells). Production restores automatically on kernel
+    // selection; the restore-path suites (widget / rich-output reconstruction)
+    // use this to re-derive cell output from the snapshot AFTER a live run.
+    vscode.commands.registerCommand("tithon._restore", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (nb) await controller.restore(nb);
     }),
     // Test-only: lets the integration suite confirm the widget renderer painted
     // html (vs the text fallback) and applied live animation updates.

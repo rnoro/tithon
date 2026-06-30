@@ -3,14 +3,14 @@
 #       notebook cell *as it runs*, inside an actual Extension Host (xvfb).
 #   - starts a real daemon (no pre-seed; the test drives a slow loop),
 #   - launches VSCode via @vscode/test-electron under xvfb,
-#   - tithon.startLive attaches and mirrors the stream; the in-host test submits
-#     a 20-step slow loop and asserts the cell stdout GROWS over time and ends
-#     with all 20 lines (live, not a single end-of-run dump).
+#   - selecting the kernel auto-attaches and mirrors the stream; the in-host test
+#     submits a 20-step slow loop and asserts the cell stdout GROWS over time and
+#     ends with all 20 lines (live, not a single end-of-run dump).
 # Coalescing/bounds are unit-verified (test/liveSync.test.ts); this verifies the
 # live wiring renders in real VSCode. Needs network + xvfb (see scripts/v8.sh
 # header for the apt prerequisites); run via `make livesync` or `make vscode`.
-# Bundle: livesync. NOTE: drives the MANUAL tithon.startLive command — a legacy
-# path; the native "press play" flow is v11. v10 is kept as the canonical
+# Bundle: livesync. Live sync auto-starts on kernel selection (no manual
+# command); the native "press play" flow is v11. v10 is the canonical
 # incremental-growth live check (stdout GROWS over time, not an end-of-run dump).
 . "$(dirname "$0")/lib.sh"
 

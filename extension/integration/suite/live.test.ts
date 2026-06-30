@@ -2,8 +2,8 @@
  * v10 — REAL VSCode live output sync: a long-running cell streams into the
  * notebook cell *as it runs*, inside an actual Extension Host (xvfb + electron).
  *
- * Proves the live path end-to-end: the extension (tithon.startLive) attaches to
- * the daemon and mirrors the output stream; a separate driver submits a slow
+ * Proves the live path end-to-end: the extension auto-attaches on kernel
+ * selection and mirrors the output stream; a separate driver submits a slow
  * loop; the cell's stdout is observed GROWING over time (not a single dump at
  * the end) and ends with the full output. Coalescing/bounds are unit-verified in
  * test/liveSync.test.ts; here we verify the live wiring actually renders.
@@ -38,7 +38,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");
@@ -59,8 +59,9 @@ describe("Tithon live output sync inside a real VSCode host (v10)", () => {
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
 
-    // Start live sync BEFORE submitting, so the extension catches the stream.
-    await vscode.commands.executeCommand("tithon.startLive");
+    // selectKernel auto-starts live sync (ensureLive). Attach is snapshot+delta
+    // from seq 0, so the driver's output below is mirrored even if it lands
+    // before the subscriber finishes attaching — nothing is missed.
 
     // Drive the long cell from a separate client (the "kernel" runs on the daemon).
     const text = readFileSync(fixture, "utf8");

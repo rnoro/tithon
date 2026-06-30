@@ -28,7 +28,7 @@ import * as vscode from "vscode";
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -94,7 +94,7 @@ async function gotoResolvesHelper(
 }
 
 describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", () => {
-  it("ty go-to-def still resolves after openAsText then openAsCellView", async () => {
+  it("ty go-to-def still resolves after openAsText then openAsNotebook", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     const helperUri = vscode.Uri.file(process.env.TITHON_HELPER!);
     await ext().activate();
@@ -108,7 +108,7 @@ describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", 
     console.log(`v42: ty present=${!!ty} active=${ty?.isActive}`);
 
     // --- PHASE 1: open as Cell View, go-to-def works ---------------------------
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened (1)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 1, 15000, "notebook cells (1)");
     await gotoResolvesHelper(uri, helperUri, 40000, "phase1 go-to-def into helper.py");
@@ -121,13 +121,13 @@ describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", 
     console.log(`v42: after openAsText: textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`);
 
     // --- TRANSITION: Text Editor -> Cell View ----------------------------------
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View reopened (2)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 1, 15000, "notebook cells (2)");
     await waitFor(() => textTabsFor(uri).length === 0, 15000,
       "no text editor coexists after returning to the Cell View");
     // eslint-disable-next-line no-console
-    console.log(`v42: after openAsCellView(2): textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`);
+    console.log(`v42: after openAsNotebook(2): textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`);
 
     // Drive the live-sync notebookDocument/didChange stream the user saw flood ty:
     // select the kernel and run the cell so output writes mutate the notebook.

@@ -4,15 +4,15 @@
 #   - starts a real daemon, seeds 3 executions (stdout/execute_result/error),
 #   - launches VSCode via @vscode/test-electron under xvfb,
 #   - opens the fixture .py as a `tithon-py` notebook, selects the Tithon
-#     controller, runs `tithon.restoreOutputs`, and asserts the cells now carry
-#     the folded outputs (mocha test, in-host).
+#     controller (which auto-restores the snapshot), and asserts the cells now
+#     carry the folded outputs (mocha test, in-host).
 # This supersedes the ADR-012 "no display" limitation FOR THIS ENVIRONMENT
 # (xvfb + electron libs installed). Needs network (downloads VSCode) + xvfb, so
 # it is NOT part of `make verify` (the hermetic fast bundle); run via
 # `make restore` (its topic bundle) or `make vscode`.
-# Bundle: restore. NOTE: drives the MANUAL tithon.restoreOutputs command — a
-# legacy path; the user-facing flow is auto-restore-on-open (v22). v8 is kept as
-# the canonical multi-KIND restore check (stdout + execute_result + error).
+# Bundle: restore. Restore is auto-triggered on kernel selection (no manual
+# command; the user-facing flow is auto-restore-on-open, v22). v8 is the
+# canonical multi-KIND restore check (stdout + execute_result + error).
 #
 # System prerequisites (Debian/Ubuntu; install once, needs root):
 #   apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \

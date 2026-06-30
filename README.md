@@ -39,38 +39,14 @@ moves it to the host.
 > model burns thousands of tokens on and still can't read. **Don't feed your LLM
 > idiot JSON.**
 
-## How it works
-
-A long-lived **daemon** on the host owns the kernel and serves clients:
-
-![Tithon architecture overview: a detached ipykernel connected to the tithon daemon over ZMQ. The daemon journals every message verbatim to SQLite/WAL, folds it into a current-display snapshot plus an ipywidgets state mirror, stores rich outputs as files referenced by hash, and serves VSCode and CLI clients over a 0600 unix socket — no TCP.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/how-it-works.png)
-
-- The kernel runs **detached** (`setsid`), so it is not a child of the daemon.
-  The daemon can crash, restart, or be upgraded; the kernel keeps running and
-  re-attaches through a persisted connection file.
-- Every iopub/shell message is journaled **verbatim** to append-only SQLite
-  (WAL), alongside a per-execution _folded_ snapshot — the current display
-  state — so reconnects are fast.
-- Clients attach with the last sequence number they saw and get a snapshot plus
-  an ordered, gapless delta stream; reconnecting is just resuming the stream.
-- Rich outputs (images) are stored as files and referenced by hash, never
-  base64-embedded, and `ipywidgets` traffic is folded into a `widget-state+json`
-  snapshot, so a `tqdm` bar or a slider comes back at its real value.
-- Backpressure is bounded: per-subscriber buffers are capped, and a client that
-  falls too far behind is dropped and resyncs on reconnect — so one slow client
-  can't grow daemon memory or block the others.
-- The daemon binds a `0600` unix domain socket. No TCP.
-
-The kernel itself is plain `ipykernel` — Tithon replaces the session-management
-layer around it, not the execution engine. See [`docs/SPEC.md`](docs/SPEC.md)
-for the full design.
-
 ## Requirements
 
 - **Python 3.11+** for the daemon and CLI.
 - A Unix-like host — the daemon uses unix domain sockets and `setsid` (developed
   and tested on Linux).
-- For the remote workflow, **VSCode** with a Tunnel or Remote-SSH connection.
+- For the notebook UI, **VSCode** with the Tithon extension. If the host is
+  remote, connect over a Tunnel or Remote-SSH — the notebook then works exactly
+  as it does locally.
 
 ## Install
 
@@ -120,29 +96,59 @@ tithon attach --since 0 --once       # full snapshot: the earlier output is back
 tithon run -c 'print(x)'             # -> 42, kernel state intact
 ```
 
-## Remote workflow
+## VSCode extension
 
-This is what Tithon is built for: you edit from a laptop while the kernel runs
-on a remote GPU host and keeps running across your disconnects.
+The extension opens a percent-format `.py` (a plain script with `# %%` cell
+markers) as a **notebook** backed by the daemon — same cells, same Run buttons,
+same rich output as a Jupyter `.ipynb`, except the kernel and its output live on
+the host and survive your disconnects.
 
-With a VSCode **Tunnel** (or **Remote-SSH**) connection, the extension host runs
-_on the remote host_, so the extension talks to the daemon's host-local unix
-socket directly — no port forwarding, and closing your laptop only stops the
-rendering, never the work.
+1. Open a `.py` (it opens as plain text by default) and switch it with **Open as
+   Notebook** — the CodeLens at the top of the file, or the editor title menu.
+2. Pick the **Tithon** kernel and run cells as usual.
 
-1. Connect to the host (VSCode ▸ _Connect to Tunnel…_ or _Remote-SSH_) and open
-   your project folder.
-2. Open a percent-format `.py`. Run cells with the **Run Cell** CodeLens, then
-   run **Tithon: Start Live Output Sync** to stream output into the cells as it
-   is produced.
-3. Close the laptop or drop the connection. The daemon and kernel keep running.
-4. Reconnect later and run **Tithon: Restore Cell Outputs from Daemon** (or just
-   reopen the file): the outputs are back and resume streaming.
+That's all. Selecting the kernel attaches the session automatically; output is
+journaled on the host, and when you reopen the notebook later — VSCode remembers
+the kernel — it is restored and resumes streaming with no command. Over a VSCode
+**Tunnel** or **Remote-SSH** this is identical: the extension host runs on the
+remote, so it talks to the daemon's host-local socket directly, with no port
+forwarding. Nothing special for the remote case.
 
-The daemon and the extension must share `TITHON_HOME` (both default to
-`~/.tithon` for the same user). If you instead run the extension on your laptop
-against a _remote_ daemon, you have to forward the unix socket yourself (SSH
-`RemoteForward`, `socat`, …) — that's not the default path.
+Outputs are matched to cells by content hash, so they survive edits and reopens.
+An output whose cell was edited after it ran is flagged stale. The `.py` itself
+stays pure source — outputs never touch the file, so diffs stay clean.
+
+> [!NOTE]
+> The daemon and the extension must run on the **same host** (they share
+> `TITHON_HOME`, default `~/.tithon`). A Tunnel/Remote-SSH satisfies this for
+> free. If you instead run the extension on your laptop against a _remote_
+> daemon, forward the unix socket yourself (SSH `RemoteForward`, `socat`, …).
+
+## How it works
+
+A long-lived **daemon** on the host owns the kernel and serves clients:
+
+![Tithon architecture overview: a detached ipykernel connected to the tithon daemon over ZMQ. The daemon journals every message verbatim to SQLite/WAL, folds it into a current-display snapshot plus an ipywidgets state mirror, stores rich outputs as files referenced by hash, and serves VSCode and CLI clients over a 0600 unix socket — no TCP.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/how-it-works.png)
+
+- The kernel runs **detached** (`setsid`), so it is not a child of the daemon.
+  The daemon can crash, restart, or be upgraded; the kernel keeps running and
+  re-attaches through a persisted connection file.
+- Every iopub/shell message is journaled **verbatim** to append-only SQLite
+  (WAL), alongside a per-execution _folded_ snapshot — the current display
+  state — so reconnects are fast.
+- Clients attach with the last sequence number they saw and get a snapshot plus
+  an ordered, gapless delta stream; reconnecting is just resuming the stream.
+- Rich outputs (images) are stored as files and referenced by hash, never
+  base64-embedded, and `ipywidgets` traffic is folded into a `widget-state+json`
+  snapshot, so a `tqdm` bar or a slider comes back at its real value.
+- Backpressure is bounded: per-subscriber buffers are capped, and a client that
+  falls too far behind is dropped and resyncs on reconnect — so one slow client
+  can't grow daemon memory or block the others.
+- The daemon binds a `0600` unix domain socket. No TCP.
+
+The kernel itself is plain `ipykernel` — Tithon replaces the session-management
+layer around it, not the execution engine. See [`docs/SPEC.md`](docs/SPEC.md)
+for the full design.
 
 ## CLI reference
 
@@ -158,21 +164,6 @@ against a _remote_ daemon, you have to forward the unix socket yourself (SSH
 - `--since 0` — full folded snapshot, then live delta.
 - `--since N` — replay only events after seq `N`, then a `sync` marker, then live.
 - `--since -1` — live only, ignore history.
-
-## VSCode extension
-
-The extension opens percent-format `.py` files as a `tithon-py` notebook and
-talks to the daemon over its unix socket.
-
-| Command                                    | What it does                                                       |
-| ------------------------------------------ | ------------------------------------------------------------------ |
-| `Tithon: Restore Cell Outputs from Daemon` | Reconnect and restore the journal's folded outputs into the cells. |
-| `Tithon: Start Live Output Sync`           | Keep a session open and stream output into cells in real time.     |
-| `Run Cell` (CodeLens)                      | Submit a `# %%` cell's code to the daemon.                         |
-
-Outputs are matched to cells by content hash, so they survive edits and reopens.
-An output whose cell was edited after it ran is flagged stale. The `.py` itself
-stays pure source — outputs never touch the file, so diffs stay clean.
 
 ## Configuration
 
@@ -190,18 +181,6 @@ Environment variables read by the daemon and CLI:
 Outputs live in `$TITHON_HOME/sessions/<session>/journal.db` (raw messages plus
 folded snapshots), with rich outputs written as files under
 `<workdir>/.tithon/outputs/` and referenced from the journal.
-
-## Design invariants
-
-These are load-bearing; the rationale is in [`docs/SPEC.md`](docs/SPEC.md).
-
-1. The kernel is spawned detached and its connection file is persisted, so the
-   daemon re-attaches to it after a restart.
-2. Every iopub/shell message is kept verbatim in SQLite (WAL), with a folded
-   per-execution snapshot maintained alongside.
-3. Client sync is snapshot + delta over a monotonically increasing sequence.
-4. Rich `image/*` outputs are stored as files, not base64 in the journal.
-5. The daemon binds a `0600` unix domain socket only — never TCP.
 
 ## License
 

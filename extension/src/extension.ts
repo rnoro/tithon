@@ -105,9 +105,9 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
 const cellViewUris = new Set<string>();
 
 /**
- * Per-URI serialization of the text<->Cell-View toggle. `openAsCellView` and
+ * Per-URI serialization of the text<->Cell-View toggle. `openAsNotebook` and
  * `openAsText` both issue async `vscode.openWith` calls plus tab closes, and
- * ADR-064's `closeTextDocsAndWait` keeps `openAsCellView` running for up to 3s.
+ * ADR-064's `closeTextDocsAndWait` keeps `openAsNotebook` running for up to 3s.
  * So if the user toggles fast, command N's async tail can still be in flight when
  * command N+1 starts — two conflicting `openWith` calls interleave and strand a
  * TABLESS "zombie" notebook document: `findNotebook` then returns it forever, so
@@ -379,7 +379,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Open the active .py (or a given uri) as the Tithon Cell View notebook.
     // .py opens as TEXT by default now (no *.py notebook selector); this is the
     // explicit opt-in. VSCode remembers the choice per file via "keep" too.
-    vscode.commands.registerCommand("tithon.openAsCellView", async (arg?: vscode.Uri) => {
+    vscode.commands.registerCommand("tithon.openAsNotebook", async (arg?: vscode.Uri) => {
       const uri = arg ?? vscode.window.activeTextEditor?.document.uri;
       if (!uri) {
         vscode.window.showInformationMessage("Tithon: open a .py file first");
@@ -411,10 +411,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const uri =
         resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
       if (!uri) {
-        vscode.window.showInformationMessage("Tithon: no Cell View to open as text");
+        vscode.window.showInformationMessage("Tithon: no notebook to open as text");
         return;
       }
-      // Serialize against a concurrent openAsCellView for the same URI (ADR-065)
+      // Serialize against a concurrent openAsNotebook for the same URI (ADR-065)
       // so rapid toggles can't interleave into a stranded zombie notebook.
       return queueToggle(uri.toString(), async () => {
         try {

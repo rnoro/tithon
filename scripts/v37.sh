@@ -3,7 +3,7 @@
 #       and live output must not keep the notebook perpetually dirty.
 #   - starts a real daemon (the in-host test drives the cell),
 #   - launches VSCode via @vscode/test-electron under xvfb,
-#   - tithon.startLive attaches; the test runs a cell that prints CLEARME, then
+#   - selecting the kernel auto-attaches; the test runs a cell that prints CLEARME, then
 #     issues the native "Clear All Cell Outputs" command and asserts:
 #       (A) the notebook was never dirtied by live output (transientOutputs), and
 #       (B) the cleared cell has no open proxy execution afterwards — i.e. the

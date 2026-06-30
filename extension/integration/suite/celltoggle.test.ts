@@ -3,7 +3,7 @@
  * A `.py` opens as plain TEXT by default; the Tithon Cell View is opt-in (ADR-032;
  * the content-based auto-open heuristic was removed for being a fragile session-
  * state machine). Guards:
- *   (1) the opt-in `tithon.openAsCellView` opens a RUNNABLE Tithon notebook even
+ *   (1) the opt-in `tithon.openAsNotebook` opens a RUNNABLE Tithon notebook even
  *       for a markerless .py — proves vscode.openWith works with an EMPTY selector
  *       (was scripts/v25.sh / editordefault.test.ts);
  *   (2) "Open as Text" resolves with NO argument via the active notebook editor —
@@ -23,7 +23,7 @@ function cellText(cell: vscode.NotebookCell): string {
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -73,7 +73,7 @@ describe("Tithon manual Cell View <-> Text toggle (v39)", () => {
       15000, "markerless .py opened as text");
     assert.strictEqual(notebookTabsFor(plainUri).length, 0, "markerless .py must not auto-open as a notebook");
 
-    await vscode.commands.executeCommand("tithon.openAsCellView", plainUri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", plainUri);
     await waitFor(() => !!notebookFor(plainUri), 15000, "Cell View opened on demand");
     const nb = notebookFor(plainUri)!;
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook has cells");
@@ -95,7 +95,7 @@ describe("Tithon manual Cell View <-> Text toggle (v39)", () => {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
 
     // Open the Cell View explicitly (opt-in; .py is text by default — ADR-032).
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened");
     const nb = notebookFor(uri)!;
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook has cells");

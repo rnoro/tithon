@@ -14,7 +14,7 @@
 #     livesync     v10 v11 v12 v13 v14 v33 v37   live streaming into cells (native run, edits, display)
 #     kernels      v17 v18 v19 v20 v21 v23 v24 v26 v40   per-file kernels + lifecycle (restart/interrupt/terminate/autostart)
 #     richoutputs  v27 v28 v31 v34 v35    matplotlib/tqdm images, live-plot GC, durable clear, storage
-#     cellview     v32 v39 v41 v42 v43 v44  text <-> Cell View, ruff/ty + Pylance LSP   (v25/v36 merged into v39)
+#     notebook     v32 v39 v41 v42 v43 v44  text <-> Notebook, ruff/ty + Pylance LSP   (v25/v36 merged into v39)
 #   Meta bundles:
 #     fast    every hermetic test (no VSCode/network/xvfb) — the quick gate
 #     vscode  every real-VSCode test (network + xvfb; builds the extension once)
@@ -31,7 +31,7 @@ restore_s="v7 v8 v15 v16 v22 v38"
 livesync_s="v10 v11 v12 v13 v14 v33 v37"
 kernels_s="v17 v18 v19 v20 v21 v23 v24 v26 v40"
 richoutputs_s="v27 v28 v31 v34 v35"
-cellview_s="v32 v39 v41 v42 v43 v44"
+notebook_s="v32 v39 v41 v42 v43 v44"
 
 # --- meta bundles ------------------------------------------------------------
 fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40"   # every hermetic test
@@ -47,11 +47,11 @@ case "$bundle" in
   livesync)     scripts="$livesync_s" ;;
   kernels)      scripts="$kernels_s" ;;
   richoutputs)  scripts="$richoutputs_s" ;;
-  cellview)     scripts="$cellview_s" ;;
+  notebook)     scripts="$notebook_s" ;;
   fast)         scripts="$fast_s" ;;
   vscode)       scripts="$vscode_s" ;;
   all)          scripts="$fast_s $vscode_s" ;;
-  *) echo "usage: $0 core|serializer|backpressure|widgets|restore|livesync|kernels|richoutputs|cellview|fast|vscode|all" >&2; exit 2 ;;
+  *) echo "usage: $0 core|serializer|backpressure|widgets|restore|livesync|kernels|richoutputs|notebook|fast|vscode|all" >&2; exit 2 ;;
 esac
 label="$(echo "$bundle" | tr '[:lower:]' '[:upper:]')"
 
