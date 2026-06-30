@@ -17,8 +17,8 @@ export class PercentCodeLensProvider implements vscode.CodeLensProvider {
     // Cell View here (discoverable next to the cell "Run Cell" lenses).
     lenses.push(
       new vscode.CodeLens(new vscode.Range(0, 0, 0, 0), {
-        title: "$(notebook) Open as Tithon Cell View",
-        command: "tithon.openAsCellView",
+        title: "$(notebook) Open as Tithon Notebook",
+        command: "tithon.openAsNotebook",
         arguments: [document.uri],
       }),
     );

@@ -23,7 +23,7 @@ import * as vscode from "vscode";
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -114,7 +114,7 @@ const defUri = (d: DefResult): vscode.Uri =>
   "targetUri" in d ? d.targetUri : d.uri;
 
 describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty)", () => {
-  it("inlay hints and go-to-def are identical after openAsText then openAsCellView", async () => {
+  it("inlay hints and go-to-def are identical after openAsText then openAsNotebook", async () => {
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
@@ -124,7 +124,7 @@ describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty
     await ty?.activate();
 
     // --- FRESH open + run (live output, like the user) -------------------------
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened (1)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 2, 15000, "notebook cells (1)");
     // eslint-disable-next-line no-console
@@ -142,7 +142,7 @@ describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty
     await waitFor(() => textTabsFor(uri).length > 0, 15000, "text editor opened");
     await waitFor(() => !notebookFor(uri), 15000, "notebook closed on switch to text");
 
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View reopened (2)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 2, 15000, "notebook cells (2)");
     await waitFor(() => textTabsFor(uri).length === 0, 15000, "no coexisting text editor (2)");

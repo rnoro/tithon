@@ -1,8 +1,8 @@
 /**
  * v11 — REAL VSCode "just run the cell" path, the flow a real user actually does
  * and the one that was broken: open a tithon-py notebook, select the kernel, and
- * press the native Run/play button on a cell — WITHOUT first invoking
- * tithon.startLive. Before the fix, the cell's executeHandler was a no-op (and
+ * press the native Run/play button on a cell — WITHOUT any manual live-sync
+ * step. Before the fix, the cell's executeHandler was a no-op (and
  * the CodeLens path closed its connection on ack), so the kernel ran but the
  * output never reached the cell and the cell stayed empty (exactly the user's
  * VSCode-tunnel report: the daemon log showed execute -> CLOSE -> output).
@@ -37,7 +37,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");
@@ -58,7 +58,7 @@ describe("Tithon native Run Cell inside a real VSCode host (v11)", () => {
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
 
-    // The whole point: NO `tithon.startLive` here. Just run the cell natively,
+    // The whole point: NO manual live-sync step here. Just run the cell natively,
     // the way a user clicks the play button. This invokes the controller's
     // executeHandler, which must auto-start live sync.
     await vscode.commands.executeCommand("notebook.cell.execute", {

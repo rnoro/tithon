@@ -6,14 +6,14 @@ and widget state whenever a client (re)connects. Close your laptop mid-run,
 reopen over an SSH/VSCode tunnel hours later, and your outputs are still there
 and still streaming.
 
-This document is the authoritative description of *how Tithon is built* and
-*why*. For a user-facing overview see [`../README.md`](../README.md). For what is
+This document is the authoritative description of _how Tithon is built_ and
+_why_. For a user-facing overview see [`../README.md`](../README.md). For what is
 implemented versus planned, see [§9 Implementation status](#9-implementation-status).
 
 > **The name.** Tithonus of Greek myth was granted immortality but not eternal
 > youth, and withered forever without dying. A remote kernel has the same curse:
 > it stays alive, but its outputs wither the instant the client disconnects.
-> Tithon lifts the curse — *immortality, with eternal youth this time.* The
+> Tithon lifts the curse — _immortality, with eternal youth this time._ The
 > cicada (the form Tithonus finally took, singing endlessly) is the logo motif:
 > a session that streams output without pause. And `ti-thon` rhymes with
 > `Py-thon`.
@@ -24,11 +24,11 @@ implemented versus planned, see [§9 Implementation status](#9-implementation-st
 
 Three common setups all lose work on disconnect, for the same underlying reason:
 
-| Tool | Failure | Root cause |
-|------|---------|------------|
-| JupyterLab | Output produced while disconnected is lost on reconnect | iopub messages are streamed over the WebSocket but never persisted server-side; messages emitted during the gap cannot be replayed |
-| VSCode Jupyter (`.ipynb` / interactive) | Window close or network drop loses the kernel and all session state | Kernel lifetime and output state are tied to the extension-host process; output lives only in client memory / the document |
-| `tmux` + `jupyter console` | Output survives, but no rich output (images/HTML) and no multi-client sync | Inherent limits of a terminal |
+| Tool                                    | Failure                                                                    | Root cause                                                                                                                         |
+| --------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| JupyterLab                              | Output produced while disconnected is lost on reconnect                    | iopub messages are streamed over the WebSocket but never persisted server-side; messages emitted during the gap cannot be replayed |
+| VSCode Jupyter (`.ipynb` / interactive) | Window close or network drop loses the kernel and all session state        | Kernel lifetime and output state are tied to the extension-host process; output lives only in client memory / the document         |
+| `tmux` + `jupyter console`              | Output survives, but no rich output (images/HTML) and no multi-client sync | Inherent limits of a terminal                                                                                                      |
 
 The common cause: **the single source of truth for execution state lives on the
 client, or in a volatile channel.** The fix is therefore not a new kernel
@@ -99,7 +99,7 @@ clients a consistent view. It is a single `asyncio` process; source lives in
   journal database. The VSCode extension uses **one session per `.py` file**, so
   files have independent kernels. The CLI defaults to a session named `default`.
 - If the kernel dies (e.g. OOM) the daemon detects it and records the event in
-  the journal, so every client learns *when* and *in which cell* it happened.
+  the journal, so every client learns _when_ and _in which cell_ it happened.
 
 ### 3.2 Message journal — the source of truth
 
@@ -128,7 +128,7 @@ artifacts(artifact_id, sha256, mime, rel_path, bytes_len)
 
 Replaying every message is too slow for cells that emit tens of thousands of
 `\r` / `update_display_data` updates (think `tqdm`). So alongside the raw
-journal the daemon keeps a **folded snapshot** per execution — the *current*
+journal the daemon keeps a **folded snapshot** per execution — the _current_
 display state:
 
 - `stream` text merged with carriage-return semantics applied,
@@ -136,7 +136,7 @@ display state:
 - `clear_output` honored.
 
 A client attaching gets **snapshot + delta-since**, so reconnect cost is
-proportional to the *final* output size, not the number of messages. A
+proportional to the _final_ output size, not the number of messages. A
 TS port of the folding logic ([`outputFold.ts`](../extension/src/outputFold.ts))
 lets the client fold live deltas the same way the daemon does.
 
@@ -150,10 +150,10 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
   state, `comm_close` removes it — so the daemon always holds a complete
   **widget state snapshot** (the `application/vnd.jupyter.widget-state+json`
   shape).
-- On reconnect the daemon sends the *snapshot*, not the message history, so a
+- On reconnect the daemon sends the _snapshot_, not the message history, so a
   50,000-update `tqdm` bar costs one final-state transfer. Live updates flow as
   deltas so a connected client can animate the bar in real time.
-- *Bidirectional* control (a client dragging a slider → kernel) is specified
+- _Bidirectional_ control (a client dragging a slider → kernel) is specified
   here but not yet implemented; see [§9](#9-implementation-status). `tqdm` is
   display-only and needs no back-channel.
 
@@ -167,16 +167,16 @@ case.
 The daemon binds to a **unix domain socket only** and speaks line-delimited
 JSON. A connection is bound to one session, fixed on its first op. Requests:
 
-| Op | Payload | Reply / effect |
-|----|---------|----------------|
-| `status` *(no `session`)* | — | Live status of every session |
-| `attach` | `{ session, last_seen_seq }` | Backlog (see below) then `{op:"sync", seq}`, then a live event stream |
-| `execute` | `{ session, code, submitted_by, origin }` | `{op:"execute_ack", exec_id}`; enqueues the cell |
-| `interrupt` | `{ session }` | SIGINT the running cell |
-| `restart_kernel` | `{ session }` | Fresh kernel namespace; journal/history retained |
-| `get_artifact` | `{ session, artifact_id }` | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
-| `status` | `{ session }` | One session's status |
-| `shutdown` | `{ kill_kernels? }` | Stop the daemon; kernels stay detached unless `kill_kernels` |
+| Op                        | Payload                                   | Reply / effect                                                            |
+| ------------------------- | ----------------------------------------- | ------------------------------------------------------------------------- |
+| `status` _(no `session`)_ | —                                         | Live status of every session                                              |
+| `attach`                  | `{ session, last_seen_seq }`              | Backlog (see below) then `{op:"sync", seq}`, then a live event stream     |
+| `execute`                 | `{ session, code, submitted_by, origin }` | `{op:"execute_ack", exec_id}`; enqueues the cell                          |
+| `interrupt`               | `{ session }`                             | SIGINT the running cell                                                   |
+| `restart_kernel`          | `{ session }`                             | Fresh kernel namespace; journal/history retained                          |
+| `get_artifact`            | `{ session, artifact_id }`                | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
+| `status`                  | `{ session }`                             | One session's status                                                      |
+| `shutdown`                | `{ kill_kernels? }`                       | Stop the daemon; kernels stay detached unless `kill_kernels`              |
 
 `attach` semantics by `last_seen_seq`:
 
@@ -217,7 +217,7 @@ Source: [`extension/src/`](../extension/src/). The extension renders a `.py`
 file's cells and their outputs natively, restoring from the daemon on attach and
 streaming live while a cell runs.
 
-### 4.1 Cell View — percent `.py` as a notebook
+### 4.1 Notebook — percent `.py` as a notebook
 
 VSCode has no public API to inject a webview at an arbitrary editor position
 (`createWebviewTextEditorInset` is stuck "proposed", not shippable). So Tithon
@@ -227,8 +227,8 @@ is only a pure percent-format `.py`; in the editor each `#%%` cell shows its
 image / widget / text output below it as native notebook rendering. Outputs come
 from the journal and are attached to cells, so the `.py` is never polluted.
 
-`.py` files open as **plain text by default**; Cell View is opt-in (command
-*Open as Cell View*), and you can flip back with *Open as Text Editor*.
+`.py` files open as **plain text by default**; Notebook is opt-in (command
+_Open as Notebook_), and you can flip back with _Open as Text Editor_.
 
 - **Byte-exact round-trip is mandatory.** Serialization preserves the user's
   formatting, whitespace, and comments to the byte — no auto-reformat
@@ -255,7 +255,7 @@ which file and which cell produced it. Attachment rule
 ([`cellAttach.ts`](../extension/src/cellAttach.ts)): **(1)** match by `cell_hash`
 (code-content hash), **(2)** fall back to range proximity. If a cell is edited,
 its old output is kept with a **stale** flag (useful until re-run) and replaced
-on re-execution. The text view and Cell View are two presentations of the same
+on re-execution. The text view and Notebook are two presentations of the same
 truth (the journal), so output appears identically in both.
 
 ### 4.4 Widget rendering
@@ -277,12 +277,12 @@ If rendering fails it falls back to the widget's final state as text
 ### 4.5 Lifecycle & UX
 
 - **Daemon lifecycle**: the extension auto-starts the daemon, can restart it
-  (*Restart Daemon*), and resolves the daemon path from the selected interpreter.
-- **Interpreter**: *Select Python Interpreter* picks the kernel's Python;
+  (_Restart Daemon_), and resolves the daemon path from the selected interpreter.
+- **Interpreter**: _Select Python Interpreter_ picks the kernel's Python;
   restarting the daemon relaunches under it.
 - **Execution control**: per-cell **Stop** button interrupts the running cell
-  (kernel survives, cell re-runnable); *Restart Kernel* gives a fresh namespace;
-  *Resync Outputs from Daemon* and *Start Live Output Sync* re-establish state.
+  (kernel survives, cell re-runnable); _Restart Kernel_ gives a fresh namespace;
+  _Resync Outputs from Daemon_ and _Start Live Output Sync_ re-establish state.
 - **Packaging**: shipped as an esbuild-bundled `.vsix` (the runtime `ws`
   dependency is bundled — `vsce --no-dependencies` omits it and breaks
   activation). Not yet published to the Marketplace.
@@ -294,15 +294,15 @@ If rendering fails it falls back to the widget's final state as text
 The `tithon` CLI ([`src/tithon/cli.py`](../src/tithon/cli.py))
 drives the same daemon over the socket:
 
-| Command | Purpose |
-|---------|---------|
-| `tithon daemon` | Run the daemon (foreground) |
-| `tithon run` | Execute code in a session |
-| `tithon attach` | Attach and stream events as NDJSON |
-| `tithon status` | Daemon status (all sessions, or one) |
-| `tithon restart` | Restart a session's kernel (fresh namespace) |
-| `tithon interrupt` | Interrupt the running cell (SIGINT) |
-| `tithon shutdown` | Stop the daemon (kernels stay detached unless `--kill-kernels`) |
+| Command            | Purpose                                                         |
+| ------------------ | --------------------------------------------------------------- |
+| `tithon daemon`    | Run the daemon (foreground)                                     |
+| `tithon run`       | Execute code in a session                                       |
+| `tithon attach`    | Attach and stream events as NDJSON                              |
+| `tithon status`    | Daemon status (all sessions, or one)                            |
+| `tithon restart`   | Restart a session's kernel (fresh namespace)                    |
+| `tithon interrupt` | Interrupt the running cell (SIGINT)                             |
+| `tithon shutdown`  | Stop the daemon (kernels stay detached unless `--kill-kernels`) |
 
 ---
 
@@ -347,14 +347,14 @@ The `.tithon/outputs/` location is configurable (default: inside the workspace).
 
 ## 8. Tech stack
 
-| Area | Choice | Notes |
-|------|--------|-------|
-| Daemon | Python 3.11+, `asyncio` | Already present on GPU hosts |
-| Kernel comms | `jupyter_client` (ZMQ) | No protocol reimplementation |
-| Transport | `websockets` over a unix domain socket | Minimal dependencies |
-| Storage | SQLite (WAL) + blob files | Zero-ops at single-user scale |
-| Extension | TypeScript, VSCode Notebook / CodeLens API | — |
-| Widgets | `@jupyter-widgets/html-manager` in a notebook renderer | Reused renderer where possible, custom where not |
+| Area         | Choice                                                 | Notes                                            |
+| ------------ | ------------------------------------------------------ | ------------------------------------------------ |
+| Daemon       | Python 3.11+, `asyncio`                                | Already present on GPU hosts                     |
+| Kernel comms | `jupyter_client` (ZMQ)                                 | No protocol reimplementation                     |
+| Transport    | `websockets` over a unix domain socket                 | Minimal dependencies                             |
+| Storage      | SQLite (WAL) + blob files                              | Zero-ops at single-user scale                    |
+| Extension    | TypeScript, VSCode Notebook / CodeLens API             | —                                                |
+| Widgets      | `@jupyter-widgets/html-manager` in a notebook renderer | Reused renderer where possible, custom where not |
 
 ---
 
@@ -373,7 +373,7 @@ text fallback.
   per-session FIFO queue, backpressure.
 - Per-file kernels/sessions; daemon auto-start; interpreter selection; daemon
   restart.
-- Extension: percent Cell View (byte-exact round-trip), output restore, live
+- Extension: Notebook (byte-exact round-trip), output restore, live
   streaming, matplotlib inline images, `tqdm` (terminal + `tqdm.notebook`),
   widget rendering (static, on-reconnect, **and live**), Stop / Restart Kernel.
 - Packaged as an esbuild-bundled `.vsix`.
@@ -399,7 +399,7 @@ detached kernels, a real daemon, and (for end-to-end tests) a **real VSCode**
 Extension Host via `@vscode/test-electron` under `xvfb`. **Verification scripts
 are append-only with respect to strength** — they may be fixed, hardened, or
 extended, but never weakened to pass. For example, `v4` sends `kill -9` to the
-real daemon and double-checks kernel survival by *both* PID identity *and*
+real daemon and double-checks kernel survival by _both_ PID identity _and_
 in-kernel variable continuity.
 
 Tests are grouped into **topic bundles** — run the one for the area you are
@@ -421,27 +421,27 @@ make restore     # v7 v8 v15 v16 v22 v38 reconnect: output + cell-state restore,
 make livesync    # v10–v14 v33 v37       live streaming into cells
 make kernels     # v17–v21 v23 v24 v26   per-file kernels + lifecycle
 make richoutputs # v27 v28 v31 v34 v35   matplotlib/tqdm images, live-plot GC, clear, storage
-make cellview    # v32 v39              text <-> Cell View, ruff/ty LSP
+make notebook    # v32 v39              text <-> Notebook, ruff/ty LSP
 make test        # daemon unit tests (pytest)
 ```
 
 Capability → what it guarantees → how it is verified:
 
-| Capability | Guarantee | Verified by |
-|------------|-----------|-------------|
-| Kernel persistence | Kernel survives daemon crash/restart | `v4` (`kill -9` daemon; PID + variable continuity) |
-| Loss-free journal | Every message preserved + folded snapshot | `v1` (seq integrity), `v2` (50k messages) |
-| Reconnect sync | Snapshot + monotonic-seq delta | `v1`, `v2` (client stream == journal) |
-| Rich outputs | Images as files, journal holds references | `v3` (valid PNG file + journal reference) |
-| Widget mirror | `widget-state+json` snapshot stays current | `v5` (50k `tqdm` updates → `value==max`) |
-| Loss-free serialization | Byte-exact percent `.py` round-trip | `v6` (0-byte diff + property test) |
-| Output → cell attachment | Outputs reattach by `cell_hash` | `v6`, `v7` |
-| Client restore | Subscribe + fold + restore on reconnect | `v7`, `v8` (real VSCode) |
-| Per-file kernels | Each file gets its own kernel + journal | `v17` |
-| Live streaming | Output streams into cells as it runs | `v10` (real VSCode), `v28` |
-| Bounded render cost | Coalescing caps UI updates | `liveSync.test.ts` (50k events → 1 sink call) |
-| Host protection | Slow client can't grow memory or block others | `test_backpressure.py`, `v9` |
-| Widget rendering | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live) |
+| Capability               | Guarantee                                           | Verified by                                        |
+| ------------------------ | --------------------------------------------------- | -------------------------------------------------- |
+| Kernel persistence       | Kernel survives daemon crash/restart                | `v4` (`kill -9` daemon; PID + variable continuity) |
+| Loss-free journal        | Every message preserved + folded snapshot           | `v1` (seq integrity), `v2` (50k messages)          |
+| Reconnect sync           | Snapshot + monotonic-seq delta                      | `v1`, `v2` (client stream == journal)              |
+| Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
+| Widget mirror            | `widget-state+json` snapshot stays current          | `v5` (50k `tqdm` updates → `value==max`)           |
+| Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
+| Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
+| Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
+| Per-file kernels         | Each file gets its own kernel + journal             | `v17`                                              |
+| Live streaming           | Output streams into cells as it runs                | `v10` (real VSCode), `v28`                         |
+| Bounded render cost      | Coalescing caps UI updates                          | `liveSync.test.ts` (50k events → 1 sink call)      |
+| Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
+| Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
 
 `make vscode` downloads VSCode and needs system libraries (Debian/Ubuntu):
 
@@ -474,7 +474,7 @@ apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \
    problems disappear by construction.
 7. **Widgets via a state mirror, not message replay.** The daemon keeps a widget
    snapshot as a shadow front end, making reconnect cost constant.
-8. **Inline output via Cell View, not inset hacks.** Open `.py` through a
+8. **Inline output via Notebook, not inset hacks.** Open `.py` through a
    `NotebookSerializer` so output attaches natively below each cell. Disk format
    (`.py`) and display form (cells) are decoupled; the journal is the one truth,
-   and text view and Cell View are two views of it.
+   and text editor and Notebook are two views of it.

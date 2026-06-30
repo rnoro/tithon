@@ -3,7 +3,7 @@
 #       output with no manual restore (ADR-022 — the user's "added cell" report).
 #   - opens a 1-cell notebook, runs cell 0 (starts live sync),
 #   - inserts a NEW cell and runs it, asserting it shows output live with no
-#     tithon.restoreOutputs call (the live index must refresh to include it).
+#     manual restore (the live index must refresh to include it).
 # Needs network + xvfb (see scripts/v8.sh header); run via `make vscode`.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v14 FAIL $1"; exit 1; }

@@ -30,7 +30,7 @@ import * as vscode from "vscode";
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -85,7 +85,7 @@ describe("same-file go-to-definition stays in the Cell View (v41, Pylance)", () 
     // eslint-disable-next-line no-console
     console.log(`v41: pylance active=${pylance?.isActive}`);
 
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened");
     const nb = notebookFor(uri)!;
     await waitFor(() => nb.cellCount >= 2, 15000, "notebook cells");

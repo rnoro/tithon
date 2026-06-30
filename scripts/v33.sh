@@ -4,7 +4,7 @@
 #       that ONE output IN PLACE, not stack a new output per frame.
 #   - starts a real daemon (no pre-seed; the test drives the loop),
 #   - launches VSCode via @vscode/test-electron under xvfb,
-#   - tithon.startLive attaches; the in-host test submits the display/update loop
+#   - selecting the kernel auto-attaches; the in-host test submits the display/update loop
 #     and asserts the cell's output count stays 1 (would grow to N before the
 #     fix) and ends showing the LATEST frame (in-place replace, not append).
 # Coalescing bounds are unit-verified (test/liveSync.test.ts Fix E); this verifies
