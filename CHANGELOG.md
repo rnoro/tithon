@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/rnoro/tithon/compare/v0.2.0...v0.2.1) (2026-06-30)
+
+
+### Documentation
+
+* update extension/README.md ([4f8a5bc](https://github.com/rnoro/tithon/commit/4f8a5bc9c9c227e6e9a68a02fc2f51589c6cbe05))
+
 ## [0.2.0](https://github.com/rnoro/tithon/compare/v0.1.3...v0.2.0) (2026-06-30)
 
 
