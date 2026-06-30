@@ -3,9 +3,9 @@
  * a real notebook's cells, inside an actual Extension Host (xvfb + electron).
  *
  * This removes the "spike, never run in VSCode" caveat for sessionController:
- * we open the fixture .py as a `tithon-py` notebook, select the Tithon
- * controller as its kernel, invoke `tithon.restoreOutputs`, and assert the cells
- * now carry the folded outputs the daemon journaled (stdout "0\n1\n2\n",
+ * we open the fixture .py as a `tithon-py` notebook and select the Tithon
+ * controller as its kernel — which auto-restores the folded snapshot — and
+ * assert the cells now carry the outputs the daemon journaled (stdout "0\n1\n2\n",
  * execute_result "42", an error with ename ValueError).
  */
 import * as assert from "assert";
@@ -40,7 +40,7 @@ async function waitFor(pred: () => boolean, ms = 30000, label = "condition"): Pr
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.restoreOutputs",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found in the host");
@@ -68,9 +68,8 @@ describe("Tithon restore inside a real VSCode host (v8)", () => {
       extension: ext.id,
     });
 
-    // Invoke the restore command (it reads the active notebook, attaches the
-    // daemon session, and writes the restored outputs into the cells).
-    await vscode.commands.executeCommand("tithon.restoreOutputs");
+    // Selecting the kernel auto-attaches the daemon session and restores the
+    // folded snapshot into the cells (ensureLive) — no manual restore command.
 
     // Wait until outputs land on at least three cells.
     await waitFor(

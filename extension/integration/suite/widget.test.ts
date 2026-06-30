@@ -30,7 +30,7 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.startLive"));
+    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -54,7 +54,7 @@ describe("Tithon ipywidget renderer in a real VSCode host (v29)", () => {
 
     // Reconnect (fresh attach -> snapshot carries the mirror) so the widget output
     // is emitted with TITHON_WIDGET_MIME and routed to the html-manager renderer.
-    await vscode.commands.executeCommand("tithon.restoreOutputs");
+    await vscode.commands.executeCommand("tithon._restore");
     await waitFor(() => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME), 20000,
       "widget mime output to be emitted");
     console.log(`[v29] cell output mimes: ${outputMimes(nb.cellAt(0)).join(", ")}`);
