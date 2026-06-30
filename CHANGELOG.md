@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/rnoro/tithon/compare/v0.1.3...v0.2.0) (2026-06-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **extension:** tithon.openAsCellView -> tithon.openAsNotebook; tithon.startLive and tithon.restoreOutputs removed (now automatic). Update affected keybindings.
+
+### Code Refactoring
+
+* **extension:** notebook-centric UX (rename "Cell View" -&gt; "Notebook") ([0098c71](https://github.com/rnoro/tithon/commit/0098c7184b3366b2e07d333fd6e18512069c25c7))
+
 ## [0.1.3](https://github.com/rnoro/tithon/compare/v0.1.2...v0.1.3) (2026-06-29)
 
 
