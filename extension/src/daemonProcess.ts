@@ -108,10 +108,15 @@ async function startAny(sockPath: string, cfg: vscode.WorkspaceConfiguration): P
   const logPath = path.join(home, "daemon.autostart.log");
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const tried: string[] = [];
+  // Kernel lifetime policy: hand the user's idle-timeout setting to the daemon
+  // (it owns the reaping — see daemon.py idle-GC). 0/unset = never reap.
+  const idleTimeout = cfg.get<number>("kernelIdleTimeout", 0) || 0;
+  const extraEnv =
+    idleTimeout > 0 ? { TITHON_KERNEL_IDLE_TIMEOUT: String(idleTimeout) } : undefined;
 
   for (const cmd of await candidates(cfg)) {
     tried.push(cmd);
-    if (await tryStart(`${cmd} daemon`, sockPath, logPath, cwd)) return;
+    if (await tryStart(`${cmd} daemon`, sockPath, logPath, cwd, extraEnv)) return;
     if (await canConnect(sockPath)) return; // a racing/previous start won
   }
   const tail = readTail(logPath);
@@ -124,7 +129,13 @@ async function startAny(sockPath: string, cfg: vscode.WorkspaceConfiguration): P
 
 /** Spawn one launcher detached; resolve true once the socket is up, false if the
  *  process dies first (e.g. command not found) or it doesn't bind in time. */
-function tryStart(cmdline: string, sockPath: string, logPath: string, cwd?: string): Promise<boolean> {
+function tryStart(
+  cmdline: string,
+  sockPath: string,
+  logPath: string,
+  cwd?: string,
+  extraEnv?: Record<string, string>,
+): Promise<boolean> {
   return new Promise((resolve) => {
     let out: number;
     try {
@@ -137,7 +148,7 @@ function tryStart(cmdline: string, sockPath: string, logPath: string, cwd?: stri
       shell: true,        // resolve `tithon` / `python` via PATH, allow `-m` forms
       detached: true,     // outlive this extension host (survives reconnects)
       stdio: ["ignore", out, out],
-      env: process.env,
+      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
     });
     child.unref();
     const dead = { yes: false };

@@ -714,7 +714,14 @@ export class TithonNotebookController {
       detail:
         `${k.executions} execution(s)` +
         (k.queue_len ? `, ${k.queue_len} queued` : "") +
-        ` · ${k.kernel_status}`,
+        ` · ${k.kernel_status}` +
+        // Lifetime hint: who is watching, or how long the kernel has sat idle —
+        // the number the user needs to decide "safe to terminate?".
+        ((k.clients ?? 0) > 0
+          ? ` · ${k.clients} client(s) attached`
+          : k.idle_seconds != null
+            ? ` · idle ${fmtIdle(k.idle_seconds)}`
+            : ""),
       session: k.session,
     }));
     const pick = await vscode.window.showQuickPick(items, {
@@ -1089,6 +1096,14 @@ function kernelLabel(session: string): string {
   } catch {
     return session;
   }
+}
+
+/** Compact idle duration for the kernel picker: 45s / 12m / 3.4h / 2.1d. */
+function fmtIdle(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86400).toFixed(1)}d`;
 }
 
 /**
