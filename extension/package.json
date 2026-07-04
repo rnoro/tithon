@@ -122,6 +122,12 @@
           "type": "string",
           "default": "",
           "description": "Python interpreter to run the daemon as `<python> -m tithon daemon` (works without activating the venv). Leave empty to use the interpreter selected by the Python extension."
+        },
+        "tithon.kernelIdleTimeout": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. 0 = never (default). Applied when the extension (re)starts the daemon."
         }
       }
     },

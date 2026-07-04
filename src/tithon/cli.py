@@ -41,7 +41,7 @@ def cmd_daemon(args) -> int:
     root.addHandler(sh)
     from .daemon import Daemon
 
-    asyncio.run(Daemon(home, Path.cwd()).run())
+    asyncio.run(Daemon(home, Path.cwd(), idle_timeout=args.idle_timeout).run())
     return 0
 
 
@@ -209,6 +209,15 @@ def main(argv=None) -> None:
         default="INFO",
         metavar="LEVEL",
         help="logging verbosity: DEBUG|INFO|WARNING|ERROR (default: INFO)",
+    )
+    sp.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="reap a kernel idle this long (no attached client, nothing running/queued); "
+        "outputs stay restorable from the journal. 0/omitted = never "
+        "(env: TITHON_KERNEL_IDLE_TIMEOUT)",
     )
     sp.set_defaults(fn=cmd_daemon)
 

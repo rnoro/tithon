@@ -27,6 +27,10 @@ export interface KernelInfo {
   queue_len: number;
   executions: number;
   widget_models: number;
+  /** Attached clients (live subscribers); absent on daemons predating idle-GC. */
+  clients?: number;
+  /** Seconds since this kernel last did anything (the idle-GC clock). */
+  idle_seconds?: number;
 }
 
 /** The session id is the file uri: one kernel + journal per file (like Jupyter). */

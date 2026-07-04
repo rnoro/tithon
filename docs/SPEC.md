@@ -100,6 +100,17 @@ clients a consistent view. It is a single `asyncio` process; source lives in
   files have independent kernels. The CLI defaults to a session named `default`.
 - If the kernel dies (e.g. OOM) the daemon detects it and records the event in
   the journal, so every client learns _when_ and _in which cell_ it happened.
+- Kernels otherwise live forever — that is the point — but the operator can opt
+  in to a **lifetime policy (idle GC)**: a session idle longer than
+  `--idle-timeout` / `TITHON_KERNEL_IDLE_TIMEOUT` seconds is reaped — kernel
+  terminated, `Session` dropped. Reaping is deliberately conservative: an
+  attached client, a queued or running cell, or a pending `input()` prompt each
+  block it (surprise-killing a training run is worse than leaking a kernel).
+  The journal and artifacts stay on disk, so reopening the file restores its
+  full output history under a fresh kernel; only the in-memory namespace is
+  lost, and the reap itself is journaled (`tithon.kernel` `status=gc`). Off by
+  default (`0` = never); the extension exposes it as `tithon.kernelIdleTimeout`,
+  and its kernel picker shows each kernel's idle time and attached-client count.
 
 ### 3.2 Message journal — the source of truth
 
@@ -373,6 +384,10 @@ text fallback.
   per-session FIFO queue, backpressure.
 - Per-file kernels/sessions; daemon auto-start; interpreter selection; daemon
   restart.
+- Kernel lifetime policy: opt-in idle GC (`tithon.kernelIdleTimeout` /
+  `--idle-timeout`) — idle kernels reaped, outputs stay restorable from the
+  journal; idle time + attached clients shown in `tithon status` and the
+  kernel picker.
 - Extension: Notebook (byte-exact round-trip), output restore, live
   streaming, matplotlib inline images, `tqdm` (terminal + `tqdm.notebook`),
   widget rendering (static, on-reconnect, **and live**), Stop / Restart Kernel.
@@ -382,8 +397,9 @@ text fallback.
 
 - Bidirectional widgets (client → kernel control, e.g. slider drag).
 - In-place `update_display_data` (currently appended).
-- Session GC / kernel lifetime policy (detached kernels currently live on; no
-  idle or explicit-shutdown UI).
+- Idle-GC of kernels predating a daemon restart: the sweep only sees sessions
+  this daemon has loaded, so a detached kernel is invisible until its file is
+  next opened (lazy re-attach restarts its idle clock).
 - Multi-client presence UI and execution-queue visualization.
 - Replay-to-restore after host reboot.
 - systemd packaging; Marketplace publish.
@@ -419,7 +435,7 @@ make backpressure# v9       slow-client host protection
 make widgets     # v5 v29 v30           ipywidget mirror + render + live animation
 make restore     # v7 v8 v15 v16 v22 v38 reconnect: output + cell-state restore, orphan
 make livesync    # v10–v14 v33 v37       live streaming into cells
-make kernels     # v17–v21 v23 v24 v26   per-file kernels + lifecycle
+make kernels     # v17–v21 v23 v24 v26 v40 v45   per-file kernels + lifecycle + idle-GC
 make richoutputs # v27 v28 v31 v34 v35   matplotlib/tqdm images, live-plot GC, clear, storage
 make notebook    # v32 v39              text <-> Notebook, ruff/ty LSP
 make test        # daemon unit tests (pytest)
@@ -438,6 +454,7 @@ Capability → what it guarantees → how it is verified:
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
 | Per-file kernels         | Each file gets its own kernel + journal             | `v17`                                              |
+| Kernel lifetime (idle GC)| Idle kernel reaped; busy/attached never; outputs stay restorable | `v45`, `test_gc.py`                   |
 | Live streaming           | Output streams into cells as it runs                | `v10` (real VSCode), `v28`                         |
 | Bounded render cost      | Coalescing caps UI updates                          | `liveSync.test.ts` (50k events → 1 sink call)      |
 | Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
