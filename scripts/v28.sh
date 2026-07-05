@@ -3,6 +3,8 @@
 #       actual notebook cells, and the tqdm.notebook widget final-state text is
 #       restored from the mirror. Proves the image bytes reach the cell as a real
 #       PNG (image/png item, PNG magic) — not a "<Figure ...>" placeholder.
+#       Also: a single cell mixing widget + stdout + image restores as SEPARATE
+#       stacked outputs, not one collapsed mimebundle (only-one-output bug).
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v28 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
@@ -29,6 +31,17 @@ for i in tqdm(range(20), file=sys.stderr):
 from tqdm.notebook import tqdm as tnb
 for i in tnb(range(5)):
     pass
+
+# %% combo
+%matplotlib inline
+import matplotlib.pyplot as plt
+from tqdm.notebook import tqdm as tnb
+for i in tnb(range(5)):
+    pass
+print("combo stdout line")
+plt.plot([1, 2, 3])
+plt.show()
+print("after combo plot")
 PY
 
 # Start the daemon explicitly so its kernel runs under the venv that HAS
@@ -44,4 +57,4 @@ passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*/
 rm -f "$OUT"
 
 [ "$rc" -eq 0 ] || fail "VSCode rich-output test failed (rc=$rc)"
-echo "RESULT v28 PASS real VSCode: matplotlib image/png + terminal tqdm 100% + tqdm.notebook widget text restored; $passed_line"
+echo "RESULT v28 PASS real VSCode: matplotlib image/png + terminal tqdm 100% + tqdm.notebook widget text restored + mixed-output cell keeps outputs separate on restore; $passed_line"
