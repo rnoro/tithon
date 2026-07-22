@@ -4,12 +4,13 @@
 #   make restore         # just the reconnect/restore tests, etc.
 #   make vscode          # every real-VSCode test (network + xvfb; one shared build)
 #   make all             # fast + vscode
+#   make notebook-insiders  # advisory early warning: notebook/LSP guards on INSIDERS
 # Topic bundles: core serializer backpressure widgets restore livesync kernels
 #                richoutputs notebook  (see run_verify.sh for membership).
 HERE := $(dir $(lastword $(MAKEFILE_LIST)))
 
 BUNDLES := core serializer backpressure widgets restore livesync kernels \
-           richoutputs notebook fast vscode all
+           richoutputs notebook notebook-insiders fast vscode all
 
 .PHONY: $(BUNDLES) verify test shot
 
