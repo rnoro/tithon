@@ -19,6 +19,15 @@
 #     fast    every hermetic test (no VSCode/network/xvfb) — the quick gate
 #     vscode  every real-VSCode test (network + xvfb; builds the extension once)
 #     all     fast + vscode
+#   Early-warning bundle (NOT part of `all` — it is advisory, not a gate):
+#     notebook-insiders  the `notebook` suites re-run against VSCode INSIDERS.
+#       The Cell View reuses the .py's own file:// uri as its notebook uri
+#       (ADR-041), so the single-representation / LSP guards depend on VSCode +
+#       Pylance + ty internals and every VSCode release can break them (the
+#       ADR-041/-062/-064/-065/-066/-067 chain is all one area). Running the
+#       guards on insiders surfaces such a break ~4 weeks before it ships to
+#       users on stable. Override the build with TITHON_VSCODE_VERSION=1.9x.y to
+#       bisect a specific release.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -48,12 +57,18 @@ case "$bundle" in
   kernels)      scripts="$kernels_s" ;;
   richoutputs)  scripts="$richoutputs_s" ;;
   notebook)     scripts="$notebook_s" ;;
+  notebook-insiders)
+                scripts="$notebook_s"
+                # Advisory early warning: same suites, next VSCode build. Honour an
+                # explicit TITHON_VSCODE_VERSION so a specific release can be bisected.
+                export TITHON_VSCODE_VERSION="${TITHON_VSCODE_VERSION:-insiders}" ;;
   fast)         scripts="$fast_s" ;;
   vscode)       scripts="$vscode_s" ;;
   all)          scripts="$fast_s $vscode_s" ;;
-  *) echo "usage: $0 core|serializer|backpressure|widgets|restore|livesync|kernels|richoutputs|notebook|fast|vscode|all" >&2; exit 2 ;;
+  *) echo "usage: $0 core|serializer|backpressure|widgets|restore|livesync|kernels|richoutputs|notebook|notebook-insiders|fast|vscode|all" >&2; exit 2 ;;
 esac
-label="$(echo "$bundle" | tr '[:lower:]' '[:upper:]')"
+label="$(echo "$bundle" | tr '[:lower:]-' '[:upper:]_')"
+[ -n "${TITHON_VSCODE_VERSION:-}" ] && echo "VSCode build under test: $TITHON_VSCODE_VERSION"
 
 # --- shared one-time extension build -----------------------------------------
 # Any bundle that includes a real-VSCode test builds the extension ONCE here;

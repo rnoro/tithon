@@ -14,6 +14,52 @@ import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient
 import { ensureDaemon } from "./daemonProcess";
 import { registerRestore, workdirForUri } from "./sessionController";
 
+/* ===========================================================================
+ * SINGLE-REPRESENTATION INVARIANTS — read this before editing anything below.
+ *
+ * A tithon-py Cell View reuses the .py's OWN `file://` URI as its notebook URI
+ * (ADR-041), which is what keeps ruff / ty / Pylance alive inside cells. The
+ * price is that notebook-aware language servers key ONE URI as both a text
+ * document and a notebook document, and desync if both exist. Every bug in the
+ * ADR-041 / -062 / -064 / -065 / -066 / -067 chain came from breaking one of the
+ * five rules below. They are stated once here; the individual functions carry
+ * the per-symptom detail.
+ *
+ * I1. ONE representation per URI. While a URI is in `cellViewUris`, no plain
+ *     text editor for that same URI may stay open (`closeStaleTextTabs`, and the
+ *     `onDidChangeTabs` guard). Scoped to cell-viewed URIs only — navigating to
+ *     another file still opens a normal text editor.
+ *
+ * I2. didClose BEFORE the opposite didOpen. `openAsNotebook` must await
+ *     `closeTextDocsAndWait` (the text DOCUMENT gone, not merely the tab) before
+ *     `openWith … tithon-py`; ty rejects a `notebookDocument/didOpen` for a URI
+ *     it still holds as text and then fails every later didChange ("document not
+ *     found"), killing go-to-definition (ADR-064/-066). The wait is bounded, so
+ *     a stuck buffer degrades to the old racy order — never to a freeze.
+ *
+ * I3. Arm/disarm the guard on the correct side of the switch. `openAsNotebook`
+ *     adds to `cellViewUris` FIRST (so the guard keeps the URI text-free across
+ *     the switch); `openAsText` deletes FIRST (so the guard does not close the
+ *     very text editor being opened).
+ *
+ * I4. The guard keys off a VISIBLE notebook TAB, never a notebook DOCUMENT.
+ *     Overlapping fast toggles can strand a tabless "zombie" notebook document
+ *     that lingers in `workspace.notebookDocuments` forever; keying off it would
+ *     auto-close every reopened text editor and make the .py un-openable
+ *     (ADR-065). Hence `hasCellViewTab`, and the self-heal that DROPS a stale
+ *     `cellViewUris` entry instead of eating the user's editor.
+ *
+ * I5. Toggles are serialized per URI (`queueToggle`). Both commands have async
+ *     tails (I2's wait is up to 3s), so unserialized rapid toggles interleave two
+ *     `openWith` calls and produce exactly the I4 zombie.
+ *
+ * Guarded by v39 (opt-in toggle), v41 (Pylance pseudo-path), v42/v43 (ty round
+ * trip: didChange flood + inlay offsets), v44 (reopen after round trip) —
+ * `make notebook`. Because these depend on VSCode/LSP internals rather than on
+ * our own API surface, `make notebook-insiders` re-runs them against the next
+ * VSCode build as an early warning.
+ * ======================================================================== */
+
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
   return vscode.workspace.notebookDocuments.find(
