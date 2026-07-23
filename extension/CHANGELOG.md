@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/rnoro/tithon/compare/vscode-v0.2.0...vscode-v0.2.1) (2026-07-23)
+
+
+### Features
+
+* **daemon:** opt-in idle-GC kernel lifetime policy (ADR-069) ([89d5822](https://github.com/rnoro/tithon/commit/89d5822545d16e61ff921a058d568d42c231916b))
+
+
+### Bug Fixes
+
+* **extension:** restore mixed-output cells as separate NotebookCellOutputs ([f71d980](https://github.com/rnoro/tithon/commit/f71d98041e117921e19255514918aacbebf32969))
+
 ## [0.2.0](https://github.com/rnoro/tithon/compare/vscode-v0.1.1...vscode-v0.2.0) (2026-06-30)
 
 
