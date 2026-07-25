@@ -10,7 +10,7 @@
  * real daemon by scripts/v7; this file is the thin, API-only glue VSCode needs.
  */
 import * as vscode from "vscode";
-import { SessionClient } from "./sessionClient";
+import { SessionClient, type KernelSnapshot } from "./sessionClient";
 import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
 import { ensureDaemon, waitForDaemonStop, listPythonEnvironments } from "./daemonProcess";
 import { parse, type Cell } from "./serializer";
@@ -485,6 +485,12 @@ export class TithonNotebookController {
   private readonly daemon: DaemonClient;
   private readonly sockPath: string;
   private labelledPython = false; // set the "Python x.y" label only once
+  /** `${uri}#${generation}` of every fresh-after-loss kernel already reported to
+   *  the user, so the "state cleared" warning fires ONCE per lost kernel and not
+   *  on every reconnect/reopen that re-reads the same snapshot flag. In-memory,
+   *  so a full extension-host reload warns again — deliberate: a new window is a
+   *  new reader who has not seen it. */
+  private readonly lostStateWarned = new Set<string>();
   private readonly liveSessions = new Map<
     string,
     { dispose: () => void; refresh: () => void; activeCells: () => number[] }
@@ -617,6 +623,53 @@ export class TithonNotebookController {
       void this.widgetMessaging.postMessage({ type: "tithon.widget-update", comm_id, state });
     }
     this.widgetUpdateBuf.clear();
+  }
+
+  /**
+   * Tell the user when this kernel came up EMPTY after an involuntary death.
+   *
+   * `Kernel.ensure` never errors on an unresumable kernel — it re-attaches when
+   * the pid is alive and otherwise spawns a fresh one, which is exactly what
+   * makes reconnect-after-daemon-restart work. But a host reboot takes that same
+   * silent path: the journal survives on disk, so reopening the file restores the
+   * full output history and the session LOOKS intact — while every variable is
+   * gone. Without a signal the user reasonably assumes `df` is still defined and
+   * only finds out via a NameError several cells later. The daemon flags this
+   * case — a fresh kernel under a journal that already held executions — and
+   * excludes only an in-session `restart_kernel`, where the user just asked for
+   * the empty namespace. A daemon-wide restart (an interpreter change) is NOT
+   * excluded: the variables really are gone, so the signal is correct there; it
+   * is the WORDING that must not claim to know which cause applied (see below).
+   * Fires once per lost kernel.
+   */
+  private warnIfStateLost(uri: vscode.Uri, info: KernelSnapshot | null): void {
+    if (!info?.lost_state) return;
+    // Keyed on the daemon's durable generation, NOT the pid — a host reboot
+    // restarts the pid space, so a genuinely new lost kernel can reuse an
+    // earlier pid and a pid-keyed guard would swallow the warning. Falls back to
+    // the pid only for a daemon too old to send a generation.
+    const key = `${uri.toString()}#${info.generation ?? `pid:${info.pid ?? "?"}`}`;
+    if (this.lostStateWarned.has(key)) return;
+    this.lostStateWarned.add(key);
+    const name = uri.path.split("/").pop() ?? uri.toString();
+    // Deliberately does NOT name a cause. The daemon can tell that the kernel was
+    // REPLACED, not why: a host reboot, an idle-GC reap, an OOM kill and an
+    // interpreter change (restartDaemon kills every kernel) all arrive here
+    // identically. Naming "host reboot" would misdescribe the interpreter change
+    // the user just made — and a warning that tells the user something they know
+    // to be wrong is a warning they learn to dismiss. State the consequence,
+    // which is identical in every case, and let the cause list be illustrative.
+    void vscode.window.showWarningMessage(
+      `Tithon: ${name} is running on a new kernel, so its Python namespace is empty ` +
+        `(the previous kernel was replaced — host reboot, idle-GC, or an interpreter change). ` +
+        `Cell outputs were restored from the journal, but variables were not — ` +
+        `re-run your setup cells before relying on them.`,
+    );
+  }
+
+  /** Test affordance: which `${uri}#${generation}` lost-kernel warnings fired. */
+  lostStateWarnings(): string[] {
+    return [...this.lostStateWarned];
   }
 
   /** Show the kernel's Python version on the controller label + status bar. */
@@ -1009,6 +1062,7 @@ export class TithonNotebookController {
     // Surface the kernel's Python version on the controller (the picker/indicator
     // showed only "Tithon"; now "Tithon · Python 3.11.5").
     this.applyKernelLabel(client.kernelInfo()?.python ?? null);
+    this.warnIfStateLost(notebook.uri, client.kernelInfo());
     const sink = new VSCodeCellSink(this.controller, notebook, client);
     const live = new LiveOutputSync(
       cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)

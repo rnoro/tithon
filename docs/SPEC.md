@@ -352,7 +352,24 @@ The `.tithon/outputs/` location is configurable (default: inside the workspace).
   output history) does, so re-running to restore is fast. Process checkpointing
   (dill / CRIU) is unreliable with GPU state and is at most a stretch goal — the
   real answer is model checkpointing in the training code, which this system
-  complements.
+  complements. Because `Kernel.ensure` deliberately never errors on an
+  unresumable kernel (it re-attaches when the pid is live, else spawns fresh —
+  the same path that makes reconnect-after-daemon-restart work), a reboot would
+  otherwise restore the full output history under an EMPTY namespace with no
+  signal, and the user would discover the loss via a `NameError` several cells
+  later. The daemon therefore reports **`kernel_lost_state`** in both the attach
+  snapshot (`kernel.lost_state`) and `status`, alongside a durable
+  **`kernel_generation`** the client de-duplicates its warning on (never the pid
+  — a reboot restarts the pid space). Intent is read from the journal, not from
+  daemon memory: deliberate transitions journal a `tithon.kernel` event carrying
+  `deliberate: true`, and at every fresh spawn the daemon asks whether any
+  execution actually BEGAN after the event that opened the generation which just
+  died. A deliberate reset therefore pardons only the work that predates it —
+  restart, rebuild an hour of state, then reboot, and the warning still fires. A
+  re-attach to a surviving kernel and a brand-new session are excluded, so the
+  warning stays trustworthy (v46). Known gap: a kernel that dies while the daemon
+  stays UP (OOM, segfault) is not classified, because `Session.start()` is never
+  re-entered.
 
 ---
 
@@ -401,7 +418,9 @@ text fallback.
   this daemon has loaded, so a detached kernel is invisible until its file is
   next opened (lazy re-attach restarts its idle clock).
 - Multi-client presence UI and execution-queue visualization.
-- Replay-to-restore after host reboot.
+- Replay-to-restore after host reboot (re-running journaled code to rebuild the
+  namespace; the *signal* that state was lost is implemented — see §7 host reboot
+  — but rebuilding it automatically is not).
 - systemd packaging; Marketplace publish.
 - Read-only web/CLI dashboard; heavy custom widgets (`ipympl`); multi-user auth;
   other kernels (R/Julia — free in theory via the Jupyter protocol).

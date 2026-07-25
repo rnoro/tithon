@@ -60,6 +60,25 @@ export interface LiveEvent {
   payload: any;
 }
 
+/** The `kernel` block of an attach snapshot. */
+export interface KernelSnapshot {
+  status?: string;
+  pid?: number | null;
+  python?: string | null;
+  /** This kernel is a FRESH spawn under a journal that already held executions:
+   *  the previous kernel died without us (host reboot, idle-GC reap, OOM kill),
+   *  so outputs were restored from disk but every variable is gone. Absent on
+   *  daemons predating the lost-state signal. */
+  lost_state?: boolean;
+  /** The daemon re-attached to an already-running kernel (state intact). */
+  reattached?: boolean;
+  /** Durable, monotonic id of this kernel generation (the journal seq of the
+   *  lifecycle event that produced it). De-duplicate the lost-state warning on
+   *  THIS, never on the pid: a rebooted host restarts its pid space, so a later
+   *  lost kernel can reuse an earlier pid and would be silently suppressed. */
+  generation?: number;
+}
+
 /** A pending input()/getpass() prompt the kernel is blocked on. */
 export interface PendingInput {
   exec_id: string | null;
@@ -106,7 +125,7 @@ export class SessionClient {
   /** One-shot guard so an `overflow` op and the following socket close don't both
    *  fire the disconnect callback. */
   private disconnected = false;
-  private kernelInfoData: { status?: string; pid?: number | null; python?: string | null } | null = null;
+  private kernelInfoData: KernelSnapshot | null = null;
   private widgetState: WidgetState | null = null;
   /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
    *  Seeded from the snapshot (reconnect re-prompts) and kept current by the
@@ -176,7 +195,7 @@ export class SessionClient {
   }
 
   /** Kernel info from the snapshot (status/pid/python), or null pre-attach. */
-  kernelInfo(): { status?: string; pid?: number | null; python?: string | null } | null {
+  kernelInfo(): KernelSnapshot | null {
     return this.kernelInfoData;
   }
 
@@ -349,7 +368,7 @@ export class SessionClient {
   private applySnapshot(snap: {
     max_seq?: number;
     executions?: SnapshotExecWire[];
-    kernel?: { status?: string; pid?: number | null; python?: string | null };
+    kernel?: KernelSnapshot;
     widgets?: WidgetState;
     pending_input?: PendingInput | null;
   }): void {

@@ -195,6 +195,20 @@ class Session:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
         self._tasks: list[asyncio.Task] = []
+        # Set in start(): the CURRENT kernel replaced a previous one WITHOUT the
+        # user asking (host reboot, idle-GC reap) while the journal already held
+        # real executions. Outputs survive on disk; the namespace does not. A
+        # client surfaces this instead of silently handing the user an empty
+        # kernel. Derived from the JOURNAL, not from in-memory state, so it
+        # survives both the reboot and any later daemon restart — see
+        # _classify_kernel_generation().
+        self.kernel_lost_state = False
+        # msg_seq of the journaled lifecycle event that produced the current
+        # kernel: a durable, monotonic generation id. Clients de-duplicate the
+        # warning on THIS, not on the pid — a rebooted host restarts its pid
+        # space, so a later lost kernel can reuse an earlier pid and would
+        # otherwise be silently suppressed.
+        self.kernel_generation = 0
         # Idle-GC bookkeeping: when work last happened (monotonic, wall-jump
         # safe) and whether the exec worker is mid-batch (the queue alone can't
         # tell — the running batch lives in the worker coroutine, not the queue).
@@ -219,15 +233,79 @@ class Session:
         self._rebuild_folds()
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
+        self._classify_kernel_generation()
         self._start_tasks()
         # Becoming ready counts as activity: the idle clock must not include the
         # kernel-spawn seconds, or a short timeout could reap a session in the
         # gap between creation and the creating client's first op.
         self.touch()
         log.info(
-            "session ready id=%s kernel_pid=%s reattached=%s dir=%s",
-            self.session_id, self.kernel.pid, self.kernel.reattached, self.session_dir,
+            "session ready id=%s kernel_pid=%s reattached=%s lost_state=%s dir=%s",
+            self.session_id, self.kernel.pid, self.kernel.reattached,
+            self.kernel_lost_state, self.session_dir,
         )
+
+    def _classify_kernel_generation(self) -> None:
+        """Decide whether the current kernel lost the user's state involuntarily.
+
+        `Kernel.ensure` deliberately never errors on an unresumable kernel: it
+        re-attaches when the pid file names a live process and otherwise spawns a
+        fresh one. That is what makes reconnect-after-daemon-restart work, but it
+        means a HOST REBOOT takes the same silent path — the user reopens the
+        file, sees the whole output history restored from the journal, assumes
+        `df` is still defined, and learns otherwise from a NameError several cells
+        later.
+
+        The daemon cannot observe the reboot itself, so it reads INTENT from the
+        journal rather than guessing from in-memory flags. Every deliberate
+        namespace clear (`restart_kernel`, `tithon kill`, a kill-kernels shutdown)
+        journals a ``tithon.kernel`` event carrying ``deliberate: true``; a reboot
+        journals nothing, because the machine died. So the ABSENCE of a deliberate
+        record in front of a fresh kernel is exactly the reboot signature.
+
+        Deriving it from the journal (instead of ``not reattached``) also makes
+        the signal durable. An involuntary replacement is journaled here, so a
+        LATER daemon restart that re-attaches to that same replacement kernel
+        re-derives ``True`` instead of overwriting the loss with ``False`` before
+        any client ever saw it.
+
+        A deliberate marker is NOT a standing pardon — it only excuses the work
+        that predates it. "Restart the kernel, run an hour of setup, then the host
+        reboots" must still warn, so the question asked of the journal is always
+        "did anything RUN on the generation that just died?", anchored at the
+        event that opened it.
+        """
+        last = self.journal.last_kernel_event()
+        last_seq, last_content = last if last else (0, {})
+        if self.kernel.reattached:
+            # We inherited a kernel someone else spawned. Its provenance is
+            # whatever the journal recorded when it was created — carry it
+            # forward rather than re-deciding (that is the durability fix).
+            replaced_involuntarily = (
+                last_content.get("status") == "replaced"
+                and not last_content.get("deliberate")
+            )
+            self.kernel_lost_state = bool(replaced_involuntarily)
+            self.kernel_generation = last_seq
+            return
+        # A fresh spawn. Anchor the "did anything run?" window at the event that
+        # opened the dead generation. A deliberate reset (`restarted`/`killed`/
+        # `shutdown`) and a `replaced` both start the clock over — the user either
+        # accepted that loss or was already told about it. An involuntary END
+        # (`gc`) does not: the reaped kernel held everything the journal ever ran,
+        # so the window stays open from the beginning.
+        since = 0 if last_content.get("status") == "gc" else last_seq
+        if not self.journal.has_started_since(since):
+            self.kernel_lost_state = False
+            self.kernel_generation = last_seq
+            return
+        self.kernel_lost_state = True
+        # Record the involuntary replacement so it outlives this daemon process.
+        seq = self.journal.append_message(
+            None, "tithon.kernel",
+            {"status": "replaced", "pid": self.kernel.pid, "deliberate": False},
+        )
+        self.kernel_generation = seq
 
     def _start_tasks(self) -> None:
         # A cancelled worker (kernel restart) may have died mid-batch with _busy
@@ -313,6 +391,15 @@ class Session:
         if dropped:
             log.info("[%s] dropped %d queued batch(es) on restart", self.session_id, dropped)
         self._pending_input = None  # a restart abandons any waiting prompt
+        # Journal the INTENT before the kill, not just the outcome after it. The
+        # window between the two is where a host reboot is most likely to be
+        # noticed (the kernel is being torn down), and a crash inside it would
+        # otherwise leave a fresh kernel with no deliberate marker in front of it
+        # — reported as a surprise loss when the user had asked for exactly this.
+        self._journal_lifecycle(
+            None, "tithon.kernel",
+            {"status": "restarting", "pid": self.kernel.pid, "deliberate": True},
+        )
         self.kernel.restart()
         self.kc = self.kernel.make_client()
         await self._wait_kernel_ready(timeout=120)
@@ -320,9 +407,14 @@ class Session:
         self.kernel_status = "starting"
         self._msgid_to_exec.clear()
         self._start_tasks()
+        # `deliberate` is what tells a LATER `Session.start()` (after a reboot or a
+        # daemon restart) that this empty namespace was requested, not lost.
         self._journal_lifecycle(
-            None, "tithon.kernel", {"status": "restarted", "pid": self.kernel.pid}
+            None, "tithon.kernel",
+            {"status": "restarted", "pid": self.kernel.pid, "deliberate": True},
         )
+        self.kernel_lost_state = False
+        self.kernel_generation = self.journal.max_seq()
         log.info("[%s] kernel restarted pid=%s", self.session_id, self.kernel.pid)
         return self.kernel.pid
 
@@ -836,6 +928,14 @@ class Session:
                 "status": self.kernel_status,
                 "pid": self.kernel.pid,
                 "python": self.kernel_pyversion,
+                # This kernel is a fresh spawn under a journal that already held
+                # executions: outputs were restored but every variable is gone
+                # (host reboot / idle-GC reap). The client warns the user.
+                "lost_state": self.kernel_lost_state,
+                "reattached": self.kernel.reattached,
+                # Durable id of this kernel generation; clients de-dup the
+                # lost-state warning on it rather than on the reusable pid.
+                "generation": self.kernel_generation,
             },
             "queue_len": self._queue.qsize(),
             "executions": execs,
@@ -852,6 +952,8 @@ class Session:
             "kernel_status": self.kernel_status,
             "kernel_python": self.kernel_pyversion,
             "kernel_reattached": self.kernel.reattached,
+            "kernel_lost_state": self.kernel_lost_state,
+            "kernel_generation": self.kernel_generation,
             "queue_len": self._queue.qsize(),
             "max_seq": self.journal.max_seq(),
             "executions": len(self.journal.executions()),
@@ -995,6 +1097,19 @@ class Daemon:
                     except asyncio.CancelledError:
                         pass
         for s in list(self._sessions.values()):
+            if self._kill_kernels_on_stop:
+                # An explicit kill-kernels shutdown (the extension does this to
+                # apply a new interpreter). The namespace really is being cleared,
+                # but the USER asked for it — journal that intent so the next
+                # `Session.start()` reports a requested reset rather than the
+                # host-reboot loss it would otherwise be indistinguishable from.
+                try:
+                    s._journal_lifecycle(
+                        None, "tithon.kernel",
+                        {"status": "shutdown", "deliberate": True},
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    log.exception("[%s] shutdown lifecycle journal failed", s.session_id)
             await s.stop(kill_kernel=self._kill_kernels_on_stop)
         self.pid_file.unlink(missing_ok=True)
         self.sock_path.unlink(missing_ok=True)
@@ -1024,7 +1139,10 @@ class Daemon:
         if s is None:
             return False
         try:
-            s._journal_lifecycle(None, "tithon.kernel", {"status": "killed"})
+            # deliberate: the user asked for this kernel to die, so reopening the
+            # file later must NOT warn that state was lost unexpectedly.
+            s._journal_lifecycle(
+                None, "tithon.kernel", {"status": "killed", "deliberate": True})
         except Exception:  # pragma: no cover - defensive
             log.exception("[%s] kill lifecycle broadcast failed", session_id)
         await s.stop(kill_kernel=True)
