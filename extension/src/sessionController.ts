@@ -491,6 +491,9 @@ export class TithonNotebookController {
    *  so a full extension-host reload warns again — deliberate: a new window is a
    *  new reader who has not seen it. */
   private readonly lostStateWarned = new Set<string>();
+  /** `${uri}#${seq}` of every out-of-band kernel death already reported, so the
+   *  watchdog's event does not re-warn when a later reconnect replays it. */
+  private readonly kernelDeathWarned = new Set<string>();
   private readonly liveSessions = new Map<
     string,
     { dispose: () => void; refresh: () => void; activeCells: () => number[] }
@@ -670,6 +673,47 @@ export class TithonNotebookController {
   /** Test affordance: which `${uri}#${generation}` lost-kernel warnings fired. */
   lostStateWarnings(): string[] {
     return [...this.lostStateWarned];
+  }
+
+  /**
+   * The daemon's liveness watchdog saw this file's kernel die with NO cell
+   * running — a host OOM-kill, an operator kill, a lost remote host. Nothing
+   * else surfaces it: a death during execution errors the cell that was running,
+   * but an idle death produced no output at all, so the user kept a healthy
+   * looking kernel until their next Run and only then learned every variable was
+   * gone.
+   *
+   * Driven by the client's SETTLED kernel view, never by the triggering message.
+   * Two call sites reach it and only one of them has an event at all: live events
+   * (onEvent is wired only AFTER attach resolves, so a reconnect's replayed
+   * backlog never arrives here) and the post-attach check, which is what covers
+   * reopening a file whose kernel died while nobody was connected. Reading the
+   * settled status makes both correct, and keying on the daemon's durable
+   * `generation` — the same key the lost-state warning uses — makes them agree, so
+   * one death yields exactly one warning no matter which path observed it.
+   *
+   * Keyed on generation and NOT the pid for the ADR-075 reason: a rebooted host
+   * restarts its pid space, so a later genuinely-dead kernel can reuse an earlier
+   * pid and a pid-keyed guard would swallow the warning.
+   */
+  private warnKernelDied(uri: vscode.Uri, client: SessionClient): void {
+    const info = client.kernelInfo();
+    if (info?.status !== "dead") return; // alive, or already superseded by a restart
+    const key = `${uri.toString()}#${info.generation ?? `pid:${info.pid ?? "?"}`}`;
+    if (this.kernelDeathWarned.has(key)) return;
+    this.kernelDeathWarned.add(key);
+    const name = uri.path.split("/").pop() ?? uri.toString();
+    void vscode.window.showErrorMessage(
+      `Tithon: the kernel for ${name} died (it was not running a cell — an ` +
+        `out-of-memory kill, an operator kill, or a lost host). Cell outputs are ` +
+        `safe in the journal, but the Python namespace is gone. ` +
+        `Restart the kernel to continue.`,
+    );
+  }
+
+  /** Test affordance: which `${uri}#${generation}` kernel-death warnings fired. */
+  kernelDeathWarnings(): string[] {
+    return [...this.kernelDeathWarned];
   }
 
   /** Show the kernel's Python version on the controller label + status bar. */
@@ -1063,6 +1107,11 @@ export class TithonNotebookController {
     // showed only "Tithon"; now "Tithon · Python 3.11.5").
     this.applyKernelLabel(client.kernelInfo()?.python ?? null);
     this.warnIfStateLost(notebook.uri, client.kernelInfo());
+    // The kernel may have died out-of-band while nobody was connected: the live
+    // event fired into the void and `onEvent` (wired below, after attach) never
+    // replays the backlog, so the SNAPSHOT is the only thing carrying that death
+    // to a client opening or reconnecting now.
+    this.warnKernelDied(notebook.uri, client);
     const sink = new VSCodeCellSink(this.controller, notebook, client);
     const live = new LiveOutputSync(
       cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
@@ -1119,6 +1168,11 @@ export class TithonNotebookController {
       // renderer (the display_data already rendered the widget; this just updates
       // the model so e.g. a tqdm.notebook bar fills in real time).
       if (ev.kind === "widget") this.queueWidgetUpdate(ev.payload);
+      // The daemon's watchdog observed this kernel die out-of-band (no cell was
+      // running, so nothing else would ever tell the user).
+      if (ev.kind === "kernel" && ev.payload?.status === "dead") {
+        this.warnKernelDied(notebook.uri, client);
+      }
       // A cell hit input()/getpass(): present an input box and answer the daemon
       // so the blocked cell continues (the stdin bridge).
       if (ev.kind === "input_request") {

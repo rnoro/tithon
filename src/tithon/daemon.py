@@ -83,6 +83,14 @@ KERNEL_REPLY_POLL = float(os.environ.get("TITHON_KERNEL_REPLY_POLL", "1.0"))  # 
 # opted in (CLI --idle-timeout / the extension's tithon.kernelIdleTimeout).
 KERNEL_IDLE_TIMEOUT = float(os.environ.get("TITHON_KERNEL_IDLE_TIMEOUT", "0"))  # seconds; 0=off
 GC_POLL = float(os.environ.get("TITHON_GC_POLL", "60"))  # idle-GC sweep interval (s)
+# Kernel liveness watchdog. `KernelHandle.is_alive` is otherwise consulted only on
+# the EXECUTION path, and `Session.start()` — which derives the lost-state signal
+# — is not re-entered while the daemon lives. So a kernel that dies while IDLE
+# (host OOM-kill, operator kill, remote host loss) is observed by nobody and the
+# client keeps showing a healthy kernel until the user's next cell. Deliberately
+# INDEPENDENT of the idle-GC loop: that loop exists only when idle_timeout > 0,
+# which is off by default, so there is no "already running sweep" to ride on.
+KERNEL_WATCHDOG_POLL = float(os.environ.get("TITHON_KERNEL_WATCHDOG_POLL", "5"))  # s; 0=off
 
 
 def _safe_component(s: str) -> str:
@@ -214,6 +222,18 @@ class Session:
         # tell — the running batch lives in the worker coroutine, not the queue).
         self._busy = False
         self._last_activity = time.monotonic()
+        # True only inside restart_kernel(), between killing the old kernel and
+        # the fresh one being ready. The liveness watchdog must not read that
+        # window as a crash — it is the one moment a dead kernel is expected.
+        self._restarting = False
+        # Restarts must be mutually exclusive, not merely flagged. Two clients can
+        # each ask this session to restart (every connection runs its own handler
+        # coroutine and both await the same Session), and a bare boolean does not
+        # stop the second body from running: they would concurrently stop channels
+        # and respawn, and whichever finished first would clear `_restarting` while
+        # the other was still mid-respawn — reopening the watchdog window and
+        # reporting the user's own restart as a crash.
+        self._restart_lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------------
     async def start(self) -> None:
@@ -318,6 +338,41 @@ class Session:
             asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
         ]
 
+    # -- kernel liveness watchdog ----------------------------------------------
+    def check_kernel_liveness(self) -> bool:
+        """Observe an out-of-band kernel death; journal + broadcast it ONCE.
+
+        Returns True only on the tick that discovers the death. Closes the false
+        negative ADR-075 left open: the lost-state classification runs in
+        ``Session.start()``, which a live daemon never re-enters, so a kernel
+        killed while idle stayed invisible until the user's next execute.
+
+        The event is journaled (not merely broadcast) so a client that was
+        disconnected at the moment of death still learns about it via delta
+        replay. It carries ``status: "dead"``, which is deliberately NOT one of
+        ``Journal.GENERATION_STATUSES``: a death ENDS a kernel generation without
+        opening one, so it must not become the anchor of the "did anything RUN on
+        the generation that just died?" window — anchoring there would place the
+        anchor after all the lost work and silently pardon it. The replacement's
+        provenance is recorded as ``replaced`` when the fresh kernel is classified.
+        """
+        if self._restarting or self.kernel.pid is None:
+            return False
+        if self.kernel_status == "dead":
+            return False  # already reported (by us, or by the exec worker)
+        if self.kernel.is_alive():
+            return False
+        self.kernel_status = "dead"
+        self._journal_lifecycle(
+            None, "tithon.kernel",
+            {"status": "dead", "pid": self.kernel.pid, "deliberate": False},
+        )
+        log.warning(
+            "[%s] kernel died out-of-band (pid=%s) — no execution was in flight",
+            self.session_id, self.kernel.pid,
+        )
+        return True
+
     # -- idle-GC (kernel lifetime policy) --------------------------------------
     def touch(self) -> None:
         """Record activity now — resets the idle clock (see :meth:`gc_eligible`)."""
@@ -376,6 +431,21 @@ class Session:
         running namespace is gone. In-flight executions are orphaned and a
         ``tithon.kernel`` event tells clients to reset (clear spinners).
         """
+        # Serialized (see `_restart_lock`): a concurrent second restart of the same
+        # session must queue behind this one, not interleave with it.
+        async with self._restart_lock:
+            # Suppress the liveness watchdog for the whole teardown+respawn window:
+            # the kernel IS momentarily dead here, deliberately, and a tick landing
+            # in the gap would report the user's own restart as a crash.
+            self._restarting = True
+            try:
+                return await self._restart_kernel_inner()
+            finally:
+                # Always re-arm, even if the respawn failed: leaving the flag set
+                # would silently disable death detection for this session forever.
+                self._restarting = False
+
+    async def _restart_kernel_inner(self) -> int:
         await self._stop_tasks()
         try:
             self.kc.stop_channels()
@@ -776,7 +846,40 @@ class Session:
                 and (reply.get("parent_header") or {}).get("msg_id") == msg_id
             ):
                 content = reply["content"]
+                self._emit_reply_payloads(exec_id, content.get("payload") or [])
                 return content.get("status", "ok"), content.get("execution_count")
+
+    def _emit_reply_payloads(self, exec_id: str, payloads: list) -> None:
+        """Surface ``execute_reply.payload`` text as stdout stream output.
+
+        IPython does NOT publish the ``?``/``??`` help pager on iopub — it rides
+        the SHELL reply's ``payload`` list. Reading only ``status`` and
+        ``execution_count`` therefore makes ``obj?``, the first idiom an IPython
+        user types, produce nothing at all: no output, no error, a silent hole.
+        Any payload carrying ``text/plain`` becomes a ``stream`` message journaled
+        + folded + broadcast like real output, so it survives reconnect and shows
+        up in the snapshot (vscode-jupyter's ``handleExecuteReply`` does the same,
+        also as a stream so ANSI in the pager text still renders).
+
+        ``set_next_input`` (``%load``, ``%recall``) is deliberately NOT acted on:
+        inserting or replacing a cell needs the notebook's cell structure, which
+        belongs to the client. Doing it here would put cell layout knowledge in
+        the daemon — a separate ADR, not a few lines in the reply path.
+        """
+        fold = self._folds.get(exec_id)
+        if fold is None:
+            return  # cleared/orphaned execution: do not resurrect an output
+        for p in payloads:
+            if not isinstance(p, dict):
+                continue  # payload is kernel-controlled; a bad entry must not
+            data = p.get("data")  # kill the exec worker and wedge the queue
+            text = data.get("text/plain") if isinstance(data, dict) else None
+            if not text:
+                continue
+            content = {"name": "stdout", "text": str(text)}
+            seq = self.journal.append_message(exec_id, "stream", content)
+            fold.apply("stream", content)
+            self._broadcast(event_from_message(seq, exec_id, "stream", content))
 
     def _emit_kernel_dead(self, exec_id: str) -> None:
         """Journal + broadcast a synthetic error for a cell whose kernel died, so
@@ -1083,17 +1186,23 @@ class Daemon:
             self.pid_file.write_text(str(os.getpid()))
             log.info("daemon ready pid=%d sock=%s (sessions are per-file, lazy)",
                      os.getpid(), self.sock_path)
-            gc_task = None
+            bg: list[asyncio.Task] = []
             if self.idle_timeout > 0:
-                gc_task = asyncio.create_task(self._gc_loop(), name="idle-gc")
+                bg.append(asyncio.create_task(self._gc_loop(), name="idle-gc"))
                 log.info("idle-GC on: timeout=%.0fs poll=%.0fs", self.idle_timeout, GC_POLL)
+            # NOT gated on idle_timeout: the watchdog is the only observer of a
+            # kernel that dies while idle, and idle-GC is off by default.
+            if KERNEL_WATCHDOG_POLL > 0:
+                bg.append(asyncio.create_task(self._liveness_loop(), name="kernel-watchdog"))
+                log.info("kernel liveness watchdog on: poll=%.0fs", KERNEL_WATCHDOG_POLL)
             try:
                 await self._stop.wait()
             finally:
-                if gc_task is not None:
-                    gc_task.cancel()
+                for t in bg:
+                    t.cancel()
+                for t in bg:
                     try:
-                        await gc_task
+                        await t
                     except asyncio.CancelledError:
                         pass
         for s in list(self._sessions.values()):
@@ -1164,6 +1273,32 @@ class Daemon:
                 await self._gc_sweep()
             except Exception:  # pragma: no cover - the sweep must never die
                 log.exception("idle-GC sweep failed")
+
+    async def _liveness_loop(self) -> None:
+        """Kernel liveness watchdog: notice a kernel that died out-of-band.
+
+        Runs for the daemon's whole lifetime regardless of ``idle_timeout`` — the
+        idle-GC loop it would otherwise ride on does not exist in the default
+        configuration (see ``KERNEL_WATCHDOG_POLL``).
+        """
+        while True:
+            await asyncio.sleep(KERNEL_WATCHDOG_POLL)
+            try:
+                self._liveness_sweep()
+            except Exception:  # pragma: no cover - the watchdog must never die
+                log.exception("kernel liveness sweep failed")
+
+    def _liveness_sweep(self) -> None:
+        """One watchdog pass over the loaded sessions (factored out for tests).
+
+        Each session is isolated: a ``/proc`` read failing for one file must not
+        stop the watchdog from reporting every other file's dead kernel.
+        """
+        for sid, s in list(self._sessions.items()):
+            try:
+                s.check_kernel_liveness()
+            except Exception:  # pragma: no cover - defensive
+                log.exception("[%s] liveness check failed", sid)
 
     async def _gc_sweep(self) -> None:
         """One idle-GC pass over the loaded sessions (factored out for tests)."""

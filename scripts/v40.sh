@@ -23,15 +23,8 @@ print(d.get(sys.argv[1], ''))
 " "$1"
 }
 
-kernel_dead() { # $1 = pid; true if no longer a running ipykernel (gone OR zombie).
-  # `kill -0` can't tell a dead-but-unreaped zombie (empty /proc cmdline) from a
-  # live process, so test the cmdline the way the daemon's liveness check does.
-  [ -r "/proc/$1/cmdline" ] || return 0  # /proc gone -> reaped/dead
-  local cmd
-  cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)"
-  case "$cmd" in *ipykernel_launcher*) return 1 ;; *) return 0 ;; esac
-}
-
+# kernel_dead() (zombie-safe liveness check) now lives in lib.sh — v48 needs the
+# same predicate and two copies would drift.
 setup_env v40
 start_daemon || fail "daemon start failed"
 

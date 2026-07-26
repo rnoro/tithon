@@ -39,6 +39,17 @@ status_field() { # $1 = json field name; from the DEFAULT session's status.
     | "$PY" -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"
 }
 
+kernel_dead() { # $1 = pid; true if no longer a running ipykernel (gone OR zombie).
+  # `kill -0` can't tell a dead-but-unreaped zombie (empty /proc cmdline) from a
+  # live process, so test the cmdline the way the daemon's liveness check does.
+  # The kernel is Popen(start_new_session=True): setsid detaches the SESSION, not
+  # the parent link, so a SIGKILLed kernel lingers as a zombie until reaped.
+  [ -r "/proc/$1/cmdline" ] || return 0  # /proc gone -> reaped/dead
+  local cmd
+  cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)"
+  case "$cmd" in *ipykernel_launcher*) return 1 ;; *) return 0 ;; esac
+}
+
 cleanup_procs() {
   local dp kp
   dp="$(daemon_pid)"
