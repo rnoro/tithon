@@ -29,6 +29,23 @@ class WidgetMirror:
         # comm_id -> {"state": {...json attrs...}, "buffers": {path_tuple: bytes}}
         self._models: dict[str, dict] = {}
 
+    def would_accept(self, msg_type: str, content: dict) -> bool:
+        """Predict apply()'s accept/reject WITHOUT mutating — must stay in sync
+        with apply()'s own guard clauses (each returns False from the SAME
+        point, before any mutation, so the two never actually diverge in
+        practice; this only re-checks the condition, cheaply, a second time).
+        Lets a caller journal before mutating (see daemon.py _handle_comm)."""
+        if msg_type == "comm_open":
+            return content.get("target_name") == WIDGET_TARGET and content.get("comm_id") is not None
+        if msg_type == "comm_msg":
+            model = self._models.get(content.get("comm_id"))
+            if model is None:
+                return False
+            return (content.get("data") or {}).get("method") in ("update", "echo_update")
+        if msg_type == "comm_close":
+            return content.get("comm_id") in self._models
+        return False
+
     def apply(self, msg_type: str, content: dict, buffers=None) -> bool:
         """Update the mirror from one comm message. True if state changed."""
         buffers = list(buffers or [])
