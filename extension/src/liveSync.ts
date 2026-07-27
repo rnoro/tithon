@@ -46,6 +46,9 @@ export interface CellSink {
 export interface Scheduler {
   /** Request a flush. Implementations coalesce multiple requests into one run. */
   schedule(flush: () => void): void;
+  /** Cancel a scheduled-but-not-yet-fired flush, if any. Optional: a scheduler
+   *  with no notion of cancellation (e.g. a test double) may omit it. */
+  cancel?(): void;
 }
 
 /** Trailing-edge throttle: at most one flush per `delayMs` window. */
@@ -58,6 +61,12 @@ export class ThrottleScheduler implements Scheduler {
       this.timer = null;
       flush();
     }, this.delayMs);
+  }
+  cancel(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
   }
 }
 
@@ -86,6 +95,7 @@ export class LiveOutputSync {
   private readonly pendingClear = new Set<string>(); // execIds with deferred clear
   private readonly dirty = new Set<number>();
   private flushScheduled = false;
+  private disposed = false;
   readonly stats: LiveStats = { events: 0, flushes: 0, sinkCalls: 0 };
 
   constructor(
@@ -94,6 +104,13 @@ export class LiveOutputSync {
     private readonly scheduler: Scheduler,
   ) {
     this.refreshCells(cells);
+  }
+
+  /** True while a flush is scheduled but has not fired yet — the exact
+   *  precondition RISKS #15's dispose() race needs. Exposed so a test can
+   *  wait for a genuinely pending flush instead of guessing at timing. */
+  hasPendingFlush(): boolean {
+    return this.flushScheduled;
   }
 
   /**
@@ -161,8 +178,25 @@ export class LiveOutputSync {
     return this.execStale.get(execId) ?? false;
   }
 
+  /**
+   * Stop accepting/flushing further ops (called when live sync tears down —
+   * dispose/detach/close). A flush must never run after the sink's own
+   * cleanup (`endAll()`) — it would call `sink.status("running")` and recreate
+   * an execution with no `done` ever coming, a permanent spinner. Cancels any
+   * scheduler timer that has not fired yet AND drops whatever is already
+   * queued (RISKS #15).
+   */
+  dispose(): void {
+    this.disposed = true;
+    this.scheduler.cancel?.();
+    this.flushScheduled = false;
+    this.pending.clear();
+    this.dirty.clear();
+  }
+
   /** Feed one wire event. Cheap: folds into pending ops + schedules a flush. */
   onEvent(ev: LiveEvent): void {
+    if (this.disposed) return;
     this.stats.events += 1;
     const execId = ev.exec_id;
     if (!execId) return;
@@ -305,7 +339,9 @@ export class LiveOutputSync {
   /** Emit the coalesced ops for every dirty cell, in order. */
   flush(): void {
     this.flushScheduled = false;
-    if (this.dirty.size === 0) return;
+    // Guards a scheduler with no cancel() (or a stray already-fired callback
+    // racing dispose()) — belt-and-braces alongside the cancel() in dispose().
+    if (this.disposed || this.dirty.size === 0) return;
     this.stats.flushes += 1;
     for (const idx of this.dirty) {
       const ops = this.pending.get(idx) ?? [];

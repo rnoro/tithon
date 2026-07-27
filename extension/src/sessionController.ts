@@ -162,6 +162,11 @@ class VSCodeCellSink implements CellSink {
   // Per-cell promise chain: image appends fetch bytes asynchronously, so the
   // cell's done/end must queue behind them or VSCode rejects "execution ended".
   private readonly tail = new Map<number, Promise<void>>();
+  // Set by endAll() (live sync torn down). A structural backstop for RISKS #15:
+  // even if a stray flush reaches the sink after teardown (e.g. a scheduler
+  // that ignores cancel()), create() refuses to spin up a NEW proxy execution
+  // that would never receive a matching `done` — a permanent spinner.
+  private disposed = false;
 
   constructor(
     private readonly controller: vscode.NotebookController,
@@ -200,6 +205,7 @@ class VSCodeCellSink implements CellSink {
   /** Create the proxy execution in PENDING state (clock), if not present. No
    *  output ops here — VSCode rejects clearOutput/appendOutput before start(). */
   private create(idx: number): { exec: vscode.NotebookCellExecution; started: boolean } | undefined {
+    if (this.disposed) return undefined;
     let rec = this.execs.get(idx);
     if (!rec) {
       const c = this.cell(idx);
@@ -481,6 +487,7 @@ class VSCodeCellSink implements CellSink {
   /** End any still-open proxy executions (called when live sync stops) so cells
    *  don't keep a spinner/clock forever after we detach. */
   endAll(): void {
+    this.disposed = true;
     for (const [idx, rec] of this.execs) {
       if (!rec.started) rec.exec.start(Date.now());
       rec.exec.end(undefined, Date.now());
@@ -512,7 +519,10 @@ export class TithonNotebookController {
   private readonly kernelDeathWarned = new Set<string>();
   private readonly liveSessions = new Map<
     string,
-    { dispose: () => void; refresh: () => void; activeCells: () => number[] }
+    {
+      dispose: () => void; refresh: () => void; activeCells: () => number[];
+      hasPendingFlush: () => boolean;
+    }
   >();
 
   private readonly selectionSub: vscode.Disposable;
@@ -1106,7 +1116,10 @@ export class TithonNotebookController {
    */
   async startLive(
     notebook: vscode.NotebookDocument,
-  ): Promise<{ dispose: () => void; refresh: () => void; activeCells: () => number[] }> {
+  ): Promise<{
+    dispose: () => void; refresh: () => void; activeCells: () => number[];
+    hasPendingFlush: () => boolean;
+  }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     const client = new SessionClient(
       undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
@@ -1205,11 +1218,17 @@ export class TithonNotebookController {
     return {
       dispose: () => {
         changeSub.dispose();
+        // Cancel any in-flight ThrottleScheduler window BEFORE endAll() closes
+        // the sink's open executions — else a pending flush firing after this
+        // point could call sink.status("running") and recreate a proxy
+        // execution with no `done` ever coming (RISKS #15).
+        live.dispose();
         client.close();
         sink.endAll(); // don't leave cells spinning after we detach
       },
       refresh,
       activeCells: () => sink.activeCells(),
+      hasPendingFlush: () => live.hasPendingFlush(),
     };
   }
 
@@ -1217,6 +1236,13 @@ export class TithonNotebookController {
    *  a cleared cell must not linger here, which would be a stuck spinner). */
   activeExecCells(notebook: vscode.NotebookDocument): number[] {
     return this.liveSessions.get(notebook.uri.toString())?.activeCells() ?? [];
+  }
+
+  /** True while this notebook's LiveOutputSync has a flush scheduled but not
+   *  yet fired — the precondition RISKS #15's v51 needs before tearing down,
+   *  so the test can wait for it instead of inferring timing indirectly. */
+  hasPendingFlush(notebook: vscode.NotebookDocument): boolean {
+    return this.liveSessions.get(notebook.uri.toString())?.hasPendingFlush() ?? false;
   }
 }
 
@@ -1284,6 +1310,22 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     vscode.commands.registerCommand("tithon._restore", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (nb) await controller.restore(nb);
+    }),
+    // Test-only: tear down live sync for the active notebook via the SAME
+    // disposeLive() path a real close/deselect/restart takes, deterministically
+    // (real close/deselect timing in a headless Extension Host is not
+    // reliable enough to race against a 50ms flush window — RISKS #15's v51).
+    vscode.commands.registerCommand("tithon._disposeLive", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (nb) controller.disposeLive(nb.uri);
+    }),
+    // Test-only: whether the active notebook's live sync has a flush scheduled
+    // but not yet fired — v51 polls this to deterministically catch the
+    // RISKS #15 window before disposing, instead of inferring timing from a
+    // second client's event arrival.
+    vscode.commands.registerCommand("tithon._hasPendingFlush", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.hasPendingFlush(nb) : false;
     }),
     // Test-only: lets the integration suite confirm the widget renderer painted
     // html (vs the text fallback) and applied live animation updates.
