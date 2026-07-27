@@ -435,15 +435,31 @@ class VSCodeCellSink implements CellSink {
     const rec = this.execs.get(idx);
     if (rec) {
       this.execs.delete(idx);
-      this.forgetStreams(idx);
-      this.forgetDisplays(idx);
       const endMs = tsMs ?? Date.now();
       this.chain(idx, async () => {
-        if (!rec.started) {
-          rec.exec.start(endMs);
-          rec.started = true;
+        try {
+          if (!rec.started) {
+            rec.exec.start(endMs);
+            rec.started = true;
+          }
+          rec.exec.end(status === "done", endMs);
+        } finally {
+          // Forget the stream/display maps ON THE CHAIN, not synchronously at the
+          // call site: appendStream and updateDisplay resolve those maps INSIDE
+          // their own chained closure, so a wipe from the call site jumps the
+          // queue and the still-pending op no longer finds its output. A
+          // synchronous forget made the LAST update_display_data of a run — which
+          // shares a 50ms flush window with `done` now that the daemon's real
+          // completion barrier replaced its 0.05s guess (ADR-079) — take
+          // updateDisplay's append-and-register fallback and stack a SECOND
+          // output: v33's "expected a single in-place output, got 2".
+          // `finally`, because the pre-ADR-084 forget was unconditional: an
+          // exec.end() throw (VSCode rejects a disposed/ended execution) must not
+          // leak the maps into the next run, where replaceOutputItems would then
+          // target a dead NotebookCellOutput.
+          this.forgetStreams(idx);
+          this.forgetDisplays(idx);
         }
-        rec.exec.end(status === "done", endMs);
       });
     }
   }
