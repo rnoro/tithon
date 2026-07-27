@@ -69,6 +69,57 @@ def has_marker(evs: list[dict], marker: str) -> bool:
     return any(marker in text_of(e) for e in evs)
 
 
+COMM_TYPES = ("comm_open", "comm_msg", "comm_close")
+
+
+def comm_events(evs: list[dict]) -> list[dict]:
+    """Every frame carrying a Jupyter comm message, in EITHER wire shape.
+
+    Matching on `payload.msg_type` rather than on `kind` is deliberate: the whole
+    point of the check below is that the two shapes must not both exist, so the
+    finder must be able to see the wrong one.
+    """
+    return [e for e in evs if (e.get("payload") or {}).get("msg_type") in COMM_TYPES]
+
+
+def comm_state(evs: list[dict], comm_id: str | None = None) -> dict:
+    """Fold the comm frames the way a client's widget mirror would."""
+    models: dict[str, dict] = {}
+    for e in comm_events(evs):
+        p = e["payload"]
+        cid, data = p.get("comm_id"), (p.get("data") or {})
+        if p["msg_type"] == "comm_open":
+            models[cid] = dict((data.get("state") or {}))
+        elif p["msg_type"] == "comm_msg" and data.get("method") in ("update", "echo_update"):
+            models.setdefault(cid, {}).update(data.get("state") or {})
+        elif p["msg_type"] == "comm_close":
+            models.pop(cid, None)
+    return models if comm_id is None else models.get(comm_id, {})
+
+
+def check_comm_shape(evs: list[dict], who: str) -> int:
+    """Comm frames must reach every client as `kind: "widget"`.
+
+    `event_from_message`'s docstring states the contract — "live broadcast ==
+    replay" — and comm is the one message class that used to be hand-built at the
+    broadcast site, so replay rebuilt it through the generic branch and produced
+    `kind: "output"` instead. A client dispatches `applyWidgetEvent` only from
+    `case "widget"`, so the wrong kind means the widget mirror silently stops
+    advancing.
+    """
+    comm = comm_events(evs)
+    if not comm:
+        die(f"{who}: no comm/widget events at all — the widget fixture did not run "
+            f"(ipywidgets missing, or the cell failed), so nothing here was verified")
+    for e in comm:
+        if e.get("kind") != "widget":
+            die(f"{who}: comm frame seq {e.get('seq')} arrived as kind={e.get('kind')!r}, "
+                f"expected 'widget' — live broadcast and replay disagree on the wire "
+                f"shape, and a client only mirrors widgets from kind=='widget': "
+                f"{json.dumps(e)[:220]}")
+    return len(comm)
+
+
 def check_monotonic(evs: list[dict], who: str) -> None:
     seen = set()
     prev = 0
@@ -93,6 +144,8 @@ def main() -> int:
     ap.add_argument("--marker-a", required=True)
     ap.add_argument("--marker-b", required=True)
     ap.add_argument("--marker-late", required=True)
+    ap.add_argument("--widget-value", type=int, required=True,
+                    help="value the late cell sets on the widget; must survive replay")
     args = ap.parse_args()
 
     fa, fb, fr = load(args.a), load(args.b), load(args.replay)
@@ -143,6 +196,11 @@ def main() -> int:
     print(f"v50: both clients received both submissions ({args.marker_a}, {args.marker_b}) "
           f"across executions {sorted(ids)}")
 
+    # ...including the widget's comm traffic, in the one wire shape a client mirrors.
+    n_comm = check_comm_shape(wa, "client A (shared window)")
+    check_comm_shape(wb, "client B (shared window)")
+    print(f"v50: {n_comm} comm frame(s) reached BOTH clients as kind='widget'")
+
     # -- D. departure isolation ------------------------------------------------
     if has_marker(ea, args.marker_late):
         die(f"client A received {args.marker_late}, which ran after it disconnected")
@@ -160,6 +218,29 @@ def main() -> int:
     rr = [e for e in er if args.since < e["seq"] <= bend]
     if not rb:
         die(f"nothing to compare: client B saw no event after seq {args.since}")
+    # Checked before the generic frame diff so the comm divergence is reported as
+    # itself rather than as "these two frames differ somewhere".
+    n = check_comm_shape(rr, f"replay from seq {args.since}")
+    check_comm_shape(rb, "client B (replay window, live)")
+    # The replay window must carry BOTH comm shapes — an open (the second widget
+    # the late cell creates) and a state-changing update — or a fix that only
+    # handled one of them would pass.
+    kinds = {(e["payload"] or {}).get("msg_type") for e in comm_events(rr)}
+    for want in ("comm_open", "comm_msg"):
+        if want not in kinds:
+            die(f"replay from seq {args.since} carries no {want} (saw {sorted(kinds)}) — "
+                f"the widget fixture did not put both comm shapes after K")
+    # ...and the replayed frames must fold to the same widget state a live client
+    # folded, not merely be structurally equal.
+    live_models, replay_models = comm_state(rb), comm_state(rr)
+    if live_models != replay_models:
+        die(f"widget state folded from the replay differs from the live fold: "
+            f"live={json.dumps(live_models)[:200]} replay={json.dumps(replay_models)[:200]}")
+    if not any(m.get("value") == args.widget_value for m in replay_models.values()):
+        die(f"no replayed widget reached value {args.widget_value}; folded state was "
+            f"{json.dumps(replay_models)[:200]}")
+    print(f"v50: replayed comm folds to the same widget state as live "
+          f"({len(replay_models)} model(s), value {args.widget_value} present)")
     if len(rb) != len(rr):
         die(f"replay from seq {args.since} disagrees with the live stream: "
             f"live {len(rb)} events {[e['seq'] for e in rb]}, "
@@ -170,6 +251,11 @@ def main() -> int:
                 f"live={json.dumps(x)[:200]} replay={json.dumps(y)[:200]}")
     print(f"v50: delta replay from seq {args.since} reproduces the live stream "
           f"exactly ({len(rr)} events)")
+
+    # The replay window contains the post-disconnect widget update, so it pins the
+    # shape a RESUMING client is handed — the path where the live frame is rebuilt
+    # from the journal rather than broadcast directly.
+    print(f"v50: {n} comm frame(s) survive delta replay as kind='widget'")
     return 0
 
 

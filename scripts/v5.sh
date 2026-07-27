@@ -45,8 +45,16 @@ echo "v5: html-manager jsdom render ---------------------------------------"
 echo "v5: Widget State Mirror unit tests ----------------------------------"
 timeout 120 "$PY" -m pytest "$ROOT/test/test_widgets.py" -q || fail "(3) mirror unit tests failed"
 
+# (4) The CLIENT half of the mirror: which wire events actually reach it. Pins the
+#     two silent drops of ADR-083 — an event with `exec_id: null` (a widget updated
+#     from a background thread after its cell's barrier popped the mapping) and the
+#     pre-ADR-083 `kind:"output"` replay shape, which must stay a no-op.
+echo "v5: widget comm event dispatch --------------------------------------"
+(cd "$EXT" && NO_COLOR=1 timeout 180 npx vitest run test/widgetEvents.test.ts) \
+  || fail "(4) widget comm event dispatch failed"
+
 # Document the integration-test environment limitation in the RESULT detail.
 have_display="no-display(xvfb absent)"
 command -v xvfb-run >/dev/null 2>&1 && have_display="xvfb-present"
 
-echo "RESULT v5 PASS mirror 50k FloatProgress value==max==total ($MODELS models) + jsdom html-manager render + mirror unit tests; vscode-electron integration: $have_display -> jsdom alternative (see DECISIONS ADR-012)"
+echo "RESULT v5 PASS mirror 50k FloatProgress value==max==total ($MODELS models) + jsdom html-manager render + mirror unit tests + client comm-event dispatch (exec_id null / wrong replay shape); vscode-electron integration: $have_display -> jsdom alternative (see DECISIONS ADR-012)"

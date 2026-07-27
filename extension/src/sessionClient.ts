@@ -426,6 +426,18 @@ export class SessionClient {
       }
       return;
     }
+    // Widget state is session-global, not per-execution, so it must be applied
+    // BEFORE the exec_id guard below. The daemon derives a comm's exec_id from
+    // `_msgid_to_exec`, which the completion barrier pops when the cell finishes
+    // (ADR-079) — so a widget updated from a background thread or a timer after
+    // its cell completed is journaled and broadcast with `exec_id: null`
+    // (reproduced: a `threading.Thread` bumping an IntProgress 1.5 s after the
+    // cell's `done` arrives as `exec_id=None kind=widget`). Handling it after the
+    // guard dropped exactly those updates, silently.
+    if (ev.kind === "widget") {
+      this.applyWidgetEvent(ev.payload);
+      return;
+    }
     if (!ev.exec_id) return;
     const st = this.ensureExec(ev.exec_id, ev.seq);
     st.seq = Math.max(st.seq, ev.seq ?? st.seq);
@@ -446,10 +458,8 @@ export class SessionClient {
       case "output":
         st.fold.apply(ev.payload?.msg_type, ev.payload?.content ?? {});
         break;
-      case "widget":
-        this.applyWidgetEvent(ev.payload);
-        break;
-      // "status" does not change cell outputs here.
+      // "widget" is handled above the exec_id guard; "status" does not change
+      // cell outputs here.
     }
   }
 

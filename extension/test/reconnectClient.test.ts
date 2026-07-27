@@ -11,55 +11,9 @@
  * the drop on demand.
  */
 import { describe, it, expect } from "vitest";
-import { WebSocketServer, type WebSocket as WS } from "ws";
-import * as http from "http";
-import * as os from "os";
-import * as path from "path";
-import * as fs from "fs";
+import { type WebSocket as WS } from "ws";
 import { SessionClient } from "../src/sessionClient";
-
-function tmpSock(): string {
-  return path.join(os.tmpdir(), `tithon-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
-}
-
-/** Bare unix-socket ws server; `onConnection` gets full control of each socket. */
-async function fakeDaemonRaw(
-  onConnection: (ws: WS) => void,
-): Promise<{ sock: string; close: () => Promise<void> }> {
-  const sock = tmpSock();
-  try { fs.unlinkSync(sock); } catch { /* fresh */ }
-  const server = http.createServer();
-  const wss = new WebSocketServer({ server });
-  wss.on("connection", onConnection);
-  await new Promise<void>((res) => server.listen(sock, res));
-  return {
-    sock,
-    close: () =>
-      new Promise<void>((res) => {
-        wss.close();
-        server.close(() => {
-          try { fs.unlinkSync(sock); } catch { /* gone */ }
-          res();
-        });
-      }),
-  };
-}
-
-/** A daemon that answers attach with snapshot+sync, then runs `onAttach`. */
-async function fakeDaemon(
-  onAttach: (ws: WS) => void,
-): Promise<{ sock: string; close: () => Promise<void> }> {
-  return fakeDaemonRaw((ws) => {
-    ws.on("message", (raw) => {
-      const m = JSON.parse(raw.toString());
-      if (m.op === "attach") {
-        ws.send(JSON.stringify({ op: "snapshot", max_seq: 0, executions: [] }));
-        ws.send(JSON.stringify({ op: "sync", seq: 0 }));
-        onAttach(ws);
-      }
-    });
-  });
-}
+import { fakeDaemon, fakeDaemonRaw, settle } from "./fakeDaemon";
 
 /** A daemon that, on attach, replies with an `error` op and closes (a
  *  session-start failure — e.g. the kernel exited on startup, ADR-059/060). */
@@ -76,8 +30,6 @@ async function fakeErrorDaemon(
     });
   });
 }
-
-const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
 describe("SessionClient — disconnect surfacing for reconnect", () => {
   it("fires onDisconnect('overflow') when the daemon sends an overflow op", async () => {

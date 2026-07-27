@@ -17,6 +17,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+from .widgets import is_comm  # comm-type predicate only; widgets.py imports nothing local
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS executions(
   exec_id         TEXT PRIMARY KEY,
@@ -66,7 +68,29 @@ JOURNALED_IOPUB = (
 
 
 def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: dict) -> dict:
-    """Build the wire event for a journaled message (live broadcast == replay)."""
+    """Build the wire event for a journaled message (live broadcast == replay).
+
+    This is the ONLY builder — ``Session._handle_comm`` used to hand-build its own
+    frame for comm messages, so the live client got ``kind: "widget"`` while a
+    client resuming with ``last_seen_seq > 0`` got the same journal row rebuilt
+    here as ``kind: "output"``. Clients mirror widgets only from ``kind ==
+    "widget"``, so the resuming one silently stopped advancing its mirror. Keeping
+    one function makes that divergence impossible rather than a rule to remember.
+    """
+    if is_comm(msg_type):
+        # Binary buffers are deliberately NOT carried on the delta frame — the
+        # widget-state snapshot is what restores them (SPEC §3.4). `_buffers_b64`
+        # lives at the top level of the stored row, so reading comm_id/data yields
+        # the identical payload whether this is called with the raw content or the
+        # journaled one.
+        return {
+            "op": "event", "seq": seq, "exec_id": exec_id, "kind": "widget",
+            "payload": {
+                "msg_type": msg_type,
+                "comm_id": content.get("comm_id"),
+                "data": content.get("data"),
+            },
+        }
     if msg_type.startswith("tithon."):
         kind = msg_type.split(".", 1)[1]
         payload = content

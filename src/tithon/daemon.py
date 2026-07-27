@@ -787,23 +787,12 @@ class Session:
                 "_buffers_b64": [base64.b64encode(bytes(b)).decode("ascii") for b in buffers],
             }
         seq = self.journal.append_message(exec_id, msg_type, stored)
-        self._broadcast(
-            {
-                "op": "event",
-                "seq": seq,
-                "exec_id": exec_id,
-                "kind": "widget",
-                # Carry the comm data (state patch) so a live client mirrors the
-                # widget as it changes — that's what makes a tqdm.notebook bar
-                # animate live (not just restore on reconnect). Binary buffers are
-                # omitted here (tqdm has none); the snapshot still carries them.
-                "payload": {
-                    "msg_type": msg_type,
-                    "comm_id": content.get("comm_id"),
-                    "data": content.get("data"),
-                },
-            }
-        )
+        # Built by the SAME function the attach-backlog path uses, so the frame a
+        # live client sees and the frame a resuming client is handed for this row
+        # are the same object shape by construction (ADR-083). Carrying the comm
+        # data is what makes a tqdm.notebook bar animate live rather than only
+        # restore on reconnect; binary buffers ride the snapshot, not the delta.
+        self._broadcast(event_from_message(seq, exec_id, msg_type, stored))
 
     async def _stdin_pump(self) -> None:
         """Service the kernel's STDIN channel so input()/getpass() works.
