@@ -115,8 +115,8 @@ class KernelHandle:
 
         Liveness is checked via ``_alive_pid`` (``/proc`` cmdline), not
         ``os.kill(pid, 0)``: a dead-but-unreaped child is a ZOMBIE whose pid
-        ``os.kill(.., 0)`` still answers, so the old check spun the full
-        TERM→KILL→"did not exit" path on every crash and left the zombie behind.
+        ``os.kill(.., 0)`` still answers, which would spin the full
+        TERM→KILL→"did not exit" path on every crash and leave the zombie behind.
         """
         if self.pid is None:
             return

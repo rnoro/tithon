@@ -70,12 +70,11 @@ JOURNALED_IOPUB = (
 def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: dict) -> dict:
     """Build the wire event for a journaled message (live broadcast == replay).
 
-    This is the ONLY builder — ``Session._handle_comm`` used to hand-build its own
-    frame for comm messages, so the live client got ``kind: "widget"`` while a
-    client resuming with ``last_seen_seq > 0`` got the same journal row rebuilt
-    here as ``kind: "output"``. Clients mirror widgets only from ``kind ==
-    "widget"``, so the resuming one silently stopped advancing its mirror. Keeping
-    one function makes that divergence impossible rather than a rule to remember.
+    This is the ONLY builder, for the live broadcast and the attach-backlog replay
+    alike. A second one would let the same journal row reach a live client as
+    ``kind: "widget"`` and a client resuming with ``last_seen_seq > 0`` as ``kind:
+    "output"``; since clients advance their widget mirror only from ``kind ==
+    "widget"``, the resuming one would silently stop mirroring.
     """
     if is_comm(msg_type):
         # Binary buffers are deliberately NOT carried on the delta frame — the

@@ -71,11 +71,9 @@ STDIN_SETTLE_S = float(os.environ.get("TITHON_STDIN_SETTLE", "0.3"))  # seconds
 # whole session (incl. queued cells) wedges. Small enough to surface the death
 # quickly, large enough not to busy-poll.
 KERNEL_REPLY_POLL = float(os.environ.get("TITHON_KERNEL_REPLY_POLL", "1.0"))  # seconds
-# Upper bound on the completion barrier (see `_await_idle`). This is a FALLBACK for
-# a kernel that never publishes its closing `status: idle` — it is not the normal
-# path, and it must never become one: the barrier exists precisely to replace the
-# timer heuristic it used to be. The liveness poll inside the barrier returns much
-# sooner than this whenever the kernel is actually gone.
+# Upper bound on the completion barrier (see `_await_idle`). A FALLBACK for a kernel
+# that never publishes its closing `status: idle` — never the normal path; the
+# barrier's own liveness poll returns sooner whenever the kernel is actually gone.
 IDLE_BARRIER_TIMEOUT = float(os.environ.get("TITHON_IDLE_BARRIER_TIMEOUT", "10"))  # s
 
 # Kernel lifetime policy (idle GC). Detached kernels otherwise live forever: with
@@ -173,9 +171,8 @@ class Subscriber:
 class Session:
     """One file's kernel + journal + folded state + subscribers.
 
-    Owns the iopub pump and the execute worker for its kernel. This is the unit
-    that used to be the whole daemon; the daemon now holds a dict of these,
-    keyed by session id (the file uri).
+    Owns the iopub pump and the execute worker for its kernel. The daemon holds
+    a dict of these, keyed by session id (the file uri).
     """
 
     def __init__(self, session_id: str, session_dir: Path, workdir: Path):
@@ -201,12 +198,8 @@ class Session:
         self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
-        # Shell-channel routing. One pump owns `shell_channel.get_msg()` and hands
-        # each reply to the awaiter registered under its `parent_header.msg_id`.
-        # Before this, `_await_reply` consumed the channel itself and DROPPED every
-        # message that was not the execute_reply it wanted — which silently ate
-        # comm_info_reply / inspect_reply / complete_reply and made it impossible to
-        # issue any shell request while a cell was running.
+        # Shell-channel routing: `parent_header.msg_id` -> the awaiter of that
+        # request's reply. One pump owns the channel — see `_shell_pump`.
         self._shell_waiters: dict[str, asyncio.Future] = {}
         # Completion barrier: `status: idle` for an execution's parent, signalled
         # from `_handle_iopub` and awaited by `_run_one` (see `_await_idle`).
@@ -219,36 +212,27 @@ class Session:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
         self._tasks: list[asyncio.Task] = []
-        # Set in start(): the CURRENT kernel replaced a previous one WITHOUT the
-        # user asking (host reboot, idle-GC reap) while the journal already held
-        # real executions. Outputs survive on disk; the namespace does not. A
-        # client surfaces this instead of silently handing the user an empty
-        # kernel. Derived from the JOURNAL, not from in-memory state, so it
-        # survives both the reboot and any later daemon restart — see
-        # _classify_kernel_generation().
+        # Set in start(): this kernel replaced a previous one WITHOUT the user
+        # asking (host reboot, idle-GC reap), so outputs survived but the
+        # namespace did not — see _classify_kernel_generation().
         self.kernel_lost_state = False
-        # msg_seq of the journaled lifecycle event that produced the current
-        # kernel: a durable, monotonic generation id. Clients de-duplicate the
-        # warning on THIS, not on the pid — a rebooted host restarts its pid
-        # space, so a later lost kernel can reuse an earlier pid and would
-        # otherwise be silently suppressed.
+        # msg_seq of the lifecycle event that opened the current kernel generation:
+        # a durable, monotonic id clients de-dup the lost-state warning on. NOT the
+        # pid — a rebooted host restarts its pid space, so a later lost kernel can
+        # reuse an earlier pid and would be silently suppressed.
         self.kernel_generation = 0
         # Idle-GC bookkeeping: when work last happened (monotonic, wall-jump
         # safe) and whether the exec worker is mid-batch (the queue alone can't
         # tell — the running batch lives in the worker coroutine, not the queue).
         self._busy = False
         self._last_activity = time.monotonic()
-        # True only inside restart_kernel(), between killing the old kernel and
-        # the fresh one being ready. The liveness watchdog must not read that
-        # window as a crash — it is the one moment a dead kernel is expected.
+        # Watchdog suppression + mutual exclusion for restart_kernel(). Two clients
+        # can each ask the same Session to restart (one handler coroutine per
+        # connection); a bare flag would not stop the second body from running, and
+        # whichever finished first would clear `_restarting` while the other was
+        # still mid-respawn — reopening the window in which the watchdog reports
+        # the user's own restart as a crash.
         self._restarting = False
-        # Restarts must be mutually exclusive, not merely flagged. Two clients can
-        # each ask this session to restart (every connection runs its own handler
-        # coroutine and both await the same Session), and a bare boolean does not
-        # stop the second body from running: they would concurrently stop channels
-        # and respawn, and whichever finished first would clear `_restarting` while
-        # the other was still mid-respawn — reopening the watchdog window and
-        # reporting the user's own restart as a crash.
         self._restart_lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------------
@@ -257,15 +241,10 @@ class Session:
         self.kc = self.kernel.make_client()
         if spawned:
             await self._wait_kernel_ready(timeout=120)
-        # Capture the kernel's Python version so the client can label the kernel
-        # "Python 3.x.y". This reads the shell channel DIRECTLY, which is safe only
-        # because it completes before `_start_tasks()` below creates `_shell_pump` —
-        # there is no second consumer at this point. Do not move it after
-        # `_start_tasks()`: the pump would swallow the reply and this would hang.
+        # Must stay ahead of `_start_tasks()`: this reads the shell channel
+        # DIRECTLY (see `_wait_kernel_ready` for why that is safe only here).
         await self._capture_kernel_info()
-        # Let the stdin DEALER finish registering at the kernel ROUTER so the first
-        # cell's input()/getpass() can't lose its prompt to the connection race.
-        await asyncio.sleep(STDIN_SETTLE_S)
+        await asyncio.sleep(STDIN_SETTLE_S)  # stdin DEALER registers before the first run
         orphaned = self.journal.orphan_inflight()
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
@@ -362,10 +341,8 @@ class Session:
     def check_kernel_liveness(self) -> bool:
         """Observe an out-of-band kernel death; journal + broadcast it ONCE.
 
-        Returns True only on the tick that discovers the death. Closes the false
-        negative ADR-075 left open: the lost-state classification runs in
-        ``Session.start()``, which a live daemon never re-enters, so a kernel
-        killed while idle stayed invisible until the user's next execute.
+        Returns True only on the tick that discovers the death (see
+        ``KERNEL_WATCHDOG_POLL`` for why nothing else observes it).
 
         The event is journaled (not merely broadcast) so a client that was
         disconnected at the moment of death still learns about it via delta
@@ -451,12 +428,9 @@ class Session:
         running namespace is gone. In-flight executions are orphaned and a
         ``tithon.kernel`` event tells clients to reset (clear spinners).
         """
-        # Serialized (see `_restart_lock`): a concurrent second restart of the same
-        # session must queue behind this one, not interleave with it.
         async with self._restart_lock:
             # Suppress the liveness watchdog for the whole teardown+respawn window:
-            # the kernel IS momentarily dead here, deliberately, and a tick landing
-            # in the gap would report the user's own restart as a crash.
+            # the kernel IS momentarily dead here, deliberately.
             self._restarting = True
             try:
                 return await self._restart_kernel_inner()
@@ -481,11 +455,9 @@ class Session:
         if dropped:
             log.info("[%s] dropped %d queued batch(es) on restart", self.session_id, dropped)
         self._pending_input = None  # a restart abandons any waiting prompt
-        # Journal the INTENT before the kill, not just the outcome after it. The
-        # window between the two is where a host reboot is most likely to be
-        # noticed (the kernel is being torn down), and a crash inside it would
-        # otherwise leave a fresh kernel with no deliberate marker in front of it
-        # — reported as a surprise loss when the user had asked for exactly this.
+        # Journal the INTENT before the kill, not just the outcome after it: a host
+        # reboot inside that window would otherwise leave a fresh kernel with no
+        # deliberate marker in front of it, reported as a surprise loss.
         self._journal_lifecycle(
             None, "tithon.kernel",
             {"status": "restarting", "pid": self.kernel.pid, "deliberate": True},
@@ -503,8 +475,6 @@ class Session:
         self._fail_shell_waiters("kernel restarted")
         self._idle_events.clear()
         self._start_tasks()
-        # `deliberate` is what tells a LATER `Session.start()` (after a reboot or a
-        # daemon restart) that this empty namespace was requested, not lost.
         self._journal_lifecycle(
             None, "tithon.kernel",
             {"status": "restarted", "pid": self.kernel.pid, "deliberate": True},
@@ -665,10 +635,10 @@ class Session:
         """Sole consumer of the shell channel; routes replies by parent msg_id.
 
         The shell channel is request/reply and MULTIPLEXED: an execute_reply, a
-        comm_info_reply and an inspect_reply can all be in flight at once. The old
-        code had `_await_reply` read the channel directly and discard anything whose
-        parent was not the cell it was waiting for, so any concurrent shell request
-        was lost — there was no way to ask the kernel anything while a cell ran.
+        comm_info_reply and an inspect_reply can all be in flight at once, so one
+        owner must demultiplex them. A caller reading the channel itself would
+        consume — and discard — every reply but its own, making it impossible to
+        ask the kernel anything while a cell is running.
 
         Note the pump does NOT journal: shell replies are request-scoped answers to
         the daemon's own questions, not session output. What the user must see from
@@ -701,8 +671,7 @@ class Session:
         fut = self._shell_waiters.get(parent)
         if fut is None:
             # No awaiter: a reply to a request nobody is waiting on any more (its
-            # caller timed out or was cancelled). Dropping it here is correct and,
-            # unlike the old code, it is the ONLY thing dropped.
+            # caller timed out or was cancelled) — the only reply ever dropped.
             log.debug("[%s] unrouted shell reply parent=%s type=%s",
                       self.session_id, parent, msg["header"]["msg_type"])
             return
@@ -752,14 +721,10 @@ class Session:
         fold.apply(msg_type, content)
         self._gc_artifacts(before, fold.artifact_ids())
         self._broadcast(event_from_message(seq, exec_id, msg_type, content))
-        # THE COMPLETION BARRIER signal (see `_await_idle`), released only after this
-        # message is journaled, folded and broadcast. `status` IS in JOURNALED_IOPUB,
-        # so releasing the waiter any earlier would let `_run_one` persist
-        # `folded_json` + `tithon.done` while the idle status itself was still
-        # unjournaled — inverting their seq order — and would release it even if the
-        # append above had raised. Today `_handle_iopub` is fully synchronous so the
-        # early placement happened to be safe; that is a distant property to depend
-        # on, and this placement makes the ordering local and explicit.
+        # Completion-barrier signal (see `_await_idle`). Must stay AFTER the journal/
+        # fold/broadcast above: `status` is itself in JOURNALED_IOPUB, so releasing
+        # `_run_one` earlier would let it persist `folded_json` + `tithon.done` ahead
+        # of the idle status's own seq — or release it after a failed append.
         if msg_type == "status" and content.get("execution_state") == "idle":
             ev = self._idle_events.get(exec_id)
             if ev is not None:
@@ -787,11 +752,10 @@ class Session:
                 "_buffers_b64": [base64.b64encode(bytes(b)).decode("ascii") for b in buffers],
             }
         seq = self.journal.append_message(exec_id, msg_type, stored)
-        # Built by the SAME function the attach-backlog path uses, so the frame a
-        # live client sees and the frame a resuming client is handed for this row
-        # are the same object shape by construction (ADR-083). Carrying the comm
-        # data is what makes a tqdm.notebook bar animate live rather than only
-        # restore on reconnect; binary buffers ride the snapshot, not the delta.
+        # Same builder as the attach-backlog path (ADR-083), so a live and a
+        # resuming client get the identical frame for this row. Carrying the comm
+        # data is what animates a tqdm.notebook bar live rather than only on
+        # reconnect; binary buffers ride the snapshot, not the delta.
         self._broadcast(event_from_message(seq, exec_id, msg_type, stored))
 
     async def _stdin_pump(self) -> None:
@@ -896,14 +860,9 @@ class Session:
         """Execute one cell on the kernel; journal its lifecycle; return the
         kernel's reply status ("ok"/"error").
 
-        allow_stdin gates input()/getpass()/breakpoint()/pdb. When False (CLI /
-        default), the kernel raises StdinNotImplementedError at once so the cell
-        fails cleanly and the session keeps moving — without this, an unanswered
-        input_request would wedge the worker and every queued cell (ADR-050).
-        When True (a VSCode client that can present an input box), the
-        :meth:`_stdin_pump` bridges the prompt to the client; an unanswered prompt
-        merely waits and is abandonable via interrupt, so it still cannot wedge
-        the session permanently."""
+        ``allow_stdin`` gates input()/getpass()/breakpoint()/pdb; when False the
+        kernel raises StdinNotImplementedError at once instead (see
+        :meth:`_stdin_pump`)."""
         started_at = self.journal.mark_started(exec_id)
         self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
         # A kernel that already died (a previous cell crashed it) can't run this
@@ -921,23 +880,16 @@ class Session:
             log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
             try:
                 status, ec = await self._await_reply(fut, exec_id)
-                # THE COMPLETION BARRIER. `execute_reply` (shell) and the last iopub
-                # of the same execution race, and the reply routinely wins — which is
-                # why this used to be `sleep(0.05)`, a guess. When the guess lost, the
-                # folded snapshot persisted below was missing output that WAS already
-                # in the journal, so a reconnecting client's snapshot disagreed with
-                # what a live client had seen — a direct breach of the snapshot/delta
-                # equivalence the whole design rests on. Waiting for the kernel's own
-                # `status: idle` replaces the guess with the kernel's statement that
-                # this execution has published everything it is going to.
+                # The completion barrier (see `_await_idle`): `execute_reply`
+                # routinely beats this execution's last iopub, and persisting the
+                # fold below before that iopub lands would hand a reconnecting
+                # client a snapshot missing output a live client already saw.
                 await self._await_idle(exec_id, idle)
             finally:
                 self._shell_waiters.pop(msg_id, None)
                 self._idle_events.pop(exec_id, None)
-                # Only NOW is the parent→exec mapping dead. Dropping it any earlier
-                # would discard trailing iopub — the very bug the barrier fixes —
-                # while never dropping it (the old behaviour) leaks one entry per
-                # cell for the lifetime of the session.
+                # Only NOW is the parent→exec mapping dead: dropping it earlier
+                # discards trailing iopub, never dropping it leaks one entry per cell.
                 self._msgid_to_exec.pop(msg_id, None)
         # If the cell ended while still blocked at a prompt (interrupted, or the
         # kernel aborted input), drop the stale prompt so the client dismisses it.
@@ -958,8 +910,7 @@ class Session:
         """Wait for this cell's routed ``execute_reply``, watching for kernel death.
 
         The reply is delivered by :meth:`_shell_pump`, which already matched it on
-        ``parent_header.msg_id`` — so unlike the old version this no longer consumes
-        (and discards) other requests' replies.
+        ``parent_header.msg_id``.
 
         Polls with a timeout so that if the kernel dies mid-run (crash / OOM-kill /
         ``os._exit``) — in which case no reply is ever sent — we detect it and
@@ -1041,9 +992,11 @@ class Session:
         if fold is None:
             return  # cleared/orphaned execution: do not resurrect an output
         for p in payloads:
+            # The payload list is kernel-controlled: a malformed entry must be
+            # skipped, not allowed to kill the exec worker and wedge the queue.
             if not isinstance(p, dict):
-                continue  # payload is kernel-controlled; a bad entry must not
-            data = p.get("data")  # kill the exec worker and wedge the queue
+                continue
+            data = p.get("data")
             text = data.get("text/plain") if isinstance(data, dict) else None
             if not text:
                 continue
@@ -1136,9 +1089,8 @@ class Session:
         """Submit a batch of cells as ONE queue item (one user action). When
         ``stop_on_error`` and a cell raises, the worker skips the remaining cells
         of this batch (native "Run All" semantics — see _exec_worker).
-        ``allow_stdin`` (per user action) enables the input()/getpass() bridge —
-        a client that can present an input box opts in; CLI/default stays off so
-        an unanswered prompt can't wedge the session (ADR-050)."""
+        ``allow_stdin`` (per user action) enables the input()/getpass() bridge:
+        a client that can present an input box opts in, CLI/default stays off."""
         batch: list[tuple[str, str]] = []
         exec_ids: list[str] = []
         for cell in cells:
@@ -1202,13 +1154,10 @@ class Session:
                 "status": self.kernel_status,
                 "pid": self.kernel.pid,
                 "python": self.kernel_pyversion,
-                # This kernel is a fresh spawn under a journal that already held
-                # executions: outputs were restored but every variable is gone
-                # (host reboot / idle-GC reap). The client warns the user.
+                # Outputs restored but every variable gone (host reboot / idle-GC
+                # reap); the client warns the user, de-duping on `generation`.
                 "lost_state": self.kernel_lost_state,
                 "reattached": self.kernel.reattached,
-                # Durable id of this kernel generation; clients de-dup the
-                # lost-state warning on it rather than on the reusable pid.
                 "generation": self.kernel_generation,
             },
             "queue_len": self._queue.qsize(),
@@ -1379,10 +1328,8 @@ class Daemon:
         for s in list(self._sessions.values()):
             if self._kill_kernels_on_stop:
                 # An explicit kill-kernels shutdown (the extension does this to
-                # apply a new interpreter). The namespace really is being cleared,
-                # but the USER asked for it — journal that intent so the next
-                # `Session.start()` reports a requested reset rather than the
-                # host-reboot loss it would otherwise be indistinguishable from.
+                # apply a new interpreter): `deliberate` so the next
+                # `Session.start()` reports a requested reset, not a lost one.
                 try:
                     s._journal_lifecycle(
                         None, "tithon.kernel",
@@ -1419,8 +1366,7 @@ class Daemon:
         if s is None:
             return False
         try:
-            # deliberate: the user asked for this kernel to die, so reopening the
-            # file later must NOT warn that state was lost unexpectedly.
+            # `deliberate` so reopening the file later does not warn about a loss.
             s._journal_lifecycle(
                 None, "tithon.kernel", {"status": "killed", "deliberate": True})
         except Exception:  # pragma: no cover - defensive
@@ -1448,9 +1394,8 @@ class Daemon:
     async def _liveness_loop(self) -> None:
         """Kernel liveness watchdog: notice a kernel that died out-of-band.
 
-        Runs for the daemon's whole lifetime regardless of ``idle_timeout`` — the
-        idle-GC loop it would otherwise ride on does not exist in the default
-        configuration (see ``KERNEL_WATCHDOG_POLL``).
+        Runs for the daemon's whole lifetime regardless of ``idle_timeout``
+        (see ``KERNEL_WATCHDOG_POLL``).
         """
         while True:
             await asyncio.sleep(KERNEL_WATCHDOG_POLL)
