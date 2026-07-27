@@ -29,7 +29,10 @@ start_daemon || fail "daemon start failed"
 echo "v27: daemon up (pid $(daemon_pid)); rich-output test will drive it over $TITHON_HOME/daemon.sock"
 
 OUT="$(mktemp)"
-(cd "$EXT" && NO_COLOR=1 timeout 240 npx vitest run test/richDaemon.test.ts) >"$OUT" 2>&1
+# TITHON_TEST_DAEMON=1 is the explicit "this daemon was started for you" opt-in;
+# without it the suite refuses to attach to the shared ~/.tithon socket at all
+# (test/liveDaemon.ts). The skip guard below keeps that gate honest.
+(cd "$EXT" && NO_COLOR=1 TITHON_TEST_DAEMON=1 timeout 240 npx vitest run test/richDaemon.test.ts) >"$OUT" 2>&1
 rc=$?
 cat "$OUT"
 tests_line="$(grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+ passed' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"

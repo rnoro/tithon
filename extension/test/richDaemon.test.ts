@@ -8,18 +8,20 @@
  *   - tqdm.notebook: the widget mirror restores, and the §3.3 text fallback
  *     reconstructs the final bar from it.
  *
- * Skips unless a daemon socket is present (so plain `npm test` stays hermetic);
- * scripts/v27.sh starts the daemon and sets TITHON_HOME before running this file.
+ * Runs only against a daemon a verify script provisioned for it — scripts/v27.sh
+ * starts one in an isolated TITHON_HOME and sets TITHON_TEST_DAEMON=1. A plain
+ * `npm test` skips with a printed reason rather than attaching to whatever owns
+ * the shared ~/.tithon socket (see test/liveDaemon.ts); v27.sh fails if this
+ * suite reports itself skipped, so the gate cannot hide a regression.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync } from "fs";
-import { SessionClient, defaultSocketPath } from "../src/sessionClient";
+import { SessionClient } from "../src/sessionClient";
 import { computeCellHash } from "../src/cellAttach";
 import { imageOf, widgetModelIdOf, widgetFallbackText } from "../src/richOutput";
 import type { OutputItem } from "../src/outputFold";
+import { requireLiveDaemon } from "./liveDaemon";
 
-const SOCK = defaultSocketPath();
-const live = existsSync(SOCK);
+const { sock: SOCK, live } = requireLiveDaemon("v27 rich outputs");
 
 const MPL = "%matplotlib inline\nimport matplotlib.pyplot as plt\nplt.plot([0,1,2],[0,1,4])\nplt.show()";
 const TQDM = "from tqdm import tqdm\nimport sys\nfor i in tqdm(range(20), file=sys.stderr):\n    pass";
