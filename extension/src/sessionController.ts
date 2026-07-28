@@ -29,6 +29,7 @@ import {
   type WidgetBufferEntry,
   type WidgetState,
 } from "./richOutput";
+import { formatTraceback } from "./tracebackFormatter";
 
 /**
  * Build serializer Cells from the IN-MEMORY notebook (the authoritative cell
@@ -81,10 +82,13 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
     case "stream":
       return [vscode.NotebookCellOutputItem.text(o.text, o.name === "stderr" ? STDERR_MIME : STDOUT_MIME)];
     case "error":
+      // Strip kernel-chosen background-color ANSI (RISKS #8/T6) — it can clash
+      // with the editor's own theme; foreground/weight is left to VSCode's own
+      // ANSI renderer, which already reconciles those with the active theme.
       return [vscode.NotebookCellOutputItem.error({
         name: o.ename ?? "Error",
         message: o.evalue ?? "",
-        stack: (o.traceback ?? []).join("\n"),
+        stack: formatTraceback(o.traceback ?? []).join("\n"),
       })];
     case "display_data":
     case "execute_result": {
@@ -553,6 +557,13 @@ export class TithonNotebookController {
   // overload doesn't thrash. A pending timer is cleared on an explicit disposeLive.
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reconnectAttempts = new Map<string, number>();
+  // One withProgress notification per notebook uri, spanning the WHOLE reconnect
+  // cycle (RISKS #8/T6) — replaces a single 3s setStatusBarMessage flash, which
+  // gave no indication during a daemon restart that can take up to ~15s.
+  private readonly reconnectProgress = new Map<string, {
+    resolve: (outcome: "connected" | "cancelled") => void;
+    report: (message: string) => void;
+  }>();
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
@@ -922,6 +933,7 @@ export class TithonNotebookController {
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
+    for (const key of [...this.reconnectProgress.keys()]) this.finishReconnectProgress(key, "cancelled");
     this.wantLive.clear();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
@@ -939,7 +951,10 @@ export class TithonNotebookController {
     const session = await this.startLive(notebook);
     // A concurrent ensureLive (e.g. auto-open + executeHandler racing) may have
     // populated the map while we awaited startLive — keep the first, drop ours.
-    if (this.liveSessions.has(key)) {
+    // An explicit disposeLive (close/deselect) during the SAME await clears
+    // wantLive — the user already left, so the freshly-started session must
+    // be torn down here too, not resurrected (RISKS #8/T6).
+    if (this.liveSessions.has(key) || !this.wantLive.has(key)) {
       session.dispose();
       return;
     }
@@ -962,6 +977,7 @@ export class TithonNotebookController {
       this.reconnectTimers.delete(key);
     }
     this.reconnectAttempts.delete(key);
+    this.finishReconnectProgress(key, "cancelled"); // deliberate stop, not a fault
     const s = this.liveSessions.get(key);
     if (s) {
       s.dispose();
@@ -991,6 +1007,7 @@ export class TithonNotebookController {
     this.reconnectAttempts.set(key, attempt);
     const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
     console.log(`[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`);
+    this.reportReconnectProgress(notebook, reason, attempt, delay);
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(key);
       if (!this.wantLive.has(key)) return; // cancelled by disposeLive
@@ -1003,9 +1020,70 @@ export class TithonNotebookController {
         dead.dispose();
         this.liveSessions.delete(key);
       }
-      this.ensureLive(nb).catch(() => this.scheduleReconnect(nb, "retry")); // daemon still down: back off
+      this.ensureLive(nb).then(
+        () => {
+          // wantLive can have been cleared by a disposeLive that raced this
+          // same ensureLive() call (see its own guard) — that dispose already
+          // resolved the progress entry as "cancelled"; reporting "connected"
+          // here too would show a stale "reconnected" toast after the user
+          // already closed the notebook (RISKS #8/T6 Codex ② review).
+          if (this.wantLive.has(key)) this.finishReconnectProgress(key, "connected");
+        },
+        () => this.scheduleReconnect(nb, "retry"), // daemon still down: back off
+      );
     }, delay);
     this.reconnectTimers.set(key, timer);
+  }
+
+  /** Show (or update) the reconnect progress notification for one notebook,
+   *  covering the WHOLE cycle — first drop through eventual success or an
+   *  explicit dispose — distinguishing a real fault (kept retrying) from a
+   *  deliberate stop (`disposeLive` resolves it as "cancelled", not a failure). */
+  private reportReconnectProgress(
+    notebook: vscode.NotebookDocument, reason: string, attempt: number, delayMs: number,
+  ): void {
+    const key = notebook.uri.toString();
+    const label = kernelLabel(key);
+    const message = attempt === 1
+      ? `connection lost (${reason}) — reconnecting…`
+      : `reconnecting… (attempt ${attempt}, retry in ${Math.round(delayMs / 1000)}s)`;
+    const existing = this.reconnectProgress.get(key);
+    if (existing) {
+      existing.report(message);
+      return;
+    }
+    let pending = message;
+    let liveReport: ((m: string) => void) | undefined;
+    const entry = {
+      resolve: undefined as unknown as (outcome: "connected" | "cancelled") => void,
+      report: (m: string) => {
+        pending = m;
+        liveReport?.(m);
+      },
+    };
+    const outcome = new Promise<"connected" | "cancelled">((resolve) => {
+      entry.resolve = resolve;
+    });
+    this.reconnectProgress.set(key, entry);
+    void vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Tithon: ${label}`, cancellable: false },
+      async (progress) => {
+        liveReport = (m) => progress.report({ message: m });
+        liveReport(pending);
+        const result = await outcome;
+        progress.report({ message: result === "connected" ? "reconnected" : "disconnected" });
+        await new Promise((r) => setTimeout(r, result === "connected" ? 1000 : 700));
+      },
+    ).then(undefined, () => undefined); // never let a VSCode-side rejection go unhandled
+  }
+
+  /** Resolve and dismiss an open reconnect progress notification, if any. */
+  private finishReconnectProgress(key: string, outcome: "connected" | "cancelled"): void {
+    const entry = this.reconnectProgress.get(key);
+    if (entry) {
+      entry.resolve(outcome);
+      this.reconnectProgress.delete(key);
+    }
   }
 
   /** Restart a file's kernel (fresh namespace), then resync the live view. */
@@ -1151,6 +1229,7 @@ export class TithonNotebookController {
     // backoff so a later, independent drop reconnects promptly.
     client.onDisconnect((reason) => this.scheduleReconnect(notebook, reason));
     this.reconnectAttempts.delete(notebook.uri.toString());
+    this.finishReconnectProgress(notebook.uri.toString(), "connected");
     // Surface the kernel's Python version on the controller (the picker/indicator
     // showed only "Tithon"; now "Tithon · Python 3.11.5").
     this.applyKernelLabel(client.kernelInfo()?.python ?? null);
@@ -1263,6 +1342,13 @@ export class TithonNotebookController {
   hasPendingFlush(notebook: vscode.NotebookDocument): boolean {
     return this.liveSessions.get(notebook.uri.toString())?.hasPendingFlush() ?? false;
   }
+
+  /** True while an auto-reconnect progress notification is open for this
+   *  notebook (RISKS #8/T6) — lets a test confirm the indicator actually
+   *  appears during a real disconnect/reconnect cycle. */
+  reconnectProgressActive(notebook: vscode.NotebookDocument): boolean {
+    return this.reconnectProgress.has(notebook.uri.toString());
+  }
 }
 
 /** A readable name for a session id (file uri) in the kernel picker. */
@@ -1345,6 +1431,12 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     vscode.commands.registerCommand("tithon._hasPendingFlush", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       return nb ? controller.hasPendingFlush(nb) : false;
+    }),
+    // Test-only: whether a reconnect progress notification (RISKS #8/T6) is
+    // currently open for the active notebook.
+    vscode.commands.registerCommand("tithon._reconnectProgressActive", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.reconnectProgressActive(nb) : false;
     }),
     // Test-only: lets the integration suite confirm the widget renderer painted
     // html (vs the text fallback) and applied live animation updates.
