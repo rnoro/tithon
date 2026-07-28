@@ -1287,8 +1287,30 @@ export class TithonNotebookController {
     // Prefetch image bytes for the snapshot so seedCell renders matplotlib
     // figures synchronously below (and not as a "<Figure ...>" placeholder).
     // Events arriving during this await are captured by outputsOf() at seed time
-    // and live events are wired only afterwards — no gap, no duplication.
+    // and live events are wired only afterwards — no gap, no duplication FOR
+    // EXECUTIONS ALREADY IN `execs` (that claim covers output bytes on a
+    // known execution growing mid-prefetch, not a BRAND NEW execution).
     await sink.prefetch(execs.flatMap((e) => client.outputsOf(e.execId)));
+    // A concurrent client (another window, or the CLI) can submit a NEW
+    // execution on this SHARED session while the prefetch above was
+    // awaiting: client.executions() already reflects it (SessionClient's own
+    // message handling runs independently of whether onEvent is wired below),
+    // but the `execs` snapshot taken before the await, and the seed/prefetch
+    // already done, do not. Without this, that execution's live events would
+    // arrive with nothing seeded to route them to and be silently dropped —
+    // the cell never shows the run at all (RISKS #6's bootstrap race, found
+    // by an Opus 5 review of this session's other work; verified end to end
+    // by v50/ADR-081's own two-client-one-session precedent). One re-check
+    // pass, not a loop-until-stable — narrows the window to "another
+    // execution arrives during THIS second prefetch too", vanishingly
+    // unlikely relative to the window this closes.
+    const seenExecIds = new Set(execs.map((e) => e.execId));
+    const lateExecs = client.executions().filter((e) => !seenExecIds.has(e.execId));
+    if (lateExecs.length) {
+      live.seed(lateExecs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));
+      await sink.prefetch(lateExecs.flatMap((e) => client.outputsOf(e.execId)));
+      execs.push(...lateExecs);
+    }
     // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
     // STATE+timing into the cell NOW, before wiring live events — a done cell
     // shows ✓ with its real duration, a running cell shows the spinner started at

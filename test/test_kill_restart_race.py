@@ -8,6 +8,16 @@ NEW Session for the same id gets created on the next lookup. Both `_kill_session
 and `restart_kernel` now share `_restart_lock`, and a restart that loses the
 race (sees `_killed`) raises `SessionKilledError` instead of respawning.
 
+A first version of this fix acquired `_restart_lock` AFTER popping from
+`_sessions` in `_kill_session`/`_gc_sweep` — which widened a DIFFERENT window:
+the id was absent from the manager (so `_get_session()` would spawn a SECOND
+Session for it) for however long a concurrent restart happened to hold the
+lock, up to its 120s kernel-ready timeout, instead of the near-instant window
+the original unlocked code had. An adversarial Opus 5 review caught this
+after the first fix already landed. The corrected order — acquire the lock
+FIRST, mark `_killed` and pop the id in the SAME critical section — is what
+`test_kill_never_widens_removal_window` below pins.
+
 These tests stub out the real kernel machinery (`_restart_kernel_inner`,
 `Session.stop`) to isolate the LOCKING behavior from kernel-spawn cost/timing —
 the race is about which coroutine's body runs when, not about ipykernel itself.
@@ -123,3 +133,49 @@ def test_kill_first_makes_racing_restart_bail(tmp_path):
     asyncio.run(run_both())
     assert not entered_inner, "respawn body must never run once kill won the race"
     assert "default" not in d._sessions
+
+
+def test_kill_never_widens_removal_window(tmp_path):
+    """The session id must stay visible in `d._sessions` for the ENTIRE time a
+    concurrent kill_session is blocked waiting for an in-flight restart's
+    lock. Popping the id BEFORE acquiring the lock (an earlier version of
+    this fix) leaves it absent from the manager while the Session object is
+    still alive and un-killed — a lookup during that window would spawn a
+    SECOND Session on the same session_dir (duplicate pumps, exec_id
+    collisions). Caught by an adversarial Opus 5 review after the first
+    version of this fix already landed."""
+    tmp_path_a = tmp_path / "a"
+    s = make_session(tmp_path_a)
+    d = Daemon(tmp_path / "home", tmp_path / "work")
+    d._sessions["default"] = s
+
+    visible_during_restart: list[bool] = []
+
+    async def fake_inner():
+        # Sample manager visibility repeatedly while holding _restart_lock —
+        # a concurrent kill_session should be blocked on the SAME lock this
+        # whole time, unable to have popped `s` yet.
+        for _ in range(5):
+            visible_during_restart.append(d._sessions.get("default") is s)
+            await asyncio.sleep(0.01)
+        return 4321
+
+    async def fake_stop(kill_kernel: bool = False) -> None:
+        return None
+
+    s._restart_kernel_inner = fake_inner  # type: ignore[method-assign]
+    s.stop = fake_stop  # type: ignore[method-assign]
+    s._journal_lifecycle = lambda *a, **k: None  # type: ignore[method-assign]
+
+    async def run_both():
+        await asyncio.gather(s.restart_kernel(), d._kill_session("default"))
+
+    asyncio.run(run_both())
+
+    assert visible_during_restart, "restart body never ran"
+    assert all(visible_during_restart), (
+        "the session id must remain in d._sessions for the WHOLE duration a "
+        "concurrent kill is blocked waiting for the restart lock — otherwise "
+        f"a lookup during that window would spawn a duplicate Session: {visible_during_restart}"
+    )
+    assert "default" not in d._sessions  # kill completed once restart released the lock

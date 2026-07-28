@@ -243,12 +243,19 @@ class Session:
         # the user's own restart as a crash.
         self._restarting = False
         self._restart_lock = asyncio.Lock()
-        # Set once this session has been popped from SessionManager._sessions
-        # (kill_kernel or idle-GC), under this SAME lock. A connection binds its
-        # `session` reference once (see `_handler`) and never re-resolves it, so a
-        # restart request already in flight on a just-removed session must not
-        # respawn — that would leave a kernel/pump pair orphaned outside the
-        # manager while a fresh session/kernel gets created for the next lookup.
+        # Set (under `_restart_lock`, BEFORE the session is popped from
+        # SessionManager._sessions — see `_kill_session`/`_gc_sweep`) once this
+        # session has been killed or idle-GC'd. A connection binds its
+        # `session` reference once (see `_handler`) and never re-resolves it,
+        # so a restart request already in flight on a just-removed session
+        # must not respawn — that would leave a kernel/pump pair orphaned
+        # outside the manager while a fresh session/kernel gets created for
+        # the next lookup. Marking `_killed` and popping the id happen inside
+        # the SAME lock acquisition, atomically from `_get_session()`'s
+        # perspective — never mark-then-pop-later or pop-then-mark-later,
+        # either ordering reopens a window where the id is either absent
+        # while still alive (a second Session gets spawned for it) or present
+        # but silently dead (a new connection binds to a corpse).
         self._killed = False
 
     # -- lifecycle -----------------------------------------------------------
@@ -1407,14 +1414,31 @@ class Daemon:
         if not session_id:
             return False
         async with self._sessions_lock:
-            s = self._sessions.pop(session_id, None)
+            s = self._sessions.get(session_id)
         if s is None:
             return False
-        # Share the session's own restart lock with restart_kernel(): a restart
-        # already in flight on this (now-removed) session must finish — or see
-        # `_killed` and bail — before kill tears it down, never concurrently.
+        # Acquire the session's OWN restart lock before removing it from the
+        # manager — not after. Popping first (an earlier version of this fix)
+        # left a window, bounded by however long a CONCURRENT restart_kernel()
+        # holds this lock (up to its 120s kernel-ready wait), where the id was
+        # absent from `_sessions` while `s` was still alive and un-killed;
+        # `_get_session()` during that window found nothing and spawned a
+        # SECOND Session on the same session_dir/journal/kernel files
+        # (duplicate pumps, exec_id collisions). Holding the lock FIRST makes
+        # "marked `_killed`" and "removed from the manager" atomic from
+        # `_get_session()`'s perspective — the id stays visible (and bindable,
+        # a pre-existing tolerated race — see `_killed`'s docstring) right up
+        # until the moment it is marked killed and popped in the same breath.
         async with s._restart_lock:
+            if s._killed:
+                return True  # a concurrent kill/GC already finished this one
             s._killed = True
+            async with self._sessions_lock:
+                # Only remove if we're still the current object for this id —
+                # a concurrent GC sweep could have already popped+replaced it
+                # while this call was waiting for the lock.
+                if self._sessions.get(session_id) is s:
+                    self._sessions.pop(session_id)
             try:
                 # `deliberate` so reopening the file later does not warn about a loss.
                 s._journal_lifecycle(
@@ -1471,16 +1495,23 @@ class Daemon:
         for sid, s in list(self._sessions.items()):
             if not s.gc_eligible(self.idle_timeout):
                 continue
-            idle = int(s.idle_seconds())
-            async with self._sessions_lock:
-                # Re-check under the lock: an attach/execute may have landed
-                # between the scan and acquiring the lock.
-                if self._sessions.get(sid) is not s or not s.gc_eligible(self.idle_timeout):
-                    continue
-                self._sessions.pop(sid)
-            # Same exclusion as `_kill_session` — see its comment.
+            # Lock ordering matches `_kill_session` (see its comment): acquire
+            # the session's OWN restart lock BEFORE removing it from the
+            # manager, not after, so the id is never absent from `_sessions`
+            # while `s` is still alive and un-killed.
             async with s._restart_lock:
+                if s._killed:
+                    continue  # already reaped/killed by a concurrent pass
+                # Re-check eligibility now that the lock is actually held: an
+                # attach/execute (or a restart that just finished) may have
+                # landed while this call waited for it.
+                if not s.gc_eligible(self.idle_timeout):
+                    continue
+                idle = int(s.idle_seconds())
                 s._killed = True
+                async with self._sessions_lock:
+                    if self._sessions.get(sid) is s:
+                        self._sessions.pop(sid)
                 # Journal the reap so the next client to open this file can see the
                 # kernel was reclaimed (delta replay), mirroring the "killed" event.
                 try:
