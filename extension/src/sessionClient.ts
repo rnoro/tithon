@@ -422,6 +422,13 @@ export class SessionClient {
           ...(this.kernelInfoData ?? {}),
           status: "idle",
           pid: ev.payload?.pid ?? this.kernelInfoData?.pid ?? null,
+          // The daemon opens a generation with the lifecycle event's own journal
+          // seq (see `Session.kernel_generation`); this event's `ev.seq` IS that
+          // number. Without this, `warnKernelDied()`'s de-dup-by-generation stays
+          // pinned to the generation this client last attached at, so a second
+          // kernel death — after another client restarted it in between — reads
+          // as a duplicate of the first and never warns.
+          generation: ev.seq,
         };
       }
       return;

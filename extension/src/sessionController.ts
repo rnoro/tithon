@@ -549,7 +549,22 @@ export class TithonNotebookController {
   // as sessionClient's own mirror — a window spanning several comm_msg frames must
   // not let an earlier frame's buffer silently drop just because a later frame in
   // the SAME window only touched JSON state (RISKS #13).
-  private readonly widgetUpdateBuf = new Map<string, { state: Record<string, unknown>; buffers: WidgetBufferEntry[] }>();
+  // Keyed by owner+comm_id (NOT bare comm_id): two DIFFERENT notebooks' kernels
+  // are independent processes, so their ipywidgets comm_ids are independently
+  // UUID-generated and collide only in theory — but keying on comm_id alone
+  // would still let a same-window update from notebook B silently merge into
+  // (and overwrite the `owner` of) notebook A's pending entry, defeating
+  // disposeLive()'s purge for A (Codex ② caught this in the first draft).
+  // `owner` is the notebook uri string that produced this comm's update — kept so
+  // disposeLive() can purge only its own entries out of this GLOBAL (cross-notebook)
+  // buffer before the shared 50ms timer flushes; see `invalidateWidgetUpdatesFor`.
+  private readonly widgetUpdateBuf = new Map<string, { owner: string; commId: string; state: Record<string, unknown>; buffers: WidgetBufferEntry[] }>();
+
+  // NUL-separated: neither a uri nor a comm_id can contain one, so this can't
+  // collide the way a printable separator (or bare comm_id) theoretically could.
+  private widgetBufKey(owner: string, commId: string): string {
+    return `${owner}\u0000${commId}`;
+  }
   private widgetFlushTimer: ReturnType<typeof setTimeout> | null = null;
   // Auto-reconnect bookkeeping (per notebook uri). When the daemon drops a live
   // client (backpressure / restart / crash — ADR-018), we re-attach and resync
@@ -653,25 +668,37 @@ export class TithonNotebookController {
 
   /** Coalesce a live comm-state delta for the widget renderer (latest per comm id). */
   private queueWidgetUpdate(
+    owner: string,
     payload: { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] } | undefined,
   ): void {
     if (payload?.msg_type !== "comm_msg" || !payload.comm_id) return;
     const data = payload.data ?? {};
     if (data.method !== "update" && data.method !== "echo_update") return;
-    const prior = this.widgetUpdateBuf.get(payload.comm_id);
+    const key = this.widgetBufKey(owner, payload.comm_id);
+    const prior = this.widgetUpdateBuf.get(key);
     const state = { ...(prior?.state ?? {}), ...(data.state ?? {}) };
     const delta = decodeBufferEntries(data.buffer_paths, payload._buffers_b64);
     const buffers = delta.length ? mergeBufferEntries(prior?.buffers, delta) : (prior?.buffers ?? []);
-    this.widgetUpdateBuf.set(payload.comm_id, { state, buffers });
+    this.widgetUpdateBuf.set(key, { owner, commId: payload.comm_id, state, buffers });
     if (!this.widgetFlushTimer) {
       this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
+    }
+  }
+
+  /** Drop a disposed live session's own pending widget deltas out of the shared
+   * buffer, so its already-scheduled flush can't `postMessage` a stale update
+   * after detach/restart (RISKS #7 finding 2 — the buffer/timer are global across
+   * notebooks, `disposeLive` alone left them armed). */
+  private invalidateWidgetUpdatesFor(owner: string): void {
+    for (const [key, entry] of this.widgetUpdateBuf) {
+      if (entry.owner === owner) this.widgetUpdateBuf.delete(key);
     }
   }
 
   /** Push the coalesced widget deltas to the renderer so live widgets animate. */
   private flushWidgetUpdates(): void {
     this.widgetFlushTimer = null;
-    for (const [comm_id, { state, buffers }] of this.widgetUpdateBuf) {
+    for (const { commId: comm_id, state, buffers } of this.widgetUpdateBuf.values()) {
       // Omit `buffers` entirely (not `[]`) when there's nothing to carry —
       // symmetric with the daemon's own wire choice (event_from_message omits
       // `_buffers_b64` when absent) and keeps the overwhelmingly common
@@ -978,6 +1005,7 @@ export class TithonNotebookController {
     }
     this.reconnectAttempts.delete(key);
     this.finishReconnectProgress(key, "cancelled"); // deliberate stop, not a fault
+    this.invalidateWidgetUpdatesFor(key);
     const s = this.liveSessions.get(key);
     if (s) {
       s.dispose();
@@ -1293,8 +1321,18 @@ export class TithonNotebookController {
       live.onEvent(ev);
       // Comm deltas drive live widget animation: forward state patches to the
       // renderer (the display_data already rendered the widget; this just updates
-      // the model so e.g. a tqdm.notebook bar fills in real time).
-      if (ev.kind === "widget") this.queueWidgetUpdate(ev.payload);
+      // the model so e.g. a tqdm.notebook bar fills in real time). The daemon can
+      // still deliver a few more events during ws.close()'s handshake window (data
+      // already in flight when disposeLive() ran) — `invalidateWidgetUpdatesFor`
+      // only purges what's ALREADY buffered at that instant, so a late arrival
+      // must be rejected at the SOURCE too, not just cleaned up after queuing.
+      // `disposeLive()` deletes from `liveSessions` synchronously as its last
+      // step, so this reads the CURRENT state, not a snapshot from when onEvent
+      // was registered (RISKS #7 finding 2, follow-up after Codex ② caught the
+      // owner-tagging fix alone was insufficient).
+      if (ev.kind === "widget" && this.liveSessions.has(notebook.uri.toString())) {
+        this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
+      }
       // The daemon's watchdog observed this kernel die out-of-band (no cell was
       // running, so nothing else would ever tell the user).
       if (ev.kind === "kernel" && ev.payload?.status === "dead") {
@@ -1348,6 +1386,15 @@ export class TithonNotebookController {
    *  appears during a real disconnect/reconnect cycle. */
   reconnectProgressActive(notebook: vscode.NotebookDocument): boolean {
     return this.reconnectProgress.has(notebook.uri.toString());
+  }
+
+  /** True while the shared widget-update coalescing timer is armed — the
+   *  precondition RISKS #7's finding-2 regression test needs before disposing,
+   *  matching `hasPendingFlush`'s pattern (poll for the real precondition
+   *  instead of inferring timing). Global, not per-notebook, like the buffer
+   *  itself (`widgetUpdateBuf`). */
+  hasPendingWidgetFlush(): boolean {
+    return this.widgetFlushTimer !== null;
   }
 }
 
@@ -1442,6 +1489,24 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     // html (vs the text fallback) and applied live animation updates.
     vscode.commands.registerCommand("tithon._widgetRenderLog", () => controller.widgetRenders),
     vscode.commands.registerCommand("tithon._widgetUpdateCount", () => controller.widgetUpdatesApplied),
+    // Test-only: whether the shared widget-update coalescing timer is currently
+    // armed — RISKS #7 finding-2 regression test polls this to catch a
+    // genuinely pending flush before disposing, same pattern as _hasPendingFlush.
+    vscode.commands.registerCommand("tithon._hasPendingWidgetFlush", () => controller.hasPendingWidgetFlush()),
+    // Test-only: check-and-dispose in ONE command, so nothing can fire the
+    // 50ms widget-flush timer in the gap between observing "pending" and
+    // tearing down — a gap that exists only because two separate
+    // test-runner<->extension-host IPC round trips (poll, then dispose) are
+    // slow relative to a 50ms window, not because the real close/deselect
+    // path is. Also returns the applied-update count AT the dispose instant
+    // (not via a follow-up round trip) so the caller's baseline can't itself
+    // race past legitimate updates that applied while polling.
+    vscode.commands.registerCommand("tithon._disposeLiveIfPendingWidgetFlush", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb || !controller.hasPendingWidgetFlush()) return { disposed: false };
+      controller.disposeLive(nb.uri);
+      return { disposed: true, countAtDispose: controller.widgetUpdatesApplied };
+    }),
     // Test-only: cell indices with an open proxy execution for the active notebook
     // (a cleared/orphaned cell lingering here is the stuck-spinner bug).
     vscode.commands.registerCommand("tithon._activeExecCells", () => {
