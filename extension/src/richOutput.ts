@@ -78,6 +78,14 @@ export function widgetModelIdOf(item: OutputItem): string | undefined {
   return view && typeof view.model_id === "string" ? view.model_id : undefined;
 }
 
+/** One binary buffer, base64-encoded — the shape `WidgetMirror.snapshot()`
+ *  (daemon) and html-manager's `set_state()` both use for a widget's binary
+ *  trait values (e.g. `Image.value`), kept out of the JSON `state`. */
+export interface WidgetBufferEntry {
+  encoding: string;
+  path: (string | number)[];
+  data: string;
+}
 /** The canonical `widget-state+json` snapshot shape the daemon mirror emits
  *  (also the shape a live client builds incrementally from comm events). */
 export interface WidgetStateEntry {
@@ -85,8 +93,54 @@ export interface WidgetStateEntry {
   model_module?: string;
   model_module_version?: string;
   state?: Record<string, unknown>;
-  buffers?: unknown[];
+  buffers?: WidgetBufferEntry[];
 }
+/**
+ * Decode a comm event's `_buffers_b64` (daemon-forwarded, base64) into
+ * {@link WidgetBufferEntry} entries keyed by their `buffer_paths`. Tolerates
+ * a length mismatch between the two arrays (zips to the shorter) rather than
+ * throwing — the daemon's own `_merge_buffers` is equally lenient (RISKS #13
+ * Codex ④ review, finding 4).
+ */
+export function decodeBufferEntries(
+  bufferPaths: unknown,
+  buffersB64: string[] | undefined,
+): WidgetBufferEntry[] {
+  if (!Array.isArray(bufferPaths) || !buffersB64?.length) return [];
+  const n = Math.min(bufferPaths.length, buffersB64.length);
+  const out: WidgetBufferEntry[] = [];
+  for (let i = 0; i < n; i++) {
+    const path = bufferPaths[i];
+    if (!Array.isArray(path)) continue;
+    out.push({ encoding: "base64", path, data: buffersB64[i] });
+  }
+  return out;
+}
+
+function bufferPathKey(path: (string | number)[]): string {
+  return JSON.stringify(path);
+}
+
+/**
+ * Merge new buffer entries into a model's existing ones BY PATH — matching
+ * the daemon's `WidgetMirror._merge_buffers`: a path present in `next`
+ * replaces the prior entry at that path; every other path is left untouched.
+ * ipywidgets' own comm protocol only resends buffers that actually changed
+ * (RISKS #13), so replacing the whole array would silently drop unrelated,
+ * still-current buffers (e.g. a size update on an Image widget must not wipe
+ * its still-valid pixel data).
+ */
+export function mergeBufferEntries(
+  prev: WidgetBufferEntry[] | undefined,
+  next: WidgetBufferEntry[],
+): WidgetBufferEntry[] {
+  if (!next.length) return prev ?? [];
+  const merged = new Map<string, WidgetBufferEntry>();
+  for (const b of prev ?? []) merged.set(bufferPathKey(b.path), b);
+  for (const b of next) merged.set(bufferPathKey(b.path), b);
+  return [...merged.values()];
+}
+
 export interface WidgetState {
   version_major?: number;
   version_minor?: number;

@@ -7,9 +7,10 @@
  * render-before-state race). On any failure it degrades to the §3.3 text fallback.
  *
  * Live updates: the extension host pushes `tithon.widget-update` messages (comm
- * state deltas) over the renderer channel; we apply them to the live model so a
- * tqdm.notebook bar animates. We report the render outcome back so the host (and
- * verify) can confirm html vs fallback.
+ * state deltas, optionally carrying binary buffers — RISKS #13) over the renderer
+ * channel; we apply them to the live model so a tqdm.notebook bar animates, or an
+ * Image widget's live-updating pixels stay current. We report the render outcome
+ * back so the host (and verify) can confirm html vs fallback.
  *
  * Bundled by esbuild (platform=browser, format=esm) into dist/widgetRenderer.js;
  * the render logic itself is covered under jsdom by test/widget.test.ts.
@@ -20,6 +21,7 @@ import {
   renderFallbackText,
   type WidgetStateSnapshot,
 } from "./widgetRender";
+import type { WidgetBufferEntry } from "./richOutput";
 import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
@@ -45,6 +47,7 @@ interface UpdateMessage {
   type: "tithon.widget-update";
   comm_id: string;
   state: Record<string, unknown>;
+  buffers?: WidgetBufferEntry[];
 }
 
 let cssInjected = false;
@@ -64,22 +67,49 @@ export const activate: ActivationFunction = (context) => {
   injectCss();
   // Live managers by output-item id, so a comm update reaches the right widget.
   const managers = new Map<string, HTMLManager>();
+  // Per (output-item, comm_id) promise chain: `set_state()` is async, and a
+  // fire-and-forget call per message let an OLDER update's promise resolve
+  // AFTER a newer one — restoring stale state/buffers — whenever two
+  // `tithon.widget-update` messages for the same model arrived close together
+  // (RISKS #13 Codex ② review, finding 1). Chaining off the prior promise for
+  // the SAME (item, comm_id) pair enforces arrival order without blocking
+  // updates to a DIFFERENT model.
+  const updateChains = new Map<string, Promise<void>>();
 
   context.onDidReceiveMessage?.((msg: unknown) => {
     const m = msg as UpdateMessage;
     if (!m || m.type !== "tithon.widget-update") return;
-    for (const mgr of managers.values()) {
-      // The patch targets one comm id; managers without it resolve to undefined.
-      void mgr
-        .get_model(m.comm_id)
-        .then((model) => {
-          if (!model) return;
-          (model as unknown as { set_state(s: unknown): void }).set_state(m.state);
+    for (const [itemId, mgr] of managers) {
+      // The patch targets one comm id; managers without it are left alone.
+      const withHasModel = mgr as HTMLManager & { has_model(id: string): boolean };
+      if (!withHasModel.has_model(m.comm_id)) continue;
+      const chainKey = `${itemId}:${m.comm_id}`;
+      const prior = updateChains.get(chainKey) ?? Promise.resolve();
+      const next = prior
+        .then(() =>
+          // Route through the manager's OWN set_state — the exact machinery
+          // that already restores buffers correctly for the initial full
+          // snapshot (renderWidget below). For an EXISTING model it
+          // deserializes only the attributes present in `m.state` (a delta)
+          // and calls the model's own set(), which merges just those keys —
+          // buffer-bearing or not — leaving every other trait (including
+          // buffers not mentioned in this delta) untouched. Calling
+          // `model.set_state()` directly (the old code) skipped this
+          // deserialize step entirely, so a buffer-bearing update never
+          // reached the model (RISKS #13).
+          mgr.set_state({
+            version_major: 2,
+            version_minor: 0,
+            state: { [m.comm_id]: { state: m.state, buffers: m.buffers ?? [] } },
+          } as unknown as Parameters<HTMLManager["set_state"]>[0]),
+        )
+        .then(() => {
           // Confirm the live update landed (drives the animated bar) so the host
           // (and verify) can see the live path working end-to-end.
           context.postMessage?.({ type: "tithon.widget-updated", comm_id: m.comm_id });
         })
         .catch(() => undefined);
+      updateChains.set(chainKey, next);
     }
   });
 
@@ -108,6 +138,9 @@ export const activate: ActivationFunction = (context) => {
     },
     disposeOutputItem(id: string) {
       managers.delete(id);
+      for (const key of [...updateChains.keys()]) {
+        if (key.startsWith(`${id}:`)) updateChains.delete(key);
+      }
     },
   };
 };

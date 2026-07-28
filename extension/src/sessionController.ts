@@ -24,6 +24,9 @@ import {
   widgetFallbackText,
   widgetPayload,
   TITHON_WIDGET_MIME,
+  decodeBufferEntries,
+  mergeBufferEntries,
+  type WidgetBufferEntry,
   type WidgetState,
 } from "./richOutput";
 
@@ -538,7 +541,11 @@ export class TithonNotebookController {
   readonly lastSeedTrace = new Map<string, Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }>>();
   // Coalesced live widget-state deltas pushed to the renderer (latest per comm id,
   // flushed ~50ms) so a 50k-update tqdm.notebook animates without flooding it.
-  private readonly widgetUpdateBuf = new Map<string, Record<string, unknown>>();
+  // Buffers merge BY PATH across the coalescing window (mergeBufferEntries), same
+  // as sessionClient's own mirror — a window spanning several comm_msg frames must
+  // not let an earlier frame's buffer silently drop just because a later frame in
+  // the SAME window only touched JSON state (RISKS #13).
+  private readonly widgetUpdateBuf = new Map<string, { state: Record<string, unknown>; buffers: WidgetBufferEntry[] }>();
   private widgetFlushTimer: ReturnType<typeof setTimeout> | null = null;
   // Auto-reconnect bookkeeping (per notebook uri). When the daemon drops a live
   // client (backpressure / restart / crash — ADR-018), we re-attach and resync
@@ -634,12 +641,17 @@ export class TithonNotebookController {
   }
 
   /** Coalesce a live comm-state delta for the widget renderer (latest per comm id). */
-  private queueWidgetUpdate(payload: { msg_type?: string; comm_id?: string; data?: any } | undefined): void {
+  private queueWidgetUpdate(
+    payload: { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] } | undefined,
+  ): void {
     if (payload?.msg_type !== "comm_msg" || !payload.comm_id) return;
     const data = payload.data ?? {};
     if (data.method !== "update" && data.method !== "echo_update") return;
-    const merged = { ...(this.widgetUpdateBuf.get(payload.comm_id) ?? {}), ...(data.state ?? {}) };
-    this.widgetUpdateBuf.set(payload.comm_id, merged);
+    const prior = this.widgetUpdateBuf.get(payload.comm_id);
+    const state = { ...(prior?.state ?? {}), ...(data.state ?? {}) };
+    const delta = decodeBufferEntries(data.buffer_paths, payload._buffers_b64);
+    const buffers = delta.length ? mergeBufferEntries(prior?.buffers, delta) : (prior?.buffers ?? []);
+    this.widgetUpdateBuf.set(payload.comm_id, { state, buffers });
     if (!this.widgetFlushTimer) {
       this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
     }
@@ -648,8 +660,15 @@ export class TithonNotebookController {
   /** Push the coalesced widget deltas to the renderer so live widgets animate. */
   private flushWidgetUpdates(): void {
     this.widgetFlushTimer = null;
-    for (const [comm_id, state] of this.widgetUpdateBuf) {
-      void this.widgetMessaging.postMessage({ type: "tithon.widget-update", comm_id, state });
+    for (const [comm_id, { state, buffers }] of this.widgetUpdateBuf) {
+      // Omit `buffers` entirely (not `[]`) when there's nothing to carry —
+      // symmetric with the daemon's own wire choice (event_from_message omits
+      // `_buffers_b64` when absent) and keeps the overwhelmingly common
+      // JSON-only postMessage payload exactly as small as before RISKS #13.
+      const msg: { type: string; comm_id: string; state: Record<string, unknown>; buffers?: typeof buffers } =
+        { type: "tithon.widget-update", comm_id, state };
+      if (buffers.length) msg.buffers = buffers;
+      void this.widgetMessaging.postMessage(msg);
     }
     this.widgetUpdateBuf.clear();
   }

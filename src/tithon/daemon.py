@@ -775,9 +775,10 @@ class Session:
         seq = self.journal.append_message(exec_id, msg_type, stored)
         self._mirror.apply(msg_type, content, buffers)
         # Same builder as the attach-backlog path (ADR-083), so a live and a
-        # resuming client get the identical frame for this row. Carrying the comm
-        # data is what animates a tqdm.notebook bar live rather than only on
-        # reconnect; binary buffers ride the snapshot, not the delta.
+        # resuming client get the identical frame for this row — including any
+        # `_buffers_b64` on `stored`, which event_from_message forwards when
+        # present (RISKS #13). Carrying the comm data is what animates a
+        # tqdm.notebook bar live rather than only on reconnect.
         self._broadcast(event_from_message(seq, exec_id, msg_type, stored))
 
     async def _stdin_pump(self) -> None:

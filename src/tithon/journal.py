@@ -78,19 +78,23 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
     "widget"``, the resuming one would silently stop mirroring.
     """
     if is_comm(msg_type):
-        # Binary buffers are deliberately NOT carried on the delta frame — the
-        # widget-state snapshot is what restores them (SPEC §3.4). `_buffers_b64`
-        # lives at the top level of the stored row, so reading comm_id/data yields
-        # the identical payload whether this is called with the raw content or the
-        # journaled one.
-        return {
-            "op": "event", "seq": seq, "exec_id": exec_id, "kind": "widget",
-            "payload": {
-                "msg_type": msg_type,
-                "comm_id": content.get("comm_id"),
-                "data": content.get("data"),
-            },
+        # `_buffers_b64` lives at the top level of the stored row (added by
+        # _handle_comm only when the message actually carried buffers), so
+        # reading it yields the identical payload whether this is called with
+        # the raw content or the journaled one — forwarded here whenever
+        # present (RISKS #13: a widget with partly-binary state, e.g. Image,
+        # must not go stale between reconnects). `data.buffer_paths` — which
+        # says WHERE those bytes go — already rides inside `data`, forwarded
+        # below unchanged.
+        payload = {
+            "msg_type": msg_type,
+            "comm_id": content.get("comm_id"),
+            "data": content.get("data"),
         }
+        buffers_b64 = content.get("_buffers_b64")
+        if buffers_b64:
+            payload["_buffers_b64"] = buffers_b64
+        return {"op": "event", "seq": seq, "exec_id": exec_id, "kind": "widget", "payload": payload}
     if msg_type.startswith("tithon."):
         kind = msg_type.split(".", 1)[1]
         payload = content
