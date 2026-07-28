@@ -4,6 +4,7 @@ import {
   imageRefsOf,
   widgetModelIdOf,
   widgetFallbackText,
+  isDisplayOnlyWidget,
   WIDGET_VIEW_MIME,
   type WidgetState,
 } from "../src/richOutput";
@@ -75,5 +76,57 @@ describe("widget text fallback (design §3.3)", () => {
   it("returns undefined for an unknown model (fresh live run -> fall back to text/plain)", () => {
     expect(widgetFallbackText("missing", tqdmWidgets)).toBeUndefined();
     expect(widgetFallbackText("hbox", null)).toBeUndefined();
+  });
+});
+
+describe("interactive-widget allow-list (RISKS #4/T8: no client -> kernel comm yet)", () => {
+  it("a display-only container (tqdm.notebook's HBox of HTML+Progress) is safe to render", () => {
+    expect(isDisplayOnlyWidget("hbox", tqdmWidgets)).toBe(true);
+  });
+
+  it("a bare progress widget is safe to render", () => {
+    const w: WidgetState = { state: { p: { state: { _model_name: "IntProgressModel", value: 3, max: 10 } } } };
+    expect(isDisplayOnlyWidget("p", w)).toBe(true);
+  });
+
+  it("an interactive control (IntSlider) is NOT safe to render", () => {
+    const w: WidgetState = { state: { s: { state: { _model_name: "IntSliderModel", value: 3 } } } };
+    expect(isDisplayOnlyWidget("s", w)).toBe(false);
+  });
+
+  it("a container holding even one interactive child is NOT safe (the child would still swallow input)", () => {
+    const w: WidgetState = {
+      state: {
+        box: { state: { _model_name: "VBoxModel", children: ["IPY_MODEL_html", "IPY_MODEL_btn"] } },
+        html: { state: { _model_name: "HTMLModel", value: "label" } },
+        btn: { state: { _model_name: "ButtonModel", description: "Click me" } },
+      },
+    };
+    expect(isDisplayOnlyWidget("box", w)).toBe(false);
+  });
+
+  it("an unrecognized/unknown model fails closed (not on the allow-list, or missing from the mirror)", () => {
+    expect(isDisplayOnlyWidget("s", { state: { s: { state: { _model_name: "SomeFutureWidgetModel" } } } })).toBe(false);
+    expect(isDisplayOnlyWidget("missing", tqdmWidgets)).toBe(false);
+    expect(isDisplayOnlyWidget("hbox", null)).toBe(false);
+  });
+
+  it("a self-referential children cycle does not infinite-loop", () => {
+    const w: WidgetState = {
+      state: { a: { state: { _model_name: "BoxModel", children: ["IPY_MODEL_a"] } } },
+    };
+    expect(isDisplayOnlyWidget("a", w)).toBe(true);
+  });
+
+  it("an OutputModel is NOT allow-listed — its outputs can nest another widget-view outside children", () => {
+    const w: WidgetState = { state: { o: { state: { _model_name: "OutputModel", outputs: [] } } } };
+    expect(isDisplayOnlyWidget("o", w)).toBe(false);
+  });
+
+  it("a malformed (non-array) children value fails closed instead of being treated as childless", () => {
+    const w: WidgetState = {
+      state: { box: { state: { _model_name: "BoxModel", children: "IPY_MODEL_html" } } },
+    };
+    expect(isDisplayOnlyWidget("box", w)).toBe(false);
   });
 });
