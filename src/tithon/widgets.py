@@ -21,7 +21,33 @@ from __future__ import annotations
 import base64
 
 WIDGET_TARGET = "jupyter.widget"
-_COMM_TYPES = ("comm_open", "comm_msg", "comm_close")
+#: Public — the single authority for "is this a comm message", shared by
+#: `is_comm()` and `journal.comm_messages_after()`'s SQL filter, so the two
+#: can never silently diverge on a future addition (RISKS #9a Codex review).
+COMM_TYPES = ("comm_open", "comm_msg", "comm_close")
+
+
+def _is_state_shaped(data: dict) -> bool:
+    """True iff `data["state"]` (when present) is dict-shaped and
+    `data["buffer_paths"]` (when present) is a list of hashable paths —
+    exactly what `apply()`'s mutation needs to not raise. A comm message is
+    JSON-legal but not schema-legal when a buggy kernel/frontend sends e.g.
+    `state: "garbage"`; `would_accept`/`apply` must REJECT that (not crash),
+    or a malformed message journaled by `_handle_comm` (RISKS #14: journal
+    before mutate) would re-raise on every future `_rebuild_mirror` replay —
+    turning a one-time in-memory failure into a permanent daemon-restart
+    crash."""
+    state = data.get("state")
+    if state is not None and not isinstance(state, dict):
+        return False
+    paths = data.get("buffer_paths")
+    if paths is not None:
+        try:
+            for p in paths:
+                tuple(p)
+        except TypeError:
+            return False
+    return True
 
 
 class WidgetMirror:
@@ -31,23 +57,32 @@ class WidgetMirror:
 
     def would_accept(self, msg_type: str, content: dict) -> bool:
         """Predict apply()'s accept/reject WITHOUT mutating — must stay in sync
-        with apply()'s own guard clauses (each returns False from the SAME
-        point, before any mutation, so the two never actually diverge in
-        practice; this only re-checks the condition, cheaply, a second time).
-        Lets a caller journal before mutating (see daemon.py _handle_comm)."""
+        with apply()'s own guard clauses. Lets a caller journal before
+        mutating (see daemon.py _handle_comm)."""
         if msg_type == "comm_open":
-            return content.get("target_name") == WIDGET_TARGET and content.get("comm_id") is not None
+            if content.get("target_name") != WIDGET_TARGET or content.get("comm_id") is None:
+                return False
+            return _is_state_shaped(content.get("data") or {})
         if msg_type == "comm_msg":
             model = self._models.get(content.get("comm_id"))
             if model is None:
                 return False
-            return (content.get("data") or {}).get("method") in ("update", "echo_update")
+            data = content.get("data") or {}
+            if data.get("method") not in ("update", "echo_update"):
+                return False
+            return _is_state_shaped(data)
         if msg_type == "comm_close":
             return content.get("comm_id") in self._models
         return False
 
     def apply(self, msg_type: str, content: dict, buffers=None) -> bool:
-        """Update the mirror from one comm message. True if state changed."""
+        """Update the mirror from one comm message. True if state changed.
+
+        Never raises on JSON-legal-but-schema-malformed content (see
+        `_is_state_shaped`) — validates and builds the full mutation before
+        committing it to `self._models`, so a rejected message leaves NO
+        partial state behind either.
+        """
         buffers = list(buffers or [])
         if msg_type == "comm_open":
             if content.get("target_name") != WIDGET_TARGET:
@@ -56,9 +91,11 @@ class WidgetMirror:
             if comm_id is None:
                 return False
             data = content.get("data") or {}
+            if not _is_state_shaped(data):
+                return False
             model = {"state": dict(data.get("state") or {}), "buffers": {}}
-            self._models[comm_id] = model
             self._merge_buffers(model, data.get("buffer_paths") or [], buffers)
+            self._models[comm_id] = model  # commit only after the mutation fully built
             return True
         if msg_type == "comm_msg":
             comm_id = content.get("comm_id")
@@ -68,6 +105,8 @@ class WidgetMirror:
             data = content.get("data") or {}
             if data.get("method") not in ("update", "echo_update"):
                 return False  # custom messages don't change persisted state
+            if not _is_state_shaped(data):
+                return False
             model["state"].update(data.get("state") or {})
             self._merge_buffers(model, data.get("buffer_paths") or [], buffers)
             return True
@@ -106,4 +145,4 @@ class WidgetMirror:
 
 
 def is_comm(msg_type: str) -> bool:
-    return msg_type in _COMM_TYPES
+    return msg_type in COMM_TYPES

@@ -142,3 +142,33 @@ def test_would_accept_agrees_with_apply_without_mutating():
     assert m.would_accept("comm_close", {"comm_id": "c1"}) is True
     assert m.would_accept("comm_close", {"comm_id": "nope"}) is False
     assert len(m) == 1  # still unmutated by the predictions
+
+
+def test_malformed_state_is_rejected_not_raised():
+    """Codex ② finding (RISKS #14 review): a JSON-legal but schema-malformed
+    comm (e.g. `state` is a string, not a dict) must be REJECTED by both
+    would_accept() and apply() — never raise. Pre-fix, apply() would raise
+    (`dict("garbage")`), and since RISKS #14 made _handle_comm journal BEFORE
+    mutating, a would_accept() that didn't also catch this would let such a
+    message get durably journaled — then _rebuild_mirror would re-raise on
+    EVERY future restart replaying that same row."""
+    m = WidgetMirror()
+    bad_open = {"comm_id": "c1", "target_name": "jupyter.widget", "data": {"state": "not-a-dict"}}
+    assert m.would_accept("comm_open", bad_open) is False
+    assert m.apply("comm_open", bad_open, []) is False
+    assert len(m) == 0
+
+    bad_paths = {
+        "comm_id": "c2", "target_name": "jupyter.widget",
+        "data": {"state": {"value": 1}, "buffer_paths": [42]},  # not path-shaped
+    }
+    assert m.would_accept("comm_open", bad_paths) is False
+    assert m.apply("comm_open", bad_paths, []) is False
+    assert len(m) == 0
+
+    m.apply("comm_open", {"comm_id": "c3", "target_name": "jupyter.widget",
+                           "data": {"state": {"value": 1}}}, [])
+    bad_update = {"comm_id": "c3", "data": {"method": "update", "state": [1, 2, 3]}}
+    assert m.would_accept("comm_msg", bad_update) is False
+    assert m.apply("comm_msg", bad_update, []) is False
+    assert m.snapshot()["state"]["c3"]["state"]["value"] == 1  # unchanged, not partially mutated
