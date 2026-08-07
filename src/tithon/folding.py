@@ -248,6 +248,20 @@ class ExecutionFold:
                 )
             )
 
+    def fold_state(self) -> dict:
+        """Continuation state a client needs BEYOND `outputs()` to keep folding
+        identically. `outputs()` is renderable output only, so a client seeded
+        from it alone would treat every item as the cell's own and scope no
+        clear — a plot repainted inside an `Output` would then accumulate one
+        frame per step instead of superseding. `owners` is index-aligned with
+        `outputs()`: both walk `_items` in order."""
+        return {
+            "owners": [it.get("_owner") for it in self._items],
+            "claims": list(self._claims),
+            "pending_clear": self._pending_clear,
+            "pending_owner_clear": sorted(self._pending_owner_clear),
+        }
+
     def _last_in_area(self, owner: str | None) -> dict | None:
         """The most recent item belonging to `owner`, ignoring other areas."""
         for it in reversed(self._items):

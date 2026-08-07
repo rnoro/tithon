@@ -34,6 +34,14 @@ export interface CellSink {
   /** Clear all outputs of the cell. */
   clear(cellIndex: number): void;
   /**
+   * Replace the cell's outputs wholesale with an authoritative folded list.
+   * Needed because an `ipywidgets.Output`'s `clear_output` clears only ITS
+   * area, and there is no incremental op for "remove some outputs" — the fold
+   * knows the answer, so a clear repaints from it instead of blanking the cell
+   * (RISKS #17). Optional: a sink that never sees a scoped clear may omit it.
+   */
+  repaint?(cellIndex: number, items: OutputItem[]): void;
+  /**
    * Optional: cell execution lifecycle for UI affordances (spinner/clock/check
    * and timing). `status` is "queued" | "running" | "done" | "error"; `tsMs` is
    * the daemon-side wall-clock (ms) of the transition, so a reconnecting client
@@ -71,6 +79,7 @@ export class ThrottleScheduler implements Scheduler {
 }
 
 type PendingOp =
+  | { t: "repaint"; execId: string }
   | { t: "stream"; name: string; text: string }
   | { t: "output"; item: OutputItem }
   | { t: "display"; displayId: string; item: OutputItem }
@@ -93,6 +102,9 @@ export class LiveOutputSync {
   private readonly execStale = new Map<string, boolean>();
   private readonly pending = new Map<number, PendingOp[]>();
   private readonly pendingClear = new Set<string>(); // execIds with deferred clear
+  // Cells whose window already holds a repaint; further output ops are redundant
+  // (the repaint reads the fold at flush time). Cleared per flush.
+  private readonly repainting = new Set<number>();
   private readonly dirty = new Set<number>();
   private flushScheduled = false;
   private disposed = false;
@@ -102,6 +114,11 @@ export class LiveOutputSync {
     cells: Cell[],
     private readonly sink: CellSink,
     private readonly scheduler: Scheduler,
+    /** Authoritative folded outputs for an execution. `SessionClient` folds an
+     *  event BEFORE invoking our callback, so reading this at flush time gives
+     *  the settled state — which is how a widget-scoped clear is honoured
+     *  without this class knowing anything about comm claims (RISKS #17). */
+    private readonly foldOutputs?: (execId: string) => OutputItem[],
   ) {
     this.refreshCells(cells);
   }
@@ -240,11 +257,11 @@ export class LiveOutputSync {
 
   private handleOutput(execId: string, idx: number, msgType: string, content: any): void {
     if (msgType === "clear_output") {
+      // A deferred clear still waits for the next output, exactly as the fold
+      // does; an immediate one settles now. Either way the repaint below reads
+      // the fold, so a widget-scoped clear removes only that widget's outputs.
       if (content?.wait) this.pendingClear.add(execId);
-      else {
-        this.dropPending(idx);
-        this.queue(idx, { t: "clear" });
-      }
+      else this.queueRepaint(idx, execId);
       return;
     }
     if (msgType === "update_display_data") {
@@ -255,10 +272,7 @@ export class LiveOutputSync {
     if (!["stream", "display_data", "execute_result", "error"].includes(msgType)) return;
 
     // A deferred clear fires when the next real output arrives.
-    if (this.pendingClear.delete(execId)) {
-      this.dropPending(idx);
-      this.queue(idx, { t: "clear" });
-    }
+    if (this.pendingClear.delete(execId)) this.queueRepaint(idx, execId);
 
     if (msgType === "stream") {
       this.queueStream(idx, content?.name ?? "stdout", content?.text ?? "");
@@ -316,7 +330,33 @@ export class LiveOutputSync {
     }
   }
 
+  /**
+   * A repaint supersedes every OUTPUT op for the cell in this window — before
+   * it (already folded, so replaying would double-apply) and after it (the fold
+   * is read at flush time, so it already contains them). Status ops are not
+   * output and still ride through.
+   */
+  private queueRepaint(idx: number, execId: string): void {
+    // Keep queued STATUS ops: they are lifecycle, not output, so the repaint
+    // does not subsume them. Dropping a pending `running` here would leave the
+    // sink with no execution record, so the repaint would open a momentary one
+    // and the later `done` would find nothing to end — no spinner, no timing.
+    const ops = this.pending.get(idx);
+    this.pending.set(idx, ops ? ops.filter((o) => o.t === "status") : []);
+    // Repainting needs BOTH an authoritative fold to read and a sink that can
+    // apply it. Without either, fall back to the whole-cell clear: it cannot
+    // honour a widget-scoped clear, but it is lossless, whereas a repaint with
+    // nothing to paint would blank the cell AND suppress the ops that follow.
+    if (!this.foldOutputs || !this.sink.repaint) {
+      this.queue(idx, { t: "clear" });
+      return;
+    }
+    this.repainting.add(idx);
+    this.queue(idx, { t: "repaint", execId });
+  }
+
   private queue(idx: number, op: PendingOp): void {
+    if (this.repainting.has(idx) && op.t !== "repaint" && op.t !== "status") return;
     let ops = this.pending.get(idx);
     if (!ops) {
       ops = [];
@@ -360,6 +400,14 @@ export class LiveOutputSync {
           case "clear":
             this.sink.clear(idx);
             break;
+          case "repaint":
+            // Resolved at FLUSH time, not when queued: every event in this window
+            // has already been folded by SessionClient (it applies before
+            // invoking our callback), so this is the settled end-of-window state.
+            // Both operands are guaranteed present — queueRepaint only emits this
+            // op when it has them.
+            this.sink.repaint!(idx, this.foldOutputs!(op.execId));
+            break;
           case "status":
             this.sink.status?.(idx, op.status, op.tsMs);
             break;
@@ -368,6 +416,7 @@ export class LiveOutputSync {
       this.pending.delete(idx);
     }
     this.dirty.clear();
+    this.repainting.clear();
   }
 }
 
