@@ -5,6 +5,38 @@
 > 비교 대상: Tithon `extension/`, `src/tithon/`, `docs/SPEC.md`와 로컬에 저장된
 > `vscode-jupyter/` 소스 (Jupyter 확장 `2026.6.1`).
 
+## Status as of 2026-08-07 — read before acting on anything below
+
+The body of this document is **as written on 2026-07-25 and was never updated in place**. Roughly
+half of its §4 backlog has since landed or been rejected. Use this table, not §4's own priority
+ordering or §8's roadmap, to decide what is still actionable. `.agents/RISKS.md` is the live
+backlog; this document is the long-form rationale behind the entries still open there.
+
+| §          | Item                                         | Status at 2026-08-07                                                                  |
+| ---------- | -------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 4-1        | Fixed 50ms grace → completion barrier        | **LANDED** — ADR-079, v49 (reply AND iopub `status:idle`)                             |
+| 4-2        | `execute_reply.payload` → `?`/`??` pager     | **LANDED** — ADR-077, v47                                                             |
+| 4-3        | Kernel liveness watchdog                     | **LANDED** — ADR-078, v48 (independent loop, not gated on `idle_timeout`)             |
+| 4-4        | Session-wide `display_id` resolution         | **OPEN** — RISKS #6; design finalized in ADR-093, no code yet                         |
+| 4-5        | `exec_id`-centric execution adapter          | **REJECTED** — ADR-095 refuted the premise; 3 narrower defects fixed instead          |
+| 4-6        | Traceback formatting / reconnect progress    | **LANDED** — ADR-094, v52; the `Cell In[N], line M` jump link scoped out              |
+| 4-7        | `_await_reply` shell routing                 | **LANDED** — ADR-079 (`_shell_pump` routes by `parent_header.msg_id`)                 |
+| 4-7        | Bidirectional widget comm itself             | **OPEN** — RISKS #4; ADR-097 design has 2 blockers; ADR-096 shipped the text fallback |
+| 4-8        | `_rebuild_mirror` full scan                  | **LANDED** — ADR-089 (+ hardening ADR-088), streaming indexed cursor                  |
+| 4-8        | Journal pruning / compaction                 | **OPEN** — RISKS #9(b); ADR-098 design blocked on a `max_seq()` regression            |
+| 4-9        | Comm path bypasses the artifact store        | **OPEN** — RISKS #10; ADR-092 design, but ADR-096 invalidated part of its premise     |
+| 4-보류-A/B | `raises-exception`, module loader, converter | Still deferred — see RISKS.md "Deferred / watch list"                                 |
+
+§8's ordering is consequently stale: its items 1, 2, 3 and 6 are done, item 5 was rejected, and
+only 4, 7 and 8 remain. §5's corrections (especially §5-1, which narrows §4-9's real exposure) all
+still hold and are the most valuable part of the document to preserve.
+
+Two further caveats. The `../vscode-jupyter/...` links throughout are **dead in a fresh checkout** —
+that vendored upstream tree is gitignored (`.gitignore:68`) and is not present locally; re-clone
+Jupyter extension `2026.6.1` to follow them. And this file is written in Korean, unlike the rest of
+`docs/`, which AGENTS.md requires to be English (ADR-037); it predates that rule being written down
+and has not been retranslated.
+
 ## 0. 이 문서의 출처
 
 두 번의 독립 분석을 교차검증해 하나로 합친 문서다. 두 분석은 접근 방향이 달라 결과가 거의
@@ -150,7 +182,7 @@ timeout. 그 외에 `kernel_status`는 iopub `status` 메시지 파싱으로만 
 
 이는 신규 발견이 아니라 **ADR-075가 명시적으로 남긴 known false negative**다: 재부팅 감지는
 `Session.start()` 재진입에 의존하는데, daemon이 살아 있으면 `start()`가 다시 불리지 않아
-`_classify_kernel_generation()`이 돌지 않는다 (`.claude/RISKS.md` #3 잔여 항목). 독립 분석이 같은
+`_classify_kernel_generation()`이 돌지 않는다 (`.agents/RISKS.md` #3 잔여 항목). 독립 분석이 같은
 지점을 다시 짚었다는 점에서 확증 가치가 있다.
 
 vscode-jupyter는 `KernelCrashMonitor`, `KernelAutoReconnectMonitor`가 셀 실행 여부와 무관하게
@@ -292,7 +324,7 @@ rich output 추출은 iopub `display_data`/`execute_result`/`update_display_data
 메시지는 [`_handle_comm`](../src/tithon/daemon.py#L599)이라는 **별도 경로**로 처리되며 `content`를
 (buffers는 base64로) **verbatim** 저장한다 — artifact 추출이 전혀 개입하지 않는다. `Output` 위젯의
 `outputs` trait은 nbformat output entry 모양이라 base64 이미지를 담을 수 있고, 그 경우 SQLite에
-그대로 들어간다. `.claude/CLAUDE.md`의 불변식("image/\*는 base64로 embed하지 않는다") 위반이며,
+그대로 들어간다. `AGENTS.md`의 불변식("image/\*는 base64로 embed하지 않는다") 위반이며,
 comm state에는 `ExecutionFold.artifact_ids()`에 해당하는 GC 기준도 없다.
 
 **단, 흔한 라이브 플롯 관용구는 여기에 해당하지 않는다** — §5-1의 정정을 반드시 함께 읽을 것.
