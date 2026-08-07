@@ -288,3 +288,24 @@ export function widgetFallbackText(
   if (labels.length) return labels.join(" ");
   return `[${String(root._model_name ?? "widget")}]`;
 }
+
+/**
+ * An `ipywidgets.Output` widget's OWN view is not worth rendering.
+ *
+ * The widget exists to display the outputs it captured, and Tithon renders
+ * those at cell level (they fold into the same cell — see RISKS #17), so its
+ * view is a placeholder for content already shown directly below it. It cannot
+ * take the html-manager path either: `OutputModel` is deliberately absent from
+ * the display-only allow-list, because its `outputs` trait nests other widgets
+ * outside `children` and the allow-list could not vet them (ADR-096). What is
+ * left is the last-resort fallback label — a bare `[OutputModel]`, which reads
+ * as a bug rather than as information. Drop it.
+ */
+export function isOutputAreaView(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): boolean {
+  const id = widgetModelIdOf(item);
+  if (!id) return false;
+  return String(widgets?.state?.[id]?.state?._model_name ?? "") === "OutputModel";
+}

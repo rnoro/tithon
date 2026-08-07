@@ -1,13 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  imageOf,
-  imageRefsOf,
-  widgetModelIdOf,
-  widgetFallbackText,
-  isDisplayOnlyWidget,
-  WIDGET_VIEW_MIME,
-  type WidgetState,
-} from "../src/richOutput";
+import { WIDGET_VIEW_MIME, imageOf, imageRefsOf, isDisplayOnlyWidget, isOutputAreaView, type WidgetState, widgetFallbackText, widgetModelIdOf } from "../src/richOutput";
 import type { OutputItem } from "../src/outputFold";
 
 const ref = (id: string) => ({
@@ -128,5 +120,32 @@ describe("interactive-widget allow-list (RISKS #4/T8: no client -> kernel comm y
       state: { box: { state: { _model_name: "BoxModel", children: "IPY_MODEL_html" } } },
     };
     expect(isDisplayOnlyWidget("box", w)).toBe(false);
+  });
+});
+
+describe("isOutputAreaView — an Output widget's own view is redundant", () => {
+  const view = (modelId: string): OutputItem => ({
+    output_type: "display_data",
+    data: { "application/vnd.jupyter.widget-view+json": { model_id: modelId }, "text/plain": "Output()" },
+    metadata: {},
+  });
+  const widgets = {
+    state: {
+      out: { state: { _model_name: "OutputModel" } },
+      bar: { state: { _model_name: "FloatProgressModel", value: 1, max: 2 } },
+    },
+  };
+
+  it("is true for an OutputModel — its captured content renders at cell level", () => {
+    expect(isOutputAreaView(view("out"), widgets)).toBe(true);
+  });
+
+  it("is false for any other widget, so a tqdm bar still renders", () => {
+    expect(isOutputAreaView(view("bar"), widgets)).toBe(false);
+  });
+
+  it("is false for a non-widget output and when the mirror is unknown", () => {
+    expect(isOutputAreaView({ output_type: "stream", name: "stdout", text: "x" }, widgets)).toBe(false);
+    expect(isOutputAreaView(view("out"), null)).toBe(false);
   });
 });
