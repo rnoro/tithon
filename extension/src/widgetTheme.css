@@ -1,0 +1,39 @@
+/*
+ * Theme bridge for the bundled ipywidgets stylesheet.
+ *
+ * `@jupyter-widgets/controls/css/widgets.built.css` is built for JupyterLab's
+ * light theme with the colours inlined, so `.jupyter-widgets` carries a blanket
+ * `color: black` and the label/readout rules repeat it. In a dark VSCode theme
+ * that paints widget text black on a near-black editor background — a
+ * `tqdm.notebook` bar renders its fill but its "epoch 1/3: 22%" and
+ * "54/240 [00:21<01:14]" labels become unreadable.
+ *
+ * These rules must be injected AFTER the vendored sheet: they match the same
+ * selectors at equal specificity and win only on document order (see
+ * `injectCss` in widgetRendererEntry.ts).
+ *
+ * Scope is deliberately text colour only. Widget CONTROLS (buttons, sliders,
+ * inputs) keep their vendored light-on-grey styling — restyling those is a
+ * design change across every widget type, not a legibility fix.
+ */
+
+/* The blanket rule every widget inherits from, including HTML widgets whose
+   content sets no colour of its own. */
+.jupyter-widgets {
+  color: var(--vscode-editor-foreground);
+}
+
+.widget-label,
+.jupyter-widget-label,
+.widget-readout,
+.jupyter-widget-readout {
+  color: var(--vscode-editor-foreground);
+}
+
+/* The vendored sheet reads these through `var()` but, being a built artifact,
+   never defines them. They colour text sitting ON a brand/accent fill, so they
+   stay light in both themes rather than following the editor foreground. */
+:root {
+  --jp-inverse-ui-font-color0: #fff;
+  --jp-inverse-ui-font-color1: rgba(255, 255, 255, 0.92);
+}
