@@ -70,4 +70,5 @@ Thumbs.db
 # vendored upstream reference checkout (docs/vscode-jupyter-comparison.md)
 vscode-jupyter/
 
-data/
+# demo recording work area (published assets live in docs/)
+scripts/demo/
