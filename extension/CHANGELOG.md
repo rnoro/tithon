@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.1](https://github.com/rnoro/tithon/compare/vscode-v0.2.0...vscode-v0.2.1) (2026-08-08)
+
+
+### Features
+
+* **daemon:** add opt-in idle kernel cleanup ([6e18554](https://github.com/rnoro/tithon/commit/6e18554c025b72423288d6ab5c5871da7073888c))
+* **daemon:** add payload replay and kernel watchdog ([4f05dfd](https://github.com/rnoro/tithon/commit/4f05dfd5fa0cecfbc2623fb5bb00030ba76206c5))
+* **daemon:** warn after unrecoverable kernel death ([cffc3fa](https://github.com/rnoro/tithon/commit/cffc3fa79eb41130eba10a604eee062574bb4e24))
+* **extension:** improve traceback and reconnect UX ([15c4871](https://github.com/rnoro/tithon/commit/15c4871046eb1798cdfbe574baaede812854cfd1))
+* **extension:** render only display-safe widgets ([4ed5db6](https://github.com/rnoro/tithon/commit/4ed5db66f5e3632f99525526efc0dd26cf6e9306))
+* **widgets:** sync binary comm buffers ([42122b9](https://github.com/rnoro/tithon/commit/42122b9aa1ac9ac43d5fbaafc7199283f630a23a))
+
+
+### Bug Fixes
+
+* **daemon,extension:** close restart and sync races ([853b7d7](https://github.com/rnoro/tithon/commit/853b7d7e3a76bf25b2f5534250e573a7af6f7607))
+* **daemon,extension:** close session lifecycle races ([469ea90](https://github.com/rnoro/tithon/commit/469ea90af804c440bb8994f5d02183d829298642))
+* **daemon:** scope an Output widget's clear_output to its own area ([56d96f8](https://github.com/rnoro/tithon/commit/56d96f8a4fb426dff707b802bffa20dbcc692c08))
+* **daemon:** unify widget event frames ([3942412](https://github.com/rnoro/tithon/commit/394241263a29d1a2969157f46a3a8d0e7dcd7af1))
+* **extension:** cancel pending live-sync flushes ([19b8c58](https://github.com/rnoro/tithon/commit/19b8c582d7d12d324a02bfc8eac276237da56979))
+* **extension:** defer output-map teardown ([e29f5c4](https://github.com/rnoro/tithon/commit/e29f5c4b64fbb139fe190b5ab7e78ea85b376ff2))
+* **extension:** drop an Output widget's redundant placeholder output ([fdf1b53](https://github.com/rnoro/tithon/commit/fdf1b535b5a77c9a7165de45486b33686f1933bc))
+* **extension:** honour an Output widget's clear on the live path too ([7341032](https://github.com/rnoro/tithon/commit/73410329461dee4c602cbb952f87368615a4fa21))
+* **extension:** make widget text follow the VSCode theme ([f76da20](https://github.com/rnoro/tithon/commit/f76da205332275a45c4a507eefdb56b0fe8fb99d))
+* **extension:** preserve mixed outputs on restore ([8c1bc6a](https://github.com/rnoro/tithon/commit/8c1bc6a6b4d60283f65e75e3812d4b61c38152fe))
+* **verify:** build the widget renderer bundle in the verify path ([f22e0c7](https://github.com/rnoro/tithon/commit/f22e0c7731250934c2159504742817ad45030aed))
+
 ## [0.2.0](https://github.com/rnoro/tithon/compare/vscode-v0.1.1...vscode-v0.2.0) (2026-06-30)
 
 
