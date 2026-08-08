@@ -80,5 +80,12 @@ ensure_extension_build() { # build the VSCode extension (dist/) + integration so
   [ -n "${TITHON_SKIP_BUILD:-}" ] && return 0   # already built once by the bundle runner
   (cd "$ext" && npx tsc -p ./) || { echo "extension build (dist) failed" >&2; return 1; }
   (cd "$ext" && npx tsc -p tsconfig.integration.json) || { echo "integration build (out-int) failed" >&2; return 1; }
+  # The `notebookRenderer` contribution loads dist/widgetRenderer.js, which ONLY
+  # esbuild emits — tsc emits dist/widgetRendererEntry.js, which nothing loads.
+  # Skipping this leaves the widget suites asserting against whatever bundle was
+  # last built by hand, so a renderer fix can read as verified while the host
+  # never loaded it. Renderer only: the full bundle would replace the
+  # dist/extension.js tsc just emitted, which is what the verify path runs.
+  (cd "$ext" && node esbuild.mjs renderer) || { echo "renderer bundle failed" >&2; return 1; }
   return 0
 }

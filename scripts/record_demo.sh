@@ -39,10 +39,6 @@ command -v Xvfb   >/dev/null 2>&1 || die "Xvfb not found (apt-get install xvfb)"
 ffmpeg -hide_banner -filters 2>/dev/null | grep -q ' subtitles ' || die "ffmpeg lacks the libass 'subtitles' filter"
 
 ensure_extension_build || die "extension build failed"
-# ensure_extension_build only runs tsc, but the widget renderer VSCode loads is
-# the esbuild bundle (dist/widgetRenderer.js) — without this the recording would
-# show whatever renderer was last bundled, not the working tree's.
-( cd "$ROOT/extension" && node esbuild.mjs >/dev/null 2>&1 ) || die "renderer bundle failed"
 
 # ---------------------------------------------------------------- stage the run
 setup_env demo-record
