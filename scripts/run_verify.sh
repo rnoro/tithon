@@ -6,7 +6,7 @@
 #
 # Usage: run_verify.sh <bundle>
 #   Topic bundles (a test lives in exactly one):
-#     core         v1 v2 v3 v4 v47 v49 v50 journal / fold / artifact / daemon-crash survival / reply payload / completion barrier / multi-client fan-out (hermetic)
+#     core         v1 v2 v3 v4 v47 v49 v50 v57 journal / fold / artifact / daemon-crash survival / reply payload / completion barrier / multi-client fan-out / in-flight recovery (hermetic)
 #     serializer   v6                     percent <-> notebook round-trip                      (hermetic)
 #     backpressure v9                     slow-client host protection                          (hermetic)
 #     widgets      v5 v29 v30             ipywidget mirror + html-manager render + live anim
@@ -32,7 +32,7 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- topic bundles -----------------------------------------------------------
-core_s="v1 v2 v3 v4 v47 v49 v50"
+core_s="v1 v2 v3 v4 v47 v49 v50 v57"
 serializer_s="v6"
 backpressure_s="v9"
 widgets_s="v5 v29 v30"
@@ -43,7 +43,7 @@ richoutputs_s="v27 v28 v31 v34 v35 v54"
 notebook_s="v32 v39 v41 v42 v43 v44"
 
 # --- meta bundles ------------------------------------------------------------
-fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54"   # every hermetic test
+fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v57"   # every hermetic test
 vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53"
 
 bundle="${1:-fast}"
