@@ -602,8 +602,6 @@ export class TithonNotebookController {
   >();
 
   private readonly selectionSub: vscode.Disposable;
-  /** Clickable status-bar indicator showing/selecting the kernel's Python. */
-  readonly pyStatus: vscode.StatusBarItem;
   /** Channel to the ipywidget notebook renderer (live updates + render outcome). */
   private readonly widgetMessaging: vscode.NotebookRendererMessaging;
   /** Render outcomes reported by the widget renderer (html|fallback) — for verify. */
@@ -651,10 +649,6 @@ export class TithonNotebookController {
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
-    this.pyStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this.pyStatus.command = "tithon.selectInterpreter";
-    this.pyStatus.text = "$(snake) Tithon";
-    this.pyStatus.tooltip = "Tithon: select Python interpreter";
     // Renderer channel: the widget renderer reports whether it painted html vs the
     // text fallback (surfaced for verification), and we push live comm deltas to it.
     this.widgetMessaging = vscode.notebooks.createRendererMessaging("tithon-widget");
@@ -689,7 +683,6 @@ export class TithonNotebookController {
     // the remembered kernel, so the user gets restore+live with NO command (#3/#4).
     this.selectionSub = this.controller.onDidChangeSelectedNotebooks((e) => {
       if (e.selected) {
-        this.pyStatus.show();
         void this.ensureLive(e.notebook).catch(() => undefined);
       } else {
         this.disposeLive(e.notebook.uri);
@@ -868,12 +861,8 @@ export class TithonNotebookController {
     return [...this.kernelDeathWarned];
   }
 
-  /** Show the kernel's Python version on the controller label + status bar. */
+  /** Show the kernel's Python version on the selected controller label. */
   private applyKernelLabel(python: string | null): void {
-    if (python) {
-      this.pyStatus.text = `$(snake) Tithon: Python ${python}`;
-      this.pyStatus.tooltip = `Tithon kernel: Python ${python} — click to change interpreter`;
-    }
     if (!python || this.labelledPython) return;
     this.controller.label = `Tithon · Python ${python}`;
     this.controller.description = `Python ${python}`;
@@ -1025,7 +1014,6 @@ export class TithonNotebookController {
 
   dispose(): void {
     this.selectionSub.dispose();
-    this.pyStatus.dispose();
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
