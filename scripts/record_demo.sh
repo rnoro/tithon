@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # record_demo.sh — produce the README hero demo as a REAL recording of the real
 # product: run the `demo` integration suite inside a real VSCode under a
-# recordable Xvfb, capture the framebuffer with ffmpeg, and encode a trimmed,
-# captioned mp4 + GIF.
+# recordable Xvfb, capture the framebuffer with ffmpeg, and encode a trimmed
+# preview plus the raw capture from which the published cut is composed.
 #
 # This is a DEMO ASSET BUILDER, not a pass/fail gate — but it drives the same
 # real-VSCode harness the vNN.sh suites use and the suite keeps the gate's
@@ -11,21 +11,21 @@
 #
 # The interesting window is a few seconds inside a ~1 minute Electron session, so
 # the suite's own `[demo]` log lines are timestamped against the recording clock
-# and used to auto-trim and to place captions. Retiming the demo therefore means
+# and used to auto-trim and place editorial beats. Retiming the demo therefore means
 # editing the suite's narrative, not hand-scrubbing a video.
 #
 # Usage: bash scripts/record_demo.sh
-# Output: scripts/demo/{demo.gif,demo.mp4,demo-full.mp4,markers.txt}
+# Output: scripts/demo/{demo-full.mp4,markers.txt,demo.mp4 (uncaptioned preview)}
 #
-# `demo-full.mp4` (raw, uncropped, uncaptioned) plus `markers.txt` are also the
-# input to the Remotion project that renders the PUBLISHED docs/demo.{gif,mp4} —
-# title card, magnified callouts on the execution timer, 1080p master. That
-# project is a React toolchain kept outside this repo on purpose; only its output
-# ships. The gif/mp4 this script writes itself stay a self-contained fallback.
+# `demo-full.mp4` (raw, uncropped, uncaptioned) plus `markers.txt` are also input
+# to the external /workspace/tithon-demo Remotion toolchain. Keeping that
+# marketing-only Node/Chromium workspace outside this repository prevents its
+# dependencies and render caches from becoming product files. The gif/mp4 this
+# script writes itself stay a self-contained unannotated fallback.
 #
 # For the published assets, capture bigger: DEMO_W=1920 DEMO_H=1200 DEMO_ZOOM=2.
 #
-# Knobs (env): DEMO_W DEMO_H DEMO_ZOOM DEMO_FPS DEMO_GIF_W DEMO_GIF_FPS DEMO_PRE DEMO_POST
+# Knobs (env): DEMO_W DEMO_H DEMO_ZOOM DEMO_FPS DEMO_PRE DEMO_POST
 #
 # DEMO_ZOOM must rise with DEMO_W. VSCode's zoomLevel sets the UI's PHYSICAL size,
 # so a wider capture at a fixed zoom yields text that is smaller RELATIVE to the
@@ -35,7 +35,6 @@ set -u
 . "$(dirname "$0")/lib.sh"
 
 W="${DEMO_W:-1280}"; H="${DEMO_H:-800}"; FPS="${DEMO_FPS:-15}"; ZOOM="${DEMO_ZOOM:-1}"
-GIF_W="${DEMO_GIF_W:-900}"; GIF_FPS="${DEMO_GIF_FPS:-11}"
 PRE="${DEMO_PRE:-3}"      # seconds of lead-in before the first caption marker
 POST="${DEMO_POST:-7}"    # seconds to keep rolling after the last marker
 # Cropping the 34px title bar drops the "[Extension Development Host] … [Superuser]"
@@ -43,13 +42,12 @@ POST="${DEMO_POST:-7}"    # seconds to keep rolling after the last marker
 CHROME_TOP="${DEMO_CROP_TOP:-34}"
 
 OUTDIR="$ROOT/scripts/demo"; mkdir -p "$OUTDIR"
-FULL="$OUTDIR/demo-full.mp4"; MARKERS="$OUTDIR/markers.txt"; ASS="$OUTDIR/captions.ass"
+FULL="$OUTDIR/demo-full.mp4"; MARKERS="$OUTDIR/markers.txt"
 die() { echo "record_demo: $*" >&2; exit 1; }
 trap cleanup_procs EXIT
 
-command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found (needs x11grab + libass)"
+command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg not found (needs x11grab)"
 command -v Xvfb   >/dev/null 2>&1 || die "Xvfb not found (apt-get install xvfb)"
-ffmpeg -hide_banner -filters 2>/dev/null | grep -q ' subtitles ' || die "ffmpeg lacks the libass 'subtitles' filter"
 
 ensure_extension_build || die "extension build failed"
 
@@ -79,13 +77,15 @@ mkdir -p "$TITHON_HOME/vscode-user/User"
 cat >"$TITHON_HOME/vscode-user/User/settings.json" <<'JSON'
 {
   "workbench.experimental.modernUI": true,
-  "workbench.colorTheme": "Dark 2026",
+  "workbench.colorTheme": "GitHub Dark Default",
+  "workbench.activityBar.location": "hidden",
   "window.zoomLevel": __ZOOM__,
   "window.commandCenter": false,
   "chat.commandCenter.enabled": false,
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,
   "editor.minimap.enabled": false,
+  "breadcrumbs.enabled": false,
   "editor.fontSize": 14,
   "notebook.output.fontSize": 14,
   "notebook.globalToolbar": false,
@@ -95,6 +95,21 @@ cat >"$TITHON_HOME/vscode-user/User/settings.json" <<'JSON'
 JSON
 sed -i "s/__ZOOM__/${ZOOM}/" "$TITHON_HOME/vscode-user/User/settings.json"
 
+# The integration host normally disables third-party extensions. The demo uses a
+# curated directory containing only GitHub's theme so the recording stays
+# readable without loading a user's unrelated extensions. Override the source on
+# hosts whose VSCode extension cache lives elsewhere.
+GITHUB_THEME_SRC="${DEMO_GITHUB_THEME_DIR:-}"
+if [[ -z "$GITHUB_THEME_SRC" ]]; then
+  GITHUB_THEME_SRC="$(find /root/.vscode-server/extensions -maxdepth 1 -type d \
+    -name 'github.github-vscode-theme-*' -print 2>/dev/null | sort -V | tail -1)"
+fi
+[[ -f "$GITHUB_THEME_SRC/package.json" ]] || \
+  die "GitHub Theme extension not found; set DEMO_GITHUB_THEME_DIR"
+DEMO_EXTENSIONS="$TITHON_HOME/vscode-extensions"
+mkdir -p "$DEMO_EXTENSIONS"
+ln -s "$GITHUB_THEME_SRC" "$DEMO_EXTENSIONS/$(basename "$GITHUB_THEME_SRC")"
+
 DISP=":$((60 + RANDOM % 9))"
 Xvfb "$DISP" -screen 0 "${W}x${H}x24" >/tmp/xvfb-record.log 2>&1 & XVFB_PID=$!
 sleep 3
@@ -102,7 +117,8 @@ sleep 3
 start_daemon || die "daemon start failed"
 
 export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK" TITHON_SUITE="demo" \
-       TITHON_HOLD_MS="$(( (POST + 4) * 1000 ))" DISPLAY="$DISP" TITHON_SKIP_BUILD=1
+       TITHON_HOLD_MS="$(( (POST + 4) * 1000 ))" DISPLAY="$DISP" TITHON_SKIP_BUILD=1 \
+       TITHON_PYTHON="$PY" TITHON_LSP_EXT_DIR="$DEMO_EXTENSIONS"
 TESTLOG="$TITHON_HOME/test.log"
 
 # --------------------------------------------------------------------- record
@@ -133,7 +149,8 @@ sleep 1
 # log (rather than parsing afterwards) is what ties suite phases to video time.
 : >"$MARKERS"
 seen=0
-while kill -0 $TEST_PID 2>/dev/null; do
+drain_markers() {
+  local n off
   n=$(grep -c '^\[demo\]' "$TESTLOG" 2>/dev/null || true); n="${n:-0}"
   if [ "$n" -gt "$seen" ] 2>/dev/null; then
     off=$(awk -v a="$(date +%s.%N)" -v b="$T0" 'BEGIN{printf "%.2f", a-b}')
@@ -143,9 +160,13 @@ while kill -0 $TEST_PID 2>/dev/null; do
     done
     seen="$n"
   fi
+}
+while kill -0 $TEST_PID 2>/dev/null; do
+  drain_markers
   sleep 0.25
 done
 wait $TEST_PID 2>/dev/null; rc=$?
+drain_markers
 
 sleep 1
 kill -INT $FF_PID 2>/dev/null; wait $FF_PID 2>/dev/null
@@ -156,59 +177,31 @@ grep -E '\[demo\]|passing|failing' "$TESTLOG" | grep -ivE 'dbus|GPU' | tail -20
 [ "$rc" -eq 0 ] || die "demo suite failed (rc=$rc); log: $TESTLOG — demo NOT written"
 [ -s "$FULL" ] || die "no video captured"
 
-# ---------------------------------------------------------------- cut + caption
+# ------------------------------------------------------------------------- cut
 mk() { awk -F'\t' -v pat="$1" '$0 ~ pat { print $1; exit }' "$MARKERS"; }
-M_LIVE=$(mk 'streaming live before disconnect')
-M_DISC=$(mk 'disconnected')
-M_RECON=$(mk 'reconnected; restored')
-M_CONT=$(mk 'streaming continued')
-[ -n "$M_LIVE" ] && [ -n "$M_CONT" ] || die "missing markers; see $MARKERS"
+M_LIVE=$(mk 'streaming live')
+M_KILL=$(mk 'daemon SIGKILLed')
+M_BACK=$(mk 'reconnected to a new daemon')
+M_CONT=$(mk 'streaming continued past')
+[ -n "$M_LIVE" ] && [ -n "$M_KILL" ] && [ -n "$M_BACK" ] && [ -n "$M_CONT" ] || \
+  die "missing live/kill/reconnect/continued markers; see $MARKERS"
 
 START=$(awk -v a="$M_LIVE" -v p="$PRE" 'BEGIN{ s=a-p; print (s>0?s:0) }')
 DUR=$(awk -v a="$M_CONT" -v b="$START" -v p="$POST" 'BEGIN{ printf "%.2f", a-b+p }')
 rel() { awk -v a="$1" -v b="$START" 'BEGIN{ printf "%.2f", a-b }'; }
-R_DISC=$(rel "$M_DISC"); R_RECON=$(rel "$M_RECON")
-echo "trim: start=${START}s dur=${DUR}s | captions @ 0 / $R_DISC / $R_RECON"
+echo "trim: start=${START}s dur=${DUR}s | kill @$(rel "$M_KILL")s | back @$(rel "$M_BACK")s"
 
-# Captions carry the story a muted, autoplaying README GIF has to tell on its own.
-# ASS (libass) rather than drawtext: not every ffmpeg build ships drawtext, and a
-# BorderStyle=3 box gives the caption a readable plate over the editor.
+# An UNCAPTIONED preview, cropped only of the harness menu bar. Titling and
+# annotation belong to the Remotion project that composes the published cut from
+# `demo-full.mp4` + these markers — burning a second, different set of captions
+# in here would just be a competing design to keep in sync.
 CROP_H=$(( H - CHROME_TOP ))
-awk -v w="$W" -v h="$CROP_H" -v dur="$DUR" -v d="$R_DISC" -v r="$R_RECON" '
-function t(s,  hh,mm,ss){ hh=int(s/3600); mm=int((s%3600)/60); ss=s-hh*3600-mm*60; return sprintf("%d:%02d:%05.2f",hh,mm,ss) }
-function line(a,b,txt){ printf "Dialogue: 0,%s,%s,Cap,,0,0,0,,%s\n", t(a), t(b), txt }
-BEGIN{
-  print "[Script Info]"; print "ScriptType: v4.00+"; print "WrapStyle: 2"
-  printf "PlayResX: %d\nPlayResY: %d\n\n", w, h
-  print "[V4+ Styles]"
-  print "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding"
-  print "Style: Cap,DejaVu Sans,30,&H00FFFFFF,&H000000FF,&H00000000,&H14180D0A,-1,0,0,0,100,100,0,0,3,8,0,2,40,40,46,1"
-  print ""
-  print "[Events]"
-  print "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
-  line(0,   d,   "Training run streaming live from the remote box")
-  line(d,   r,   "Connection drops — the client is gone")
-  line(r,   dur, "Reopened — output restored, timer never reset, still streaming")
-}' >"$ASS"
-
-# crop → burn captions. Escaping: the subtitles filter re-parses its argument.
-ASS_ESC=$(printf '%s' "$ASS" | sed 's/:/\\:/g')
 ffmpeg -hide_banner -loglevel error -y -ss "$START" -t "$DUR" -i "$FULL" \
-  -vf "crop=${W}:${CROP_H}:0:${CHROME_TOP},subtitles='${ASS_ESC}'" \
+  -vf "crop=${W}:${CROP_H}:0:${CHROME_TOP}" \
   -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart \
-  "$OUTDIR/demo.mp4" || die "mp4 encode failed"
-
-# Two-pass palette: a flat editor UI banks few colours, so a per-clip palette
-# keeps text crisp at a README-friendly file size.
-PAL="$OUTDIR/.palette.png"
-ffmpeg -hide_banner -loglevel error -y -i "$OUTDIR/demo.mp4" \
-  -vf "fps=${GIF_FPS},scale=${GIF_W}:-2:flags=lanczos,palettegen=max_colors=128:stats_mode=diff" \
-  "$PAL" || die "palettegen failed"
-ffmpeg -hide_banner -loglevel error -y -i "$OUTDIR/demo.mp4" -i "$PAL" \
-  -lavfi "fps=${GIF_FPS},scale=${GIF_W}:-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
-  -loop 0 "$OUTDIR/demo.gif" || die "gif encode failed"
-rm -f "$PAL"
+  "$OUTDIR/demo.mp4" || die "preview encode failed"
 
 echo
 echo "DEMO OK"
-ls -lh "$OUTDIR"/demo.gif "$OUTDIR"/demo.mp4 "$OUTDIR"/demo-full.mp4 | awk '{print "  "$5"\t"$9}'
+ls -lh "$OUTDIR"/demo.mp4 "$OUTDIR"/demo-full.mp4 | awk '{print "  "$5"\t"$9}'
+echo "compose the published cut:  bash /workspace/tithon-demo/render-readme-demo.sh $ROOT"

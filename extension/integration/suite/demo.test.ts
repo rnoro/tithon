@@ -1,24 +1,31 @@
 /**
- * DEMO ASSET — the narrative recorded by scripts/record_demo.sh into the README
- * hero GIF: a long training run streams live, the client disconnects while the
- * detached kernel keeps going, and the reopened notebook restores the output AND
- * resumes streaming — with the execution timer still counting from the original
- * start, which is the part that proves nothing re-ran.
+ * DEMO ASSET — the narrative recorded by scripts/record_demo.sh into the
+ * published demo video.
  *
- * It differs from livereconnect.test.ts (the same story as a pass/fail gate) in
- * that every step here is also chosen to look right in a muted, autoplaying GIF:
- * the window chrome is stripped, the fixture emits a tqdm widget plus a
- * training-log line so the frame shows rich output rather than a wall of text,
- * and each phase logs a `[demo]` marker the recorder times captions against.
+ * The disconnect here is REAL and nothing about it is staged: the daemon is
+ * SIGKILLed out from under an OPEN notebook, which is what actually drives
+ * `client.onDisconnect -> scheduleReconnect` (the same path v52 gates). What the
+ * camera then records is VSCode's own reconnect notification, the extension
+ * auto-respawning the daemon, and the cell recovering — so the video needs no
+ * overlay claiming a disconnect happened. The frame IS the evidence.
  *
- * Assertions are kept as strong as the gate's: if the product does not actually
- * restore and continue, the recorder fails and no demo is written.
+ * Killing the server rather than closing the window is also the stronger claim.
+ * A closed editor only shows that the client let go; a SIGKILLed daemon shows
+ * that the process owning the session died and the training run did not care,
+ * because the kernel is detached (`setsid`) and re-attaches through its
+ * persisted connection file.
+ *
+ * Assertions are kept as strong as a gate's: if the product does not actually
+ * survive, restore and resume, the recorder fails and no demo is written.
  */
 import * as assert from "assert";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import { readFileSync } from "fs";
 import { parse, cellSource } from "../../src/serializer";
 import { SessionClient } from "../../src/sessionClient";
+import { workdirForUri } from "../../src/sessionController";
 import { computeCellHash } from "../../src/cellAttach";
 
 const dec = new TextDecoder();
@@ -39,9 +46,14 @@ function maxStep(t: string): number {
   return ns.length ? Math.max(...ns) : -1;
 }
 
-async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) {
+  for (;;) {
+    if (await pred()) return;
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -54,31 +66,54 @@ function ext(): vscode.Extension<unknown> {
   return e;
 }
 
+const daemonPid = (): number | null => {
+  try {
+    const p = fs.readFileSync(path.join(process.env.TITHON_HOME!, "daemon.pid"), "utf8").trim();
+    return p ? Number(p) : null;
+  } catch {
+    return null;
+  }
+};
+
 /**
- * Strip the Extension-Development-Host chrome that would otherwise dominate a
- * 900px-wide GIF: the chat/secondary bar eats a quarter of the width, and the
- * root-user and disabled-extensions toasts sit on top of the cell output. Both
- * come back on their own, so callers re-run this before each capture-worthy phase.
+ * The controller's own bookkeeping for the reconnect notification. The extension
+ * API cannot query the notification surface, and this flag is set on the exact
+ * `withProgress` call that creates it, so it is a faithful proxy for "the user
+ * can see Tithon reconnecting" (see reconnectprogress.test.ts for the full
+ * argument).
+ */
+const progressActive = async (): Promise<boolean> =>
+  ((await vscode.commands.executeCommand("tithon._reconnectProgressActive")) as boolean) ?? false;
+
+/**
+ * Strip chrome that would otherwise dominate the frame. The Explorer and the
+ * activity bar cost a quarter of the width to show one filename the tab already
+ * names; the toasts sit on top of the cell output. Settings handle the activity
+ * bar, but the side bar and notifications need commands, and both come back on
+ * their own — so this runs again before every capture-worthy phase.
  */
 async function tidyChrome(): Promise<void> {
-  for (const cmd of ["workbench.action.closeAuxiliaryBar", "notifications.clearAll"]) {
+  for (const cmd of [
+    "workbench.action.closeSidebar",
+    "workbench.action.closeAuxiliaryBar",
+    "notifications.clearAll",
+  ]) {
     await vscode.commands.executeCommand(cmd).then(undefined, () => undefined);
   }
 }
 
-async function openSelect(uri: vscode.Uri): Promise<vscode.NotebookDocument> {
-  const nb = await vscode.workspace.openNotebookDocument(uri);
-  await vscode.window.showNotebookDocument(nb);
-  await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-  await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
-  await tidyChrome();
-  return nb;
-}
-
-describe("Tithon DEMO ASSET: kernel survives the client", () => {
-  it("streams, survives a disconnect, and restores + resumes on reconnect", async () => {
+describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => {
+  // The default 90s in suite/index.ts is a gate's budget; this one deliberately
+  // sits through a real daemon death, a respawn and a reconnect backoff.
+  it("survives a real SIGKILL, restores and resumes with the timer intact", async function () {
+    this.timeout(300000);
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
+    // Without an interpreter the extension cannot respawn the daemon it is about
+    // to lose, and the demo would end at the disconnect.
+    await vscode.workspace.getConfiguration("tithon")
+      .update("pythonPath", process.env.TITHON_PYTHON!, vscode.ConfigurationTarget.Global);
+
     const cells = parse(readFileSync(uri.fsPath, "utf8")).cells;
     const loopIdx = cells.findIndex((c) => c.kind === "code" && c.body.some((l) => l.text.includes("TITHON_DEMO_LOOP")));
     assert.ok(loopIdx >= 0, "fixture needs the TITHON_DEMO_LOOP cell");
@@ -86,49 +121,103 @@ describe("Tithon DEMO ASSET: kernel survives the client", () => {
 
     // Submitted through a headless client, so the run is owned by the kernel and
     // not by whichever UI happens to be attached — that is the whole premise.
-    const driver = new SessionClient(undefined, uri.toString());
-    await driver.execute(src, {
+    // The workdir hint MUST match what the UI path sends. It selects the session's
+    // on-disk dir (`sessions/<project>-<hash8>/<relpath>` with a hint, a bare
+    // digest without), and that dir is where the kernel's connection file lives.
+    // Seed the session from a hintless client and the respawned daemon resolves
+    // the same notebook to a DIFFERENT dir, finds no connection file, and starts
+    // a second kernel — orphaning the run this demo is about.
+    const driver = new SessionClient(undefined, uri.toString(), workdirForUri(uri));
+    const execId = await driver.execute(src, {
       uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(src), index: loopIdx,
     });
 
     // 1) LIVE — attach and watch it stream.
-    let nb = await openSelect(uri);
-    await waitFor(() => maxStep(cellText(nb.cellAt(loopIdx))) >= 4, 40000, "streaming before disconnect");
-    // Marker first, then dwell: the recorder runs this caption from the marker
-    // to the next one, so the dwell has to sit AFTER the log or the phase gets
-    // no screen time.
-    console.log(`[demo] streaming live before disconnect, at step ${maxStep(cellText(nb.cellAt(loopIdx)))}`);
-    await new Promise((r) => setTimeout(r, 5000)); // let the bar visibly advance on camera
-    const beforeDrop = maxStep(cellText(nb.cellAt(loopIdx)));
+    const nb = await vscode.workspace.openNotebookDocument(uri);
+    await vscode.window.showNotebookDocument(nb);
+    await waitFor(() => nb.cellCount >= 1, 15000, "cells");
+    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await tidyChrome();
+    await waitFor(() => maxStep(cellText(nb.cellAt(loopIdx))) >= 4, 40000, "streaming before the kill");
+    assert.strictEqual(await progressActive(), false, "no reconnect notification while healthy");
+    const beforeObserver = new SessionClient(undefined, uri.toString(), workdirForUri(uri));
+    await beforeObserver.attach(0);
+    const kernelPidBefore = beforeObserver.kernelInfo()?.pid;
+    const startedAtBefore = beforeObserver.executions().find((e) => e.execId === execId)?.startedAt;
+    assert.ok(kernelPidBefore, "the live execution must expose its kernel pid");
+    assert.ok(startedAtBefore, "the live execution must expose its original start time");
+    beforeObserver.close();
+    console.log(`[demo] streaming live, at step ${maxStep(cellText(nb.cellAt(loopIdx)))}`);
+    await new Promise((r) => setTimeout(r, 5000)); // dwell on camera
 
-    // 2) DISCONNECT — closing every editor is what a dropped tunnel looks like
-    //    from the extension host's side: the live session is torn down.
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-    // Marker BEFORE the settle wait: the editors are already gone from the
-    // framebuffer here, and the recorder times the caption off this line.
-    // VSCode can keep the NotebookDocument alive briefly after its editors
-    // close, so the wait below is best-effort and must not stretch the gap.
-    console.log("[demo] disconnected (notebook closed); loop still running on kernel");
-    await waitFor(
-      () => !vscode.workspace.notebookDocuments.some((d) => d.uri.toString() === uri.toString()),
-      1500, "notebook closed").catch(() => undefined);
-    // Long enough to read as "the client is gone", short enough that dead air
-    // does not dominate a ~20s GIF.
-    await new Promise((r) => setTimeout(r, 2000));
+    // A probe run stops here and just holds, so an experiment can interrupt the
+    // connection its own way without this suite also killing the daemon.
+    if (process.env.TITHON_DEMO_PROBE_STOP) {
+      const until = Date.now() + Number(process.env.TITHON_HOLD_MS ?? "0");
+      while (Date.now() < until) {
+        await tidyChrome();
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      driver.close();
+      return;
+    }
 
-    // 3) RECONNECT — reopen; restore + live resume happen with no command.
-    nb = await openSelect(uri);
-    await waitFor(() => maxStep(cellText(nb.cellAt(loopIdx))) >= beforeDrop, 40000, "prior output restored");
-    const atReconnect = maxStep(cellText(nb.cellAt(loopIdx)));
-    console.log(`[demo] reconnected; restored output up to step ${atReconnect}`);
+    // 2) SIGKILL — the real thing, notebook left open.
+    const pidBefore = daemonPid();
+    assert.ok(pidBefore, "daemon.pid must exist before the kill");
+    const beforeKill = maxStep(cellText(nb.cellAt(loopIdx)));
+    process.kill(pidBefore!, "SIGKILL");
+    const killedAt = Date.now();
+    console.log(`[demo] daemon SIGKILLed (pid ${pidBefore}); notebook still open`);
 
-    // 4) STILL RUNNING — output advances past the reconnect point and the cell is
-    //    not marked done, so the spinner and its elapsed timer keep counting from
-    //    the original start. That timer is the proof nothing re-ran.
-    await waitFor(() => maxStep(cellText(nb.cellAt(loopIdx))) > atReconnect + 2, 40000, "live continued");
+    // 3) VSCode shows its own reconnect notification — the camera records the
+    //    product's real failure UI, so the video needs no caption to assert it.
+    await waitFor(progressActive, 25000, "reconnect notification to appear");
+    console.log("[demo] reconnecting — VSCode is showing Tithon's progress notification");
+
+    // 4) The extension auto-starts a fresh daemon, which re-attaches the SAME
+    //    detached kernel through its persisted connection file.
+    await waitFor(() => {
+      const p = daemonPid();
+      return p !== null && p !== pidBefore;
+    }, 60000, "daemon to auto-respawn with a new pid");
+    const newPid = daemonPid();
+
+    // 5) Wait on the OUTCOME, not on the notification's bookkeeping flag. The
+    //    retry loop backs off 1s,2s,4s…30s, so when the toast happens to clear
+    //    is a property of the backoff schedule; that output advances past where
+    //    the kill left it is the actual claim, and it can only happen if the new
+    //    daemon re-attached the still-running kernel.
+    // Poll out loud: if the run does NOT resume, the trace of what the cell was
+    // showing while we waited is the whole diagnosis.
+    const resumeDeadline = Date.now() + 150000;
+    let last = -2;
+    for (;;) {
+      const now = maxStep(cellText(nb.cellAt(loopIdx)));
+      if (now !== last) {
+        console.log(`[demo:trace] +${Math.round((Date.now() - killedAt) / 1000)}s cell shows step ${now} (pre-kill ${beforeKill})`);
+        last = now;
+      }
+      if (now > beforeKill + 2) break;
+      if (Date.now() > resumeDeadline) throw new Error(`timed out: streaming did not resume past the kill (stuck at ${now}, pre-kill ${beforeKill})`);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    await tidyChrome();
+    const atRecover = maxStep(cellText(nb.cellAt(loopIdx)));
+    const afterObserver = new SessionClient(undefined, uri.toString(), workdirForUri(uri));
+    await afterObserver.attach(0);
+    const recovered = afterObserver.executions().find((e) => e.execId === execId);
+    assert.ok(recovered, "the original execution id must survive the daemon kill");
+    assert.strictEqual(afterObserver.kernelInfo()?.pid, kernelPidBefore, "the detached kernel pid must be unchanged");
+    assert.strictEqual(recovered.startedAt, startedAtBefore, "the original execution timer must be unchanged");
+    afterObserver.close();
+    console.log(`[demo] reconnected to a new daemon (pid ${newPid}); streaming again at step ${atRecover}`);
     assert.notStrictEqual(nb.cellAt(loopIdx).executionSummary?.success, true, "cell should still be running");
-    assert.ok(atReconnect >= beforeDrop, "reconnect restored at least the pre-disconnect output");
-    console.log(`[demo] streaming continued after reconnect, now at step ${maxStep(cellText(nb.cellAt(loopIdx)))}`);
+    assert.ok(atRecover > beforeKill, "the run advanced across the kill");
+    await new Promise((r) => setTimeout(r, 3000)); // dwell so the recovery is on camera
+    const afterRecover = maxStep(cellText(nb.cellAt(loopIdx)));
+    assert.ok(afterRecover > atRecover, "live synchronization must keep advancing after the recovered snapshot");
+    console.log(`[demo] streaming continued past the kill, now at step ${afterRecover}`);
 
     // Hold for the recorder's tail, keeping the frame clean the whole time.
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
