@@ -1,6 +1,6 @@
 [project]
 name = "tithon"
-version = "0.2.0"
+version = "0.2.1"
 description = "Tithon - The immortal Python REPL that will set you free."
 readme = "README.md"
 license = { file = "LICENSE" }
