@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS executions(
   submitted_by    TEXT,
   status          TEXT NOT NULL,
   execution_count INTEGER,
+  kernel_msg_id   TEXT,
+  allow_stdin     INTEGER NOT NULL DEFAULT 0,
   started_at      REAL,
   finished_at     REAL,
   folded_json     TEXT
@@ -126,6 +128,12 @@ class Journal:
             self.db.execute("ALTER TABLE executions ADD COLUMN cell_hash TEXT")
         if "cell_index" not in cols:  # added with per-cell identity (duplicate-code fix)
             self.db.execute("ALTER TABLE executions ADD COLUMN cell_index INTEGER")
+        if "kernel_msg_id" not in cols:
+            self.db.execute("ALTER TABLE executions ADD COLUMN kernel_msg_id TEXT")
+        if "allow_stdin" not in cols:
+            self.db.execute(
+                "ALTER TABLE executions ADD COLUMN allow_stdin INTEGER NOT NULL DEFAULT 0"
+            )
 
     # -- messages ----------------------------------------------------------
     def append_message(self, exec_id: str | None, msg_type: str, content: dict,
@@ -175,26 +183,149 @@ class Journal:
     def insert_execution(self, exec_id: str, seq: int, code: str,
                          submitted_by: str | None = None,
                          origin: dict | None = None,
-                         cell_hash: str | None = None) -> None:
+                         cell_hash: str | None = None,
+                         allow_stdin: bool = False) -> None:
         uri = origin.get("uri") if origin else None
         rng = origin.get("range") if origin else None
         idx = origin.get("index") if origin else None
         cell_range = json.dumps(rng) if rng is not None else None
         self.db.execute(
             "INSERT INTO executions(exec_id, session_id, seq, code, submitted_by, status,"
-            " cell_origin_uri, cell_range, cell_hash, cell_index)"
-            " VALUES(?,?,?,?,?, 'queued', ?,?,?,?)",
+            " cell_origin_uri, cell_range, cell_hash, cell_index, allow_stdin)"
+            " VALUES(?,?,?,?,?, 'queued', ?,?,?,?,?)",
             (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range,
-             cell_hash, idx),
+             cell_hash, idx, int(allow_stdin)),
         )
 
-    def mark_started(self, exec_id: str) -> float:
+    def mark_started(self, exec_id: str, kernel_msg_id: str | None = None) -> float:
         ts = time.time()
         self.db.execute(
-            "UPDATE executions SET status='running', started_at=? WHERE exec_id=?",
-            (ts, exec_id),
+            "UPDATE executions SET status='running', started_at=?, kernel_msg_id=?"
+            " WHERE exec_id=?",
+            (ts, kernel_msg_id, exec_id),
         )
         return ts
+
+    def prepare_reattach(self) -> list[tuple[str, str, bool]]:
+        """Keep only executions proven accepted by the surviving kernel.
+
+        A persisted request id proves merely that the old client sent a frame.
+        A journaled old-parent ``status: busy`` proves ipykernel actually began
+        handling it. Queued rows and ambiguous running rows cannot be recovered
+        after the daemon's in-memory queue/router disappeared, so they become
+        orphaned. The serial worker makes at most one accepted row recoverable.
+        """
+        recoverable: list[tuple[str, str, bool]] = []
+        for exec_id, msg_id, allow_stdin in self.db.execute(
+            "SELECT exec_id, kernel_msg_id, allow_stdin FROM executions"
+            " WHERE status='running' ORDER BY seq"
+        ):
+            accepted = False
+            if msg_id:
+                for (content_json,) in self.db.execute(
+                    "SELECT content_json FROM messages"
+                    " WHERE exec_id=? AND msg_type='status' ORDER BY msg_seq",
+                    (exec_id,),
+                ):
+                    try:
+                        if json.loads(content_json).get("execution_state") == "busy":
+                            accepted = True
+                            break
+                    except (TypeError, ValueError):
+                        continue
+            if accepted:
+                recoverable.append((exec_id, msg_id, bool(allow_stdin)))
+        keep = recoverable[-1:]  # defensive: one kernel can execute only one request here
+        keep_ids = {row[0] for row in keep}
+        candidates = [
+            exec_id for (exec_id,) in self.db.execute(
+                "SELECT exec_id FROM executions WHERE status IN ('queued','running')"
+                + (
+                    f" AND exec_id NOT IN ({','.join('?' for _ in keep_ids)})"
+                    if keep_ids else ""
+                ),
+                tuple(keep_ids),
+            )
+        ]
+        self._orphan_executions(candidates)
+        return keep
+
+    def _orphan_executions(self, exec_ids: list[str]) -> int:
+        """Atomically orphan rows and append replayable terminal events."""
+        if not exec_ids:
+            return 0
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            count = 0
+            for exec_id in exec_ids:
+                row = self.db.execute(
+                    "SELECT status FROM executions WHERE exec_id=?"
+                    " AND status IN ('queued','running')",
+                    (exec_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                ts = time.time()
+                if row[0] == "running":
+                    self.db.execute(
+                        "UPDATE executions SET status='orphaned',"
+                        " finished_at=COALESCE("
+                        "  (SELECT MAX(ts) FROM messages WHERE messages.exec_id=executions.exec_id),"
+                        "  started_at) WHERE exec_id=?",
+                        (exec_id,),
+                    )
+                else:
+                    self.db.execute(
+                        "UPDATE executions SET status='orphaned' WHERE exec_id=?",
+                        (exec_id,),
+                    )
+                self.append_message(
+                    exec_id, "tithon.done",
+                    {"status": "orphaned", "execution_count": None, "ts": ts},
+                )
+                count += 1
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return count
+
+    def finish_recovered(self, exec_id: str, status: str, folded_json: str) -> tuple[float, int]:
+        """Atomically terminalize a recovered execution and append its done event."""
+        ts = time.time()
+        payload = {"status": status, "execution_count": None, "ts": ts}
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            updated = self.db.execute(
+                "UPDATE executions SET status=?, execution_count=NULL, finished_at=?,"
+                " folded_json=? WHERE exec_id=? AND status='running'",
+                (status, ts, folded_json, exec_id),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError(f"execution {exec_id} is no longer recoverable")
+            seq = self.append_message(exec_id, "tithon.done", payload)
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+        return ts, seq
+
+    def has_pending_input(self, exec_id: str) -> bool:
+        """Whether the newest input lifecycle row is an unresolved request."""
+        row = self.db.execute(
+            "SELECT msg_type FROM messages WHERE exec_id=?"
+            " AND msg_type IN ('tithon.input_request','tithon.input_resolved')"
+            " ORDER BY msg_seq DESC LIMIT 1",
+            (exec_id,),
+        ).fetchone()
+        return row is not None and row[0] == "tithon.input_request"
+
+    def has_error(self, exec_id: str) -> bool:
+        """Whether the append-only journal contains an error from this execution."""
+        return self.db.execute(
+            "SELECT 1 FROM messages WHERE exec_id=? AND msg_type='error' LIMIT 1",
+            (exec_id,),
+        ).fetchone() is not None
 
     def mark_done(self, exec_id: str, status: str, execution_count: int | None,
                   folded_json: str) -> float:
@@ -229,17 +360,13 @@ class Journal:
         wall-clock-since-then. A ``queued`` exec never started, so it keeps a NULL
         ``finished_at``.
         """
-        running = self.db.execute(
-            "UPDATE executions SET status='orphaned',"
-            " finished_at=COALESCE("
-            "  (SELECT MAX(ts) FROM messages WHERE messages.exec_id=executions.exec_id),"
-            "  started_at)"
-            " WHERE status='running'"
-        ).rowcount
-        queued = self.db.execute(
-            "UPDATE executions SET status='orphaned' WHERE status='queued'"
-        ).rowcount
-        return running + queued
+        exec_ids = [
+            exec_id for (exec_id,) in self.db.execute(
+                "SELECT exec_id FROM executions WHERE status IN ('queued','running')"
+                " ORDER BY seq"
+            )
+        ]
+        return self._orphan_executions(exec_ids)
 
     def executions(self) -> list[tuple]:
         """Rows by seq: (exec_id, seq, code, status, execution_count, folded_json,

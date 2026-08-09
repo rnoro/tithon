@@ -119,15 +119,17 @@ Schema outline:
 
 ```sql
 executions(exec_id, session_id, seq, code, cell_origin_uri, cell_range,
-           submitted_by, status, execution_count, started_at, finished_at)
+           submitted_by, status, execution_count, kernel_msg_id, allow_stdin,
+           started_at, finished_at)
 messages(msg_seq, session_id, exec_id, msg_type, content_json, artifact_ref, ts)
 artifacts(artifact_id, sha256, mime, rel_path, bytes_len)
 ```
 
-- **Original iopub/shell messages are preserved verbatim** (`stream`,
+- **Original execution iopub messages are preserved verbatim** (`stream`,
   `display_data`, `update_display_data`, `clear_output`, `execute_result`,
-  `error`, `status`). Replay semantics are the server's responsibility, not the
-  client's.
+  `error`, `status`). Internal control-request shell replies are consumed by the
+  daemon and are not part of an execution's replay stream. Replay semantics are
+  the server's responsibility, not the client's.
 - **Rich outputs are files, not base64.** On receipt, `image/png`, `image/jpeg`,
   `image/svg+xml`, etc. are decoded and written to
   `<workdir>/.tithon/outputs/exec{N}_{idx}_{sha8}.{ext}`; the journal stores only
@@ -150,6 +152,21 @@ A client attaching gets **snapshot + delta-since**, so reconnect cost is
 proportional to the _final_ output size, not the number of messages. A
 TS port of the folding logic ([`outputFold.ts`](../extension/src/outputFold.ts))
 lets the client fold live deltas the same way the daemon does.
+
+If the daemon dies while ipykernel is executing a request, re-attachment
+restores routing only when both its request id and the kernel's durable
+parent-scoped `status: busy` were journaled. Output published after the new
+daemon subscribes continues into the same fold; output published while no
+daemon was subscribed cannot be reconstructed. Because the old shell reply is
+addressed to the dead client identity, recovery terminalizes the execution as
+`orphaned` with an unknown execution count (or `error` when the raw journal
+contains an error frame). Queued and merely-sent requests are also orphaned,
+with replayable terminal events, rather than guessed or re-executed.
+An `input_request` already journaled at crash time is interrupted during
+recovery because its reply route belonged to the dead client. The narrower
+receive-before-journal crash window cannot be distinguished from a long-running
+stdin-enabled computation without kernel-side identity recovery; it remains a
+documented limitation rather than interrupting every such computation.
 
 ### 3.4 Widget mirror (ipywidgets / comm)
 
@@ -448,7 +465,7 @@ make vscode      # every real-VSCode test (needs network + xvfb; one shared buil
 make all         # fast + vscode
 
 # topic bundles (a test lives in exactly one)
-make core        # v1–v4    journal / fold / artifact / daemon-crash survival
+make core        # v1–v4 v47 v49 v50 v57 core journal / daemon lifecycle
 make serializer  # v6       percent <-> notebook round-trip
 make backpressure# v9       slow-client host protection
 make widgets     # v5 v29 v30           ipywidget mirror + render + live animation
@@ -465,6 +482,7 @@ Capability → what it guarantees → how it is verified:
 | Capability               | Guarantee                                           | Verified by                                        |
 | ------------------------ | --------------------------------------------------- | -------------------------------------------------- |
 | Kernel persistence       | Kernel survives daemon crash/restart                | `v4` (`kill -9` daemon; PID + variable continuity) |
+| In-flight crash recovery | Accepted cell output resumes after daemon restart   | `v57` (durable busy, delta + snapshot + next cell) |
 | Loss-free journal        | Every message preserved + folded snapshot           | `v1` (seq integrity), `v2` (50k messages)          |
 | Reconnect sync           | Snapshot + monotonic-seq delta                      | `v1`, `v2` (client stream == journal)              |
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |

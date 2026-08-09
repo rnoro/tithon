@@ -213,6 +213,11 @@ class Session:
         # Completion barrier: `status: idle` for an execution's parent, signalled
         # from `_handle_iopub` and awaited by `_run_one` (see `_await_idle`).
         self._idle_events: dict[str, asyncio.Event] = {}
+        # Recovery probes are kernel requests, not user executions. Their status
+        # frames need a parent-keyed fence without ever being folded into a cell.
+        self._control_fences: dict[str, dict] = {}
+        self._recovery_gate: asyncio.Event | None = None
+        self._recovering = False
         # The unanswered input()/getpass() prompt, if a cell is blocked waiting on
         # stdin: {exec_id, prompt, password}. Surfaced live (tithon.input_request)
         # and in the snapshot (pending_input) so a reconnecting client re-prompts.
@@ -264,18 +269,35 @@ class Session:
         self.kc = self.kernel.make_client()
         if spawned:
             await self._wait_kernel_ready(timeout=120)
-        # Must stay ahead of `_start_tasks()`: this reads the shell channel
-        # DIRECTLY (see `_wait_kernel_ready` for why that is safe only here).
-        await self._capture_kernel_info()
-        await asyncio.sleep(STDIN_SETTLE_S)  # stdin DEALER registers before the first run
-        orphaned = self.journal.orphan_inflight()
+            # Must stay ahead of `_start_tasks()`: this reads the shell channel
+            # directly. A re-attached busy kernel takes the separate recovery path
+            # below; waiting on kernel_info there would discard the output emitted
+            # while that request sat behind the running cell (RISKS #18).
+            await self._capture_kernel_info()
+            await asyncio.sleep(STDIN_SETTLE_S)
+            orphaned = self.journal.orphan_inflight()
+            recovery = []
+        else:
+            recovery = self.journal.prepare_reattach()
+            orphaned = 0
+            if not recovery:
+                # A surviving idle kernel still gets a newly-created stdin DEALER.
+                # Let it register before the first post-attach execution can run.
+                await asyncio.sleep(STDIN_SETTLE_S)
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
         self._rebuild_folds()
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
         self._classify_kernel_generation()
-        self._start_tasks()
+        self._recovery_gate = asyncio.Event()
+        if not recovery:
+            self._recovery_gate.set()
+        else:
+            exec_id, msg_id, _allow_stdin = recovery[0]
+            self._msgid_to_exec[msg_id] = exec_id
+            self._idle_events[exec_id] = asyncio.Event()
+        self._start_tasks(recovery[0] if recovery else None)
         # Becoming ready counts as activity: the idle clock must not include the
         # kernel-spawn seconds, or a short timeout could reap a session in the
         # gap between creation and the creating client's first op.
@@ -348,17 +370,24 @@ class Session:
         )
         self.kernel_generation = seq
 
-    def _start_tasks(self) -> None:
+    def _start_tasks(self, recovery: tuple[str, str, bool] | None = None) -> None:
         # A cancelled worker (kernel restart) may have died mid-batch with _busy
         # still set; the fresh worker starts with a clean slate — without this a
         # restarted session could never become idle-GC eligible again.
-        self._busy = False
+        self._recovering = recovery is not None
+        self._busy = self._recovering
         self._tasks = [
             asyncio.create_task(self._iopub_pump(), name=f"iopub-{self.session_id}"),
             asyncio.create_task(self._shell_pump(), name=f"shell-{self.session_id}"),
             asyncio.create_task(self._stdin_pump(), name=f"stdin-{self.session_id}"),
-            asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
         ]
+        if recovery is not None:
+            self._tasks.append(asyncio.create_task(
+                self._recover_inflight(*recovery), name=f"recover-{self.session_id}"
+            ))
+        self._tasks.append(asyncio.create_task(
+            self._exec_worker(), name=f"exec-{self.session_id}"
+        ))
 
     # -- kernel liveness watchdog ----------------------------------------------
     def check_kernel_liveness(self) -> bool:
@@ -416,6 +445,7 @@ class Session:
             and self._queue.qsize() == 0
             and not self._busy
             and self._pending_input is None
+            and not self._recovering
             and self.kernel_status != "busy"
             and self.idle_seconds() >= timeout
         )
@@ -431,6 +461,7 @@ class Session:
             except Exception:  # pragma: no cover - defensive
                 log.exception("[%s] task teardown error", self.session_id)
         self._tasks = []
+        self._recovering = False
 
     async def stop(self, kill_kernel: bool = False) -> None:
         await self._stop_tasks()
@@ -474,7 +505,13 @@ class Session:
             self.kc.stop_channels()
         except Exception:  # pragma: no cover - defensive
             pass
+        orphan_seq = self.journal.max_seq()
         self.journal.orphan_inflight()
+        for seq, exec_id, msg_type, content_json in self.journal.messages_after(orphan_seq):
+            if msg_type == "tithon.done":
+                self._broadcast(event_from_message(
+                    seq, exec_id, msg_type, json.loads(content_json)
+                ))
         # Discard batches still WAITING in the queue (submitted behind the cell that
         # was running): orphan_inflight already flipped their queued execs to
         # 'orphaned', so leaving them in the queue would make the fresh worker run
@@ -503,6 +540,9 @@ class Session:
         # pump's cancellation; clear both maps so the fresh kernel starts clean.
         self._fail_shell_waiters("kernel restarted")
         self._idle_events.clear()
+        self._control_fences.clear()
+        self._recovery_gate = asyncio.Event()
+        self._recovery_gate.set()
         self._start_tasks()
         self._journal_lifecycle(
             None, "tithon.kernel",
@@ -659,6 +699,105 @@ class Session:
         except Exception:  # pragma: no cover - best effort, label is cosmetic
             log.exception("[%s] kernel_info capture failed", self.session_id)
 
+    async def _recovery_probe(self) -> None:
+        """Establish a post-subscription fence on a re-attached kernel.
+
+        The recoverable old request has a durable old-parent ``busy`` row, so it
+        is already inside ipykernel's serial main-shell handler. A kernel_info
+        request sent after the new pumps start can run only after that handler.
+        The SUB slow-joiner window can still hide a probe's status frames, so a
+        probe counts only when this daemon observes its own busy, shell reply,
+        and idle; otherwise another probe is sent.
+        """
+        while True:
+            if not self.kernel.is_alive():
+                raise ConnectionError("kernel died during in-flight recovery")
+            msg_id = None
+            try:
+                msg_id = self.kc.kernel_info()
+                fut = self._expect_shell(msg_id)
+                fence = {"busy": False, "idle": asyncio.Event()}
+                self._control_fences[msg_id] = fence
+                reply = await asyncio.wait_for(asyncio.shield(fut), 10.0)
+                try:
+                    await asyncio.wait_for(fence["idle"].wait(), 2.0)
+                except (asyncio.TimeoutError, TimeoutError):
+                    continue
+                if not fence["busy"]:
+                    continue
+                li = (reply.get("content") or {}).get("language_info") or {}
+                self.kernel_pyversion = li.get("version")
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                continue
+            except Exception:
+                if not self.kernel.is_alive():
+                    raise
+                log.exception("[%s] recovery probe failed; retrying", self.session_id)
+                await asyncio.sleep(0.2)
+                continue
+            finally:
+                if msg_id is not None:
+                    self._shell_waiters.pop(msg_id, None)
+                    self._control_fences.pop(msg_id, None)
+
+    async def _recover_inflight(
+        self, exec_id: str, msg_id: str, allow_stdin: bool
+    ) -> None:
+        """Resume journaling an accepted execution owned by the previous daemon.
+
+        The old shell reply is addressed to the dead client's ZMQ identity, so a
+        new daemon cannot honestly recover its success flag or execution count.
+        Output continues under the durable parent mapping, then the execution is
+        terminalized as ``orphaned`` (or ``error`` when an error frame proves it)
+        once the control fence says ipykernel left the old handler.
+        """
+        log.info("[%s] recovering in-flight exec %s (msg_id=%s)",
+                 self.session_id, exec_id, msg_id)
+        terminalized = False
+        try:
+            if allow_stdin and self.journal.has_pending_input(exec_id):
+                # An input_request is routed to the old client's stdin identity;
+                # interrupt is the only bounded, honest recovery policy.
+                self.kernel.interrupt()
+                self._journal_lifecycle(
+                    exec_id, "tithon.input_resolved", {"exec_id": exec_id}
+                )
+            await self._recovery_probe()
+            outputs = self._folds[exec_id].outputs()
+            status = "error" if self.journal.has_error(exec_id) else "orphaned"
+            folded = json.dumps(outputs)
+            finished_at, seq = self.journal.finish_recovered(exec_id, status, folded)
+            self._broadcast(event_from_message(
+                seq, exec_id, "tithon.done",
+                {"status": status, "execution_count": None, "ts": finished_at},
+            ))
+            log.info("[%s] recovered exec %s terminalized status=%s",
+                     self.session_id, exec_id, status)
+            terminalized = True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("[%s] in-flight recovery failed for %s", self.session_id, exec_id)
+            if not self.kernel.is_alive():
+                self._emit_kernel_dead(exec_id)
+                folded = json.dumps(self._folds[exec_id].outputs())
+                finished_at, seq = self.journal.finish_recovered(exec_id, "error", folded)
+                self._broadcast(event_from_message(
+                    seq, exec_id, "tithon.done",
+                    {"status": "error", "execution_count": None, "ts": finished_at},
+                ))
+                terminalized = True
+        finally:
+            self._msgid_to_exec.pop(msg_id, None)
+            self._idle_events.pop(exec_id, None)
+            if terminalized:
+                self._recovering = False
+                self._busy = False
+                self.touch()
+                if self._recovery_gate is not None:
+                    self._recovery_gate.set()
+
     # -- kernel message flow ---------------------------------------------------
     async def _iopub_pump(self) -> None:
         while True:
@@ -748,6 +887,18 @@ class Session:
                 log.debug("[%s] kernel status: %s → %s", self.session_id, self.kernel_status, new_state)
             self.kernel_status = new_state
         parent_id = (msg.get("parent_header") or {}).get("msg_id")
+        control = self._control_fences.get(parent_id)
+        if control is not None and msg_type == "status":
+            # Control traffic is part of the raw IOPub history but never belongs
+            # to a cell fold. Signal only after its row is durable.
+            seq = self.journal.append_message(None, msg_type, content)
+            self._broadcast(event_from_message(seq, None, msg_type, content))
+            state = content.get("execution_state")
+            if state == "busy":
+                control["busy"] = True
+            elif state == "idle":
+                control["idle"].set()
+            return
         exec_id = self._msgid_to_exec.get(parent_id)
         if is_comm(msg_type):
             self._handle_comm(exec_id, msg_type, content, msg.get("buffers") or [])
@@ -889,6 +1040,8 @@ class Session:
             self._journal_lifecycle(stale, "tithon.input_resolved", {"exec_id": stale})
 
     async def _exec_worker(self) -> None:
+        if self._recovery_gate is not None:
+            await self._recovery_gate.wait()
         while True:
             batch, stop_on_error, allow_stdin = await self._queue.get()
             self._busy = True  # batch in flight: the idle-GC must not reap us
@@ -928,15 +1081,22 @@ class Session:
         ``allow_stdin`` gates input()/getpass()/breakpoint()/pdb; when False the
         kernel raises StdinNotImplementedError at once instead (see
         :meth:`_stdin_pump`)."""
-        started_at = self.journal.mark_started(exec_id)
-        self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
         # A kernel that already died (a previous cell crashed it) can't run this
         # cell — fail fast instead of executing into the void and timing out.
         if not self.kernel.is_alive():
+            started_at = self.journal.mark_started(exec_id)
+            self._journal_lifecycle(exec_id, "tithon.started", {"ts": started_at})
             self._emit_kernel_dead(exec_id)
             status, ec = "error", None
         else:
             msg_id = self.kc.execute(code, allow_stdin=allow_stdin)
+            # Persist the parent id before yielding. Recovery still requires the
+            # kernel's old-parent busy row, so a frame merely buffered in this
+            # dying client can never be mistaken for accepted work.
+            started_at = self.journal.mark_started(exec_id, msg_id)
+            self._journal_lifecycle(
+                exec_id, "tithon.started", {"ts": started_at, "kernel_msg_id": msg_id}
+            )
             # Register BOTH awaiters with no await in between, so neither pump can
             # deliver this execution's terminator before anyone is listening.
             self._msgid_to_exec[msg_id] = exec_id
@@ -1169,7 +1329,8 @@ class Session:
             # even for CLI runs that send no origin (SPEC.md).
             cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
             self.journal.insert_execution(
-                exec_id, self._exec_counter, code, submitted_by, origin, cell_hash
+                exec_id, self._exec_counter, code, submitted_by, origin, cell_hash,
+                allow_stdin=allow_stdin,
             )
             self._folds[exec_id] = ExecutionFold()
             # The queued event carries the origin so a live client can map this
