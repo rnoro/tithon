@@ -172,10 +172,25 @@ class VSCodeCellSink implements CellSink {
   // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
   private readonly execs = new Map<number, { exec: vscode.NotebookCellExecution; started: boolean }>();
   private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
-  // Per cell+display_id: the NotebookCellOutput a display_data created, so a later
-  // update_display_data REPLACES it in place (replaceOutputItems) instead of
-  // stacking a new output each frame. Keyed `${idx}:${displayId}`, mirroring streamOut.
-  private readonly displayOut = new Map<string, vscode.NotebookCellOutput>();
+  /**
+   * Per display_id: the owning cell and every NotebookCellOutput created under
+   * that id, so an `update_display_data` REPLACES them in place
+   * (replaceOutputItems) instead of stacking a new output each frame.
+   *
+   * Keyed by display_id ALONE, unlike streamOut's `${idx}:`-prefixed key, and
+   * deliberately NOT cleared when the creating execution ends: a display outlives
+   * its cell's run, and `update_display` from ANOTHER cell must still find it
+   * (RISKS #6).
+   *
+   * `outs` is a LIST because both folds update EVERY item carrying the id
+   * (`folding.py` / `outputFold.ts`), so `display(x, display_id="d")` twice then
+   * one update changes two outputs; a single tracked handle would leave the
+   * second showing the old value live and the new one after a reconnect. An
+   * EMPTY list with the key still present is the third state — id known, its
+   * outputs destroyed (re-run / clear / repaint) — which is what lets a stale
+   * update no-op instead of resurrecting output the daemon fold no longer holds.
+   */
+  private readonly displays = new Map<string, { idx: number; outs: vscode.NotebookCellOutput[] }>();
   // Per-cell promise chain: image appends fetch bytes asynchronously, so the
   // cell's done/end must queue behind them or VSCode rejects "execution ended".
   private readonly tail = new Map<number, Promise<void>>();
@@ -242,6 +257,7 @@ class VSCodeCellSink implements CellSink {
     if (!rec.started) {
       rec.exec.start(startMs ?? Date.now());
       void rec.exec.clearOutput();
+      this.invalidateDisplays(idx); // that clearOutput destroyed this cell's outputs
       rec.started = true;
     }
     return rec.exec;
@@ -253,19 +269,51 @@ class VSCodeCellSink implements CellSink {
     }
   }
 
-  /** Forget a cell's display_id→output map (on clear/end): a finished execution
-   *  can't be replaced into, and a fresh run re-registers its own displays. */
-  private forgetDisplays(idx: number): void {
-    for (const k of [...this.displayOut.keys()]) {
-      if (k.startsWith(`${idx}:`)) this.displayOut.delete(k);
+  /**
+   * Mark this cell's tracked displays as destroyed — call wherever the cell's
+   * outputs are actually wiped (a run's opening clearOutput, a clear, a repaint).
+   * The entries are kept, not deleted: a later update for one of them must be
+   * able to tell "never seen" (append it) from "seen, then cleared" (drop it, as
+   * the daemon fold does), and only a surviving entry can say the latter.
+   * Ending an execution is deliberately NOT one of these points — it leaves the
+   * cell's outputs, and so its handles, perfectly valid.
+   */
+  private invalidateDisplays(idx: number): void {
+    for (const e of this.displays.values()) {
+      if (e.idx === idx) e.outs = [];
     }
   }
 
-  /** Remember the NotebookCellOutput for a display_id-bearing output so a later
-   *  update_display_data can replace it in place rather than appending. */
+  /**
+   * Remember the NotebookCellOutput a display_id-bearing output was rendered as,
+   * so a later update_display_data can replace it in place rather than appending.
+   *
+   * A CREATE takes ownership of the id for this cell (matching the daemon's own
+   * "most recent creator wins"); further creates in the same cell add a handle
+   * rather than replacing, because an update reaches all of them.
+   */
   private registerDisplay(idx: number, item: OutputItem, out: vscode.NotebookCellOutput): void {
     const did = (item as { display_id?: string }).display_id;
-    if (typeof did === "string") this.displayOut.set(`${idx}:${did}`, out);
+    if (typeof did !== "string") return;
+    const e = this.displays.get(did);
+    if (e && e.idx === idx) e.outs.push(out);
+    else this.displays.set(did, { idx, outs: [out] });
+  }
+
+  /**
+   * Re-point an EXISTING registration at freshly painted handles (repaint only).
+   *
+   * A repaint re-materializes what a cell's fold already holds — it is not a new
+   * `display_data`, so it must never TRANSFER ownership. Repainting cell A, whose
+   * fold still carries an id that cell C has since re-created, would otherwise
+   * hand the id back to A and send C's next update at A's handles.
+   */
+  private refreshDisplay(idx: number, item: OutputItem, out: vscode.NotebookCellOutput): void {
+    const did = (item as { display_id?: string }).display_id;
+    if (typeof did !== "string") return;
+    const e = this.displays.get(did);
+    if (e && e.idx !== idx) return; // owned by another cell — leave it alone
+    this.registerDisplay(idx, item, out);
   }
 
   appendStream(idx: number, name: string, text: string): void {
@@ -355,7 +403,9 @@ class VSCodeCellSink implements CellSink {
       e.end(success, endMs ?? fallback);
       this.execs.delete(idx);
       this.forgetStreams(idx);
-      this.forgetDisplays(idx);
+      // The display registrations above deliberately SURVIVE this end: a
+      // reconnect is exactly when another cell's pending update_display_data for
+      // one of them replays (see `updateDisplay`).
     }
     // a "running" cell stays started until its live `done` event arrives.
   }
@@ -385,35 +435,58 @@ class VSCodeCellSink implements CellSink {
   /**
    * In-place display update (update_display_data): replace the OUTPUT a prior
    * display_data created — keyed by display_id — instead of appending a new one,
-   * so a live timer / re-displayed figure updates in place (no stacking). Falls
-   * back to append (and registers) when the display isn't tracked yet (an update
-   * before its create, or a display from another cell/run). Serialized on the
-   * cell's chain so it lands after any in-flight append of the SAME display
-   * (registration order) and before the trailing done end().
+   * so a live timer / re-displayed figure updates in place (no stacking).
+   *
+   * `idx` is the cell of the display's OWNER, which the daemon resolved
+   * session-wide (RISKS #6) — so it need not be the cell that emitted the
+   * update, and that cell's run may be long finished. Hence the two branches,
+   * mirroring `clear()`'s split: a running cell edits through its live
+   * execution; a finished one gets a MOMENTARY execution that starts, replaces
+   * and ends immediately (VSCode exposes no output-only edit). Never
+   * `ensureStarted()` on the finished branch — it would clear the whole cell and
+   * leave a spinner no `done` will ever end (RISKS #15).
+   *
+   * An update for a display this sink has no live handle for is DROPPED, in both
+   * branches. Both folds no-op on an id no item carries, so appending one here
+   * would show output live that a repaint or a reconnect immediately takes away.
    */
   updateDisplay(idx: number, displayId: string, item: OutputItem): void {
-    const e = this.ensureStarted(idx);
-    if (!e) return;
+    if (this.disposed) return;
+    const rec = this.execs.get(idx);
     const pending = imageRefsOf(item)
       .map((r) => r.artifact_id)
       .filter((id) => this.client.cachedArtifact(id) === undefined);
-    // Resolve the target output INSIDE the chain: a create (appendOutput) on the
-    // same display_id registers it from its own chained closure, so looking up
-    // synchronously here could miss a create still pending earlier in the chain
-    // (e.g. a figure create awaiting bytes) and wrongly append a new output.
+    // Resolve the handles INSIDE the chain, never at the call site: a create
+    // (appendOutput) on the same display_id registers from its own chained
+    // closure, and a repaint replaces every handle from its own — reading them
+    // here would target output that no longer exists by the time we write.
+    if (rec?.started) {
+      const e = this.ensureStarted(idx)!;
+      this.chain(idx, async () => {
+        if (pending.length) await this.client.prefetchArtifacts(pending);
+        for (const out of this.displays.get(displayId)?.outs ?? []) {
+          await e.replaceOutputItems(toOutputItems(item, this.ctx()), out);
+        }
+      });
+      return;
+    }
     this.chain(idx, async () => {
       if (pending.length) await this.client.prefetchArtifacts(pending);
-      const existing = this.displayOut.get(`${idx}:${displayId}`);
-      if (!existing) {
-        // Update before its create (or a foreign display): append + register so a
-        // further update replaces in place.
-        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
-        this.registerDisplay(idx, item, out);
-        await e.appendOutput(out);
-        this.forgetStreams(idx);
-        return;
+      // Re-checked inside the chain for the same reason as repaint(): `chain`
+      // defers, so this can land after endAll()/dispose().
+      if (this.disposed) return;
+      const outs = this.displays.get(displayId)?.outs ?? [];
+      const c = outs.length ? this.cell(idx) : undefined;
+      if (!c) return; // nothing to edit — and a cell with no execution is never grown
+      const exec = this.controller.createNotebookCellExecution(c);
+      exec.start(Date.now());
+      try {
+        for (const out of outs) {
+          await exec.replaceOutputItems(toOutputItems(item, this.ctx()), out);
+        }
+      } finally {
+        exec.end(undefined, Date.now()); // in a `finally`: a throw must not strand it
       }
-      await e.replaceOutputItems(toOutputItems(item, this.ctx()), existing);
     });
   }
 
@@ -434,7 +507,7 @@ class VSCodeCellSink implements CellSink {
     const paint = async (e: vscode.NotebookCellExecution) => {
       await this.prefetch(items); // image bytes, so ctx() resolves synchronously below
       this.forgetStreams(idx);
-      this.forgetDisplays(idx);
+      this.invalidateDisplays(idx); // replaceOutput below drops every existing handle
       // Filter FIRST, then map: toCellOutputs drops items it will not render, so
       // zipping the unfiltered list against its result shifts every index past
       // the first drop and registers the wrong handles — a later stream delta
@@ -444,7 +517,7 @@ class VSCodeCellSink implements CellSink {
       await e.replaceOutput(outs);
       painted.forEach((item, i) => {
         if (item.output_type === "stream") this.streamOut.set(`${idx}:${item.name}`, outs[i]);
-        else this.registerDisplay(idx, item, outs[i]);
+        else this.refreshDisplay(idx, item, outs[i]);
       });
     };
     if (rec?.started) {
@@ -456,7 +529,13 @@ class VSCodeCellSink implements CellSink {
     // Nothing to show and nothing showing: a momentary execution here would be
     // pure UI churn on a cell that is already correct (mirrors clear()'s own
     // outputs.length guard, which stops our own clear echoing back as a flash).
-    if (!items.length && c.outputs.length === 0) return;
+    // The tracked displays still have to be invalidated — the cell holding no
+    // outputs is exactly what makes their handles dead — on the chain so it
+    // lands after, not before, any op already queued for this cell.
+    if (!items.length && c.outputs.length === 0) {
+      this.chain(idx, async () => this.invalidateDisplays(idx));
+      return;
+    }
     this.chain(idx, async () => {
       // Re-checked INSIDE the chain: `chain` defers, so a flush that passed the
       // guard above can still land after endAll()/dispose(). Opening a proxy
@@ -500,7 +579,7 @@ class VSCodeCellSink implements CellSink {
       }
     }
     this.forgetStreams(idx);
-    this.forgetDisplays(idx);
+    this.invalidateDisplays(idx);
   }
 
   status(idx: number, status: string, tsMs?: number): void {
@@ -526,24 +605,32 @@ class VSCodeCellSink implements CellSink {
           }
           rec.exec.end(status === "done", endMs);
         } finally {
-          // Forget the stream/display maps ON THE CHAIN, not synchronously at the
-          // call site: appendStream and updateDisplay resolve those maps INSIDE
-          // their own chained closure, so a wipe from the call site jumps the
-          // queue and the still-pending op no longer finds its output. A
-          // synchronous forget made the LAST update_display_data of a run — which
-          // shares a 50ms flush window with `done` now that the daemon's real
-          // completion barrier replaced its 0.05s guess (ADR-079) — take
-          // updateDisplay's append-and-register fallback and stack a SECOND
-          // output: v33's "expected a single in-place output, got 2".
-          // `finally`, because the pre-ADR-084 forget was unconditional: an
-          // exec.end() throw (VSCode rejects a disposed/ended execution) must not
-          // leak the maps into the next run, where replaceOutputItems would then
-          // target a dead NotebookCellOutput.
+          // Forget the stream map ON THE CHAIN, not synchronously at the call
+          // site: appendStream resolves it INSIDE its own chained closure, so a
+          // wipe from the call site jumps the queue and the still-pending op no
+          // longer finds its output block. `finally`, because an exec.end() throw
+          // (VSCode rejects a disposed/ended execution) must not leak the map
+          // into the next run, where appendOutputItems would then target a dead
+          // NotebookCellOutput. Displays are NOT forgotten here — see
+          // `displays`; the next run's opening clearOutput invalidates them.
           this.forgetStreams(idx);
-          this.forgetDisplays(idx);
         }
       });
     }
+  }
+
+  /**
+   * The USER emptied this cell's outputs (native "Clear Outputs"), so its
+   * tracked display handles are already dead — the fourth point where a cell's
+   * outputs are destroyed, alongside the three inside this class.
+   *
+   * It cannot wait for the daemon's tombstone to echo back into `repaint`: in
+   * that window a cross-cell update for a display this cell owns would call
+   * `replaceOutputItems` on an erased handle (RISKS #6 made those handles
+   * outlive their execution, which is what opened the window).
+   */
+  notifyUserCleared(idx: number): void {
+    this.invalidateDisplays(idx);
   }
 
   /** True while a proxy execution is open for this cell — i.e. the sink itself
@@ -568,7 +655,6 @@ class VSCodeCellSink implements CellSink {
       if (!rec.started) rec.exec.start(Date.now());
       rec.exec.end(undefined, Date.now());
       this.forgetStreams(idx);
-      this.forgetDisplays(idx);
     }
     this.execs.clear();
   }
@@ -1248,6 +1334,9 @@ export class TithonNotebookController {
       if (!ch.outputs || ch.outputs.length !== 0) continue; // only outputs -> empty
       const idx = ch.cell.index;
       if (sink.isExecuting(idx)) continue; // our own clearOutput during a run
+      // Synchronously, before the round trip below: the cell is ALREADY empty,
+      // so any display handle the sink still holds for it is dead now.
+      sink.notifyUserCleared(idx);
       for (const ex of client.executions()) {
         if (live.cellOf(ex.execId) === idx) execIds.push(ex.execId);
       }

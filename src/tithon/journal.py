@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS messages(
   msg_type     TEXT NOT NULL,
   content_json TEXT NOT NULL,
   artifact_ref TEXT,
+  target_exec  TEXT,
   ts           REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_exec ON messages(exec_id);
@@ -134,14 +135,30 @@ class Journal:
             self.db.execute(
                 "ALTER TABLE executions ADD COLUMN allow_stdin INTEGER NOT NULL DEFAULT 0"
             )
+        mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)").fetchall()}
+        if "target_exec" not in mcols:  # added with session-wide display_id routing
+            self.db.execute("ALTER TABLE messages ADD COLUMN target_exec TEXT")
 
     # -- messages ----------------------------------------------------------
     def append_message(self, exec_id: str | None, msg_type: str, content: dict,
-                       artifact_ref: str | None = None) -> int:
+                       artifact_ref: str | None = None,
+                       target_exec: str | None = None) -> int:
+        """Append one row. ``exec_id`` is always the TRUE EMITTER.
+
+        ``target_exec`` names the execution whose FOLD this row belongs to when
+        that differs from the emitter — today only a cross-cell
+        ``update_display_data`` (see `Session._display_registry`). The two must
+        stay separate columns: `orphan_inflight` freezes an execution's finish
+        time at ``MAX(ts) WHERE exec_id=...``, so attributing a redirected row to
+        the owner would silently shorten the EMITTER's restored duration. It is a
+        derived routing sidecar like ``artifact_ref``; ``content_json`` is still
+        the kernel's message verbatim.
+        """
         cur = self.db.execute(
-            "INSERT INTO messages(session_id, exec_id, msg_type, content_json, artifact_ref, ts)"
-            " VALUES(?,?,?,?,?,?)",
-            (self.session_id, exec_id, msg_type, json.dumps(content), artifact_ref, time.time()),
+            "INSERT INTO messages(session_id, exec_id, msg_type, content_json, artifact_ref,"
+            " target_exec, ts) VALUES(?,?,?,?,?,?,?)",
+            (self.session_id, exec_id, msg_type, json.dumps(content), artifact_ref,
+             target_exec, time.time()),
         )
         return cur.lastrowid
 
@@ -149,12 +166,33 @@ class Journal:
         return self.db.execute("SELECT COALESCE(MAX(msg_seq),0) FROM messages").fetchone()[0]
 
     def messages_after(self, seq: int) -> list[tuple]:
-        """Rows (msg_seq, exec_id, msg_type, content_json) with msg_seq > seq."""
+        """Rows (msg_seq, ROUTED exec_id, msg_type, content_json) with msg_seq > seq.
+
+        The exec_id returned is the routing target (`target_exec` when the row
+        was redirected, the emitter otherwise) because this feeds the attach
+        delta replay, whose wire ``exec_id`` IS the execution a client folds the
+        row into. Resolving it here — from what was decided once at append time —
+        rather than re-deriving from live state is what makes a resumed replay
+        byte-identical to the broadcast a live client already saw (ADR-083): a
+        display_id re-created by a LATER execution would otherwise make the two
+        disagree about which cell an old update belonged to.
+        """
         return self.db.execute(
-            "SELECT msg_seq, exec_id, msg_type, content_json FROM messages"
+            "SELECT msg_seq, COALESCE(target_exec, exec_id), msg_type, content_json FROM messages"
             " WHERE msg_seq>? ORDER BY msg_seq",
             (seq,),
         ).fetchall()
+
+    def all_messages(self) -> sqlite3.Cursor:
+        """Every row (msg_seq, ROUTED exec_id, msg_type, content_json) in seq
+        order, as a lazily-iterated cursor (no ``.fetchall()`` — a session's whole
+        history must never be materialized at once, RISKS #9a). Routing follows
+        `messages_after`. One global-ordered pass is what lets `_rebuild_folds`
+        replay rows into a fold OTHER than their emitter's."""
+        return self.db.execute(
+            "SELECT msg_seq, COALESCE(target_exec, exec_id), msg_type, content_json FROM messages"
+            " ORDER BY msg_seq"
+        )
 
     def comm_messages_after(self, seq: int) -> sqlite3.Cursor:
         """Comm-type rows (msg_seq, exec_id, msg_type, content_json) with
@@ -173,6 +211,12 @@ class Journal:
         )
 
     def messages_for_exec(self, exec_id: str) -> list[tuple]:
+        """Rows (msg_seq, msg_type, content_json) this execution EMITTED.
+
+        The audit view — what this execution actually published — which is not the
+        same set as what folds into it: a cross-cell `update_display_data` appears
+        under its emitter here and under the display's owner in `all_messages`.
+        """
         return self.db.execute(
             "SELECT msg_seq, msg_type, content_json FROM messages"
             " WHERE exec_id=? ORDER BY msg_seq",

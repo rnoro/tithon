@@ -206,6 +206,13 @@ class Session:
         # file is GC'd, so a live-updating plot keeps O(1) files, not one/step.
         self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
+        # `display_id` -> the execution whose `display_data` CREATED it, for the
+        # rest of the session — see `_register_display` / `_display_target`.
+        # Never evicted: an update whose owner's fold no longer holds a matching
+        # item is already a no-op in `ExecutionFold`, so a stale entry costs one
+        # dict lookup, whereas dropping it would re-route the update to the
+        # emitter and grow an output there instead.
+        self._display_registry: dict[str, str] = {}
         self._msgid_to_exec: dict[str, str] = {}
         # Shell-channel routing: `parent_header.msg_id` -> the awaiter of that
         # request's reply. One pump owns the channel — see `_shell_pump`.
@@ -595,16 +602,36 @@ class Session:
     def _rebuild_folds(self) -> None:
         """Recompute in-memory folded snapshots from raw journal messages.
 
+        ONE streaming, global-seq-ordered pass, not a per-execution loop: a
+        cross-cell ``update_display_data`` is journaled under its emitter but
+        folds into the display's OWNER (see `_display_registry`), so a loop that
+        only ever saw one execution's own rows could not place it. The same pass
+        rebuilds the display registry, so the two can never disagree about who
+        owns a display after a restart. Streamed (never ``.fetchall()``) so
+        restart memory stays independent of history length (RISKS #9a).
+
         Then seed the live-artifact reference counter from the rebuilt folds and
         sweep ``.tithon/outputs/`` of any artifact no surviving fold references —
         reclaiming frames left behind by a previous run (or by an older daemon
         that predated artifact GC)."""
+        # Seed every execution first: `self._folds` must stay total (`_handle_iopub`
+        # indexes it unguarded), including for an execution that produced no output.
         for exec_id, *_ in self.journal.executions():
-            fold = ExecutionFold()
-            for _seq, msg_type, content_json in self.journal.messages_for_exec(exec_id):
-                if not msg_type.startswith("tithon."):
-                    fold.apply(msg_type, json.loads(content_json))
-            self._folds[exec_id] = fold
+            self._folds[exec_id] = ExecutionFold()
+        self._display_registry.clear()
+        for _seq, exec_id, msg_type, content_json in self.journal.all_messages():
+            if msg_type.startswith("tithon."):
+                continue
+            # A row with no execution (a comm from a background thread after the
+            # completion barrier popped `_msgid_to_exec`) has no fold to apply to.
+            # The live path skips it for the same reason — see `_handle_comm`.
+            fold = self._folds.get(exec_id) if exec_id is not None else None
+            if fold is None:
+                continue
+            content = json.loads(content_json)
+            fold.apply(msg_type, content)
+            if msg_type == "display_data":
+                self._register_display(exec_id, content)
         self._artifact_refs = Counter(
             aid for fold in self._folds.values() for aid in fold.artifact_ids()
         )
@@ -908,14 +935,34 @@ class Session:
         log.debug("[%s] iopub exec=%s type=%s", self.session_id, exec_id, msg_type)
         artifact_ref = None
         if msg_type in ("display_data", "execute_result", "update_display_data"):
+            # Keyed on the EMITTER even for a redirected row: the artifact id is
+            # provenance ("who produced these bytes"), while the fold that
+            # REFERENCES it — and so decides when GC reclaims it — is resolved
+            # separately below.
             refs = self.artifacts.extract(exec_id, content)
             artifact_ref = ",".join(refs) or None
-        seq = self.journal.append_message(exec_id, msg_type, content, artifact_ref)
-        fold = self._folds[exec_id]
+        target = self._display_target(exec_id, msg_type, content)
+        seq = self.journal.append_message(
+            exec_id, msg_type, content, artifact_ref,
+            target_exec=target if target != exec_id else None,
+        )
+        # Claim ownership only once the creating row is DURABLE, matching the
+        # journal-before-mutate order the fold and the widget mirror already keep
+        # (RISKS #14). A registry that ran ahead of a failed append would route
+        # later updates at an owner no restart can re-derive.
+        if msg_type == "display_data":
+            self._register_display(exec_id, content)
+        fold = self._folds[target]
         before = fold.artifact_ids()
         fold.apply(msg_type, content)
         self._gc_artifacts(before, fold.artifact_ids())
-        self._broadcast(event_from_message(seq, exec_id, msg_type, content))
+        if target != exec_id:
+            # The owner may have FINISHED long ago, so its cached `folded_json` —
+            # written once by `mark_done` — would otherwise still show the
+            # pre-update content to anyone who read it. Same reason
+            # `clear_outputs` re-materializes it.
+            self.journal.set_folded(target, json.dumps(fold.outputs()))
+        self._broadcast(event_from_message(seq, target, msg_type, content))
         # Completion-barrier signal (see `_await_idle`). Must stay AFTER the journal/
         # fold/broadcast above: `status` is itself in JOURNALED_IOPUB, so releasing
         # `_run_one` earlier would let it persist `folded_json` + `tithon.done` ahead
@@ -924,6 +971,43 @@ class Session:
             ev = self._idle_events.get(exec_id)
             if ev is not None:
                 ev.set()
+
+    @staticmethod
+    def _display_id_of(content: dict) -> str | None:
+        did = (content.get("transient") or {}).get("display_id")
+        return did if isinstance(did, str) and did else None
+
+    def _register_display(self, exec_id: str, content: dict) -> None:
+        """Record which execution owns a `display_data`'s display_id.
+
+        Only `display_data` registers: `execute_result`'s display_id is carried
+        by neither fold, so an update routed at one could never match an item.
+
+        Last creator wins. The Jupyter protocol does not guarantee display_ids
+        are unique across executions, so a second cell creating the SAME id takes
+        ownership and the first stops receiving updates for it — an accepted
+        single-owner limitation, not a case this can resolve: the wire carries no
+        way to tell "re-create" from "collision".
+        """
+        did = self._display_id_of(content)
+        if did is not None:
+            self._display_registry[did] = exec_id
+
+    def _display_target(self, exec_id: str, msg_type: str, content: dict) -> str:
+        """The execution whose fold `msg_type`/`content` belongs to.
+
+        Everything folds into its emitter except an `update_display_data` for a
+        display_id another execution created — that one belongs to the creator,
+        which is what makes `update_display` reach across cells (RISKS #6). The
+        registry is only consulted, never used to invent a target: an unknown id,
+        or an owner with no fold left, falls back to the emitter so the update
+        still fold-no-ops rather than raising.
+        """
+        if msg_type != "update_display_data":
+            return exec_id
+        did = self._display_id_of(content)
+        owner = self._display_registry.get(did) if did is not None else None
+        return owner if owner is not None and owner in self._folds else exec_id
 
     def _gc_artifacts(self, before: set[str], after: set[str]) -> None:
         """Adjust the live-reference counter for one fold transition; delete the
@@ -962,8 +1046,8 @@ class Session:
         # every journaled row — always would, and a restart would fold the same
         # session differently. A comm with no exec_id (a background thread
         # updating a widget after the barrier popped `_msgid_to_exec`) has no
-        # fold to claim against; rebuild skips it too, since `messages_for_exec`
-        # cannot return a NULL-exec_id row — so both paths agree by omission.
+        # fold to claim against; `_rebuild_folds` skips a NULL-exec_id row for
+        # the same reason — so both paths agree by omission.
         fold = self._folds.get(exec_id) if exec_id is not None else None
         if fold is not None:
             fold.apply(msg_type, content)
