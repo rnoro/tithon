@@ -62,6 +62,29 @@ for step in tqdm(range(240), desc="epoch 1/3"):
     time.sleep(0.4)
 PY
 
+# The harness boots a throwaway profile (runTest.ts points --user-data-dir here),
+# so seeding its settings is the only way to control how the demo LOOKS. Defaults
+# would record the classic chrome at 100% zoom: correct, but small and dated next
+# to what a reader has on screen.
+mkdir -p "$TITHON_HOME/vscode-user/User"
+cat >"$TITHON_HOME/vscode-user/User/settings.json" <<'JSON'
+{
+  "workbench.experimental.modernUI": true,
+  "workbench.colorTheme": "Dark 2026",
+  "window.zoomLevel": 1,
+  "window.commandCenter": false,
+  "chat.commandCenter.enabled": false,
+  "workbench.startupEditor": "none",
+  "workbench.tips.enabled": false,
+  "editor.minimap.enabled": false,
+  "editor.fontSize": 14,
+  "notebook.output.fontSize": 14,
+  "notebook.globalToolbar": false,
+  "update.mode": "none",
+  "telemetry.telemetryLevel": "off"
+}
+JSON
+
 DISP=":$((60 + RANDOM % 9))"
 Xvfb "$DISP" -screen 0 "${W}x${H}x24" >/tmp/xvfb-record.log 2>&1 & XVFB_PID=$!
 sleep 3
