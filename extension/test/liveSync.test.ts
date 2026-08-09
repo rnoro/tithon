@@ -20,6 +20,24 @@ class ManualScheduler implements Scheduler {
     this.pending = null;
     f?.();
   }
+  cancel(): void {
+    this.pending = null;
+  }
+}
+
+/** A scheduler with NO cancel() — models a bare-minimum Scheduler implementer,
+ *  so dispose() must rely on LiveOutputSync's own `disposed` guard, not just
+ *  scheduler.cancel(). */
+class UncancellableScheduler implements Scheduler {
+  private pending: (() => void) | null = null;
+  schedule(flush: () => void): void {
+    this.pending = flush;
+  }
+  tick(): void {
+    const f = this.pending;
+    this.pending = null;
+    f?.();
+  }
 }
 
 class TestSink implements CellSink {
@@ -353,5 +371,59 @@ describe("LiveOutputSync — update_display_data in-place (Fix E coalescing)", (
     const ops = sink.ops.filter((o) => o.idx === 0).map((o) => o.op);
     expect(ops).toEqual(["clear", "updateDisplay"]);
     expect(sink.ops.find((o) => o.op === "updateDisplay")?.text).toBe("b");
+  });
+});
+
+describe("LiveOutputSync — dispose() (RISKS #15: pending flush after teardown)", () => {
+  it("cancels an in-flight scheduler window so a stray timer firing after dispose is a no-op", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    live.onEvent({ seq: 3, exec_id: "e1", kind: "started", payload: {} }); // flush scheduled, not yet fired
+
+    live.dispose();
+    sched.tick(); // simulate the pre-existing 50ms timer firing anyway
+
+    expect(sink.ops.length).toBe(0); // status("running") never reached the sink
+  });
+
+  it("drops queued ops even with a scheduler that has no cancel()", () => {
+    const sched = new UncancellableScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    live.onEvent({ seq: 3, exec_id: "e1", kind: "started", payload: {} });
+
+    live.dispose();
+    sched.tick(); // the scheduler itself cannot be cancelled — flush()'s own guard must hold
+
+    expect(sink.ops.length).toBe(0);
+  });
+
+  it("ignores events fed after dispose()", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    live.dispose();
+
+    live.onEvent(stream("e1", "after dispose\n"));
+    sched.tick();
+
+    expect(sink.ops.length).toBe(0);
+  });
+
+  it("a manual flush() call after dispose() is also a no-op (belt-and-braces)", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(0)));
+    live.onEvent({ seq: 3, exec_id: "e1", kind: "started", payload: {} });
+
+    live.dispose();
+    live.flush(); // bypass the scheduler entirely
+
+    expect(sink.ops.length).toBe(0);
   });
 });
