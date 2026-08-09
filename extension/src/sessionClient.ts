@@ -26,7 +26,7 @@ import {
   type LineRange,
 } from "./cellAttach";
 import type { Cell } from "./serializer";
-import type { WidgetState } from "./richOutput";
+import { decodeBufferEntries, mergeBufferEntries, type WidgetState } from "./richOutput";
 import { ArtifactCache } from "./artifactCache";
 
 /** Image bytes resolved from a `$tithon_artifact` reference. */
@@ -469,7 +469,9 @@ export class SessionClient {
    * reconnect snapshot — the comm_open precedes the widget's display_data, so the
    * model is present by the time it's shown. Mirrors the daemon's WidgetMirror.
    */
-  private applyWidgetEvent(payload: { msg_type?: string; comm_id?: string; data?: any } | undefined): void {
+  private applyWidgetEvent(
+    payload: { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] } | undefined,
+  ): void {
     const commId = payload?.comm_id;
     if (!commId) return;
     if (!this.widgetState) this.widgetState = { version_major: 2, version_minor: 0, state: {} };
@@ -483,13 +485,19 @@ export class SessionClient {
         model_module: s._model_module as string | undefined,
         model_module_version: s._model_module_version as string | undefined,
         state: { ...s },
-        buffers: [],
+        buffers: decodeBufferEntries(data.buffer_paths, payload?._buffers_b64),
       };
     } else if (payload?.msg_type === "comm_msg") {
       if (data.method !== "update" && data.method !== "echo_update") return;
       const entry = models[commId];
       if (!entry) return;
       entry.state = { ...(entry.state ?? {}), ...(data.state ?? {}) };
+      // Additive by path (matches the daemon's WidgetMirror._merge_buffers): a
+      // partial update only resends the buffers that actually changed, so a
+      // path absent from THIS message must keep its previously-set bytes, not
+      // be wiped by a full-array replace (RISKS #13).
+      const delta = decodeBufferEntries(data.buffer_paths, payload?._buffers_b64);
+      if (delta.length) entry.buffers = mergeBufferEntries(entry.buffers, delta);
     } else if (payload?.msg_type === "comm_close") {
       delete models[commId];
     }
