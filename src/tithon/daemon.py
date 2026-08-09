@@ -742,8 +742,15 @@ class Session:
                 self.artifacts.delete(aid)
 
     def _handle_comm(self, exec_id, msg_type: str, content: dict, buffers: list) -> None:
-        """Feed the Widget State Mirror; journal raw comm (buffers base64)."""
-        if not self._mirror.apply(msg_type, content, buffers):
+        """Feed the Widget State Mirror; journal raw comm (buffers base64).
+
+        Journals BEFORE mutating the mirror (matching `_handle_iopub`'s
+        journal-then-fold order): `would_accept` decides acceptance without
+        mutating, so a `journal.append_message` failure propagates before
+        `apply()` ever runs — the live mirror can never get ahead of what a
+        restart's `_rebuild_mirror` would derive from the journal (RISKS #14).
+        """
+        if not self._mirror.would_accept(msg_type, content):
             return
         stored = content
         if buffers:
@@ -752,6 +759,7 @@ class Session:
                 "_buffers_b64": [base64.b64encode(bytes(b)).decode("ascii") for b in buffers],
             }
         seq = self.journal.append_message(exec_id, msg_type, stored)
+        self._mirror.apply(msg_type, content, buffers)
         # Same builder as the attach-backlog path (ADR-083), so a live and a
         # resuming client get the identical frame for this row. Carrying the comm
         # data is what animates a tqdm.notebook bar live rather than only on

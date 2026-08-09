@@ -109,3 +109,36 @@ def test_buffer_replaced_by_update():
 def test_is_comm_helper():
     assert is_comm("comm_open") and is_comm("comm_msg") and is_comm("comm_close")
     assert not is_comm("stream") and not is_comm("status")
+
+
+def test_would_accept_agrees_with_apply_without_mutating():
+    """would_accept (RISKS #14: lets a caller journal before mutating) must
+    predict apply()'s accept/reject exactly, and never mutate the mirror."""
+    m = WidgetMirror()
+    _, open_content, _ = _open("c1", {"_model_name": "X", "value": 1})
+
+    # comm_open: accepted target/id predicts True, and calling it is a no-op.
+    assert m.would_accept("comm_open", open_content) is True
+    assert len(m) == 0  # no mutation from the prediction alone
+    _, wrong_target, _ = _open("c1", {"_model_name": "X"}, target="some.other.target")
+    assert m.would_accept("comm_open", wrong_target) is False
+    assert m.would_accept("comm_open", {"target_name": "jupyter.widget"}) is False  # no comm_id
+
+    m.apply("comm_open", open_content, [])
+
+    # comm_msg: known id + update method predicts True; unknown id or a
+    # non-state-changing method predicts False. Either way, no mutation yet.
+    good_msg = {"comm_id": "c1", "data": {"method": "update", "state": {"value": 2}}}
+    assert m.would_accept("comm_msg", good_msg) is True
+    assert m.snapshot()["state"]["c1"]["state"]["value"] == 1  # unmutated
+    assert m.would_accept("comm_msg", {"comm_id": "nope", "data": {"method": "update"}}) is False
+    custom_msg = {"comm_id": "c1", "data": {"method": "custom"}}
+    assert m.would_accept("comm_msg", custom_msg) is False
+
+    m.apply("comm_msg", good_msg, [])
+    assert m.snapshot()["state"]["c1"]["state"]["value"] == 2
+
+    # comm_close: known id predicts True, unknown id predicts False.
+    assert m.would_accept("comm_close", {"comm_id": "c1"}) is True
+    assert m.would_accept("comm_close", {"comm_id": "nope"}) is False
+    assert len(m) == 1  # still unmutated by the predictions
