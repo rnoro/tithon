@@ -1,44 +1,64 @@
-# Tithon for VSCode
+<h1 align="center">Tithon for VSCode</h1>
+
+<p align="center">
+  <strong>Your Jupyter kernel dies with your client. It shouldn't.</strong>
+</p>
+
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=rnoro.tithon"><img src="https://img.shields.io/visual-studio-marketplace/v/rnoro.tithon?logo=visualstudiocode&amp;logoColor=white&amp;label=VS%20Code" alt="VS Code Marketplace"></a>
+  <a href="https://pypi.org/project/tithon/"><img src="https://img.shields.io/pypi/v/tithon?logo=pypi&amp;logoColor=white" alt="PyPI"></a>
+  <a href="https://github.com/rnoro/tithon"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+</p>
+
+![A real VS Code recording shows Tithon surviving a daemon crash: connection loss and reconnection are highlighted, then the same remote kernel resumes live output synchronization without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
 Run a Python `.py` file as a notebook against a **persistent remote kernel**.
-Close your laptop in the middle of a long run, reopen hours later over a VSCode
-Tunnel or Remote-SSH, and the cell outputs are still there — and still streaming.
+Close your editor, lose your connection, or return later; the same session is
+still there and still streaming.
 
 This is the VSCode client for [Tithon][repo]. The kernel and all session state
 live in a host-resident daemon, not in the editor, so disconnecting only stops
 the rendering — never the work.
-
-> The name is from Tithonus, who was granted immortality but not eternal youth
-> and withered forever without dying. A remote kernel has the same curse: it
-> keeps running, but its output dies the moment the client disconnects. Tithon
-> lifts the curse — immortality, with the eternal youth this time. (And it
-> rhymes with Python.)
 
 > **Status: alpha.** It works and it's in daily use, but you will hit rough
 > edges. Bug reports are genuinely useful — please [open an issue][issues].
 
 ## The problem
 
-VSCode's built-in Jupyter ties the kernel to the extension-host process: close
-the window or drop the network and the kernel dies, taking your outputs with
-it. The source of truth for your session lives in the client, or in a channel
-that doesn't outlive a disconnect. Tithon moves it to the host — the extension
-is a thin view over a daemon, not the owner of the kernel.
+You SSH into a GPU box, start a long run in a notebook, and close your laptop.
+When you come back, depending on your setup:
 
-> And in the age of coding agents, one more: a `.ipynb` is JSON bloat — the same
-> notebook is ~250 lines of `"cell_type"`/`"outputs"` noise that Tithon keeps as
-> ~50 lines of clean `.py`. Output images? Tithon keeps them as real files, so an
-> agent hands them to the model as actual images it can _see_ — not base64 the
-> model burns thousands of tokens on and still can't read. **Don't feed your LLM
-> idiot JSON.**
+- **VSCode Jupyter** ties the kernel to the extension-host process. Close the
+  window or drop the network and the kernel dies, taking the session with it.
+- **JupyterLab** reconnects, but everything printed while you were away is gone.
+  iopub output is streamed over the WebSocket and never persisted server-side,
+  so there is nothing to replay.
+- **`tmux` + `jupyter console`** survives the disconnect, but you lose rich
+  output (plots, HTML, widgets) and you can't open the same session from a
+  second client.
+
+The root cause is the same in all three: the source of truth for your session
+lives on the client, or in a channel that doesn't outlive a disconnect. Tithon
+moves it to the host — the extension is a thin view over a daemon, not the owner
+of the kernel.
+
+> **Tip.** And in the era of AI agents, one more: a `.ipynb` is JSON bloat — the
+> same notebook is ~250 lines of `"cell_type"`/`"outputs"` noise that Tithon
+> keeps as ~50 lines of clean `.py`. Output images? Tithon keeps them as real
+> files, so an agent hands them to the model as actual images it can _see_ — not
+> base64 the model burns thousands of tokens on and still can't read.
+> **Don't feed your AI idiot JSON.**
 
 ## Requirements
 
-- The **Tithon daemon** must be installed on the host (`pip install tithon`, or
-  `uv add tithon`). The extension can start it for you (see
-  `tithon.autoStartDaemon`).
-- A Unix-like host — the daemon talks over a local unix domain socket.
-- VSCode 1.85+.
+- The **Tithon daemon** on the host, which needs **Python 3.11+**
+  (`pip install tithon`, or `uv add tithon`). The extension can start it for you
+  (see `tithon.autoStartDaemon`).
+- A Unix-like host — the daemon uses unix domain sockets and `setsid` (developed
+  and tested on Linux).
+- **VSCode 1.85+.**
+
+> Windows is not currently supported.
 
 The intended setup is a **Tunnel** or **Remote-SSH** connection, where the
 extension host runs _on the remote host_ and reaches the daemon's local socket
@@ -131,6 +151,9 @@ A long-lived **daemon** on the host owns the kernel and serves clients:
 - Rich outputs (images) are stored as files and referenced by hash, never
   base64-embedded, and `ipywidgets` traffic is folded into a `widget-state+json`
   snapshot, so a `tqdm` bar or a slider comes back at its real value.
+- Backpressure is bounded: per-subscriber buffers are capped, and a client that
+  falls too far behind is dropped and resyncs on reconnect — so one slow client
+  can't grow daemon memory or block the others.
 - The daemon binds a `0600` unix domain socket. No TCP.
 
 The kernel itself is plain `ipykernel` — Tithon replaces the session-management
@@ -138,19 +161,21 @@ layer around it, not the execution engine.
 
 ## How it pairs with the daemon
 
-The extension and the daemon must share `TITHON_HOME` (both default to
-`~/.tithon` for the same user on the host). Because the extension host runs on
-the host under a Tunnel/Remote-SSH session, it uses the host-local socket and
-needs no forwarding. If you instead run the extension on your laptop against a
-_remote_ daemon, you must forward the unix socket yourself (SSH `RemoteForward`,
-`socat`, …) — that is not the default path.
+The extension and the daemon must run on the **same host** and share
+`TITHON_HOME` (both default to `~/.tithon` for the same user). A
+Tunnel/Remote-SSH session satisfies this for free: the extension host runs on
+the host, so it uses the host-local socket and needs no forwarding. If you
+instead run the extension on your laptop against a _remote_ daemon, you must
+forward the unix socket yourself (SSH `RemoteForward`, `socat`, …) — that is not
+the default path.
 
-See the [main project README][repo] and the [design spec][spec] for the full
-architecture.
+The daemon also ships a CLI (`tithon run`, `tithon attach`, `tithon status`) for
+driving the same sessions from a terminal. See the [main project README][repo]
+and the [design spec][spec] for the full architecture.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](https://github.com/rnoro/tithon/blob/main/LICENSE).
 
 [repo]: https://github.com/rnoro/tithon
 [spec]: https://github.com/rnoro/tithon/blob/main/docs/SPEC.md
