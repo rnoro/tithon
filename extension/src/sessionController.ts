@@ -20,6 +20,7 @@ import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
 import {
   imageOf,
   imageRefsOf,
+  isOutputAreaView,
   widgetModelIdOf,
   widgetFallbackText,
   widgetPayload,
@@ -151,7 +152,7 @@ function toCellOutputs(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): 
   // ("only one output renders"). The widget's own two items (renderer payload +
   // text fallback) DO belong together — that grouping stays inside toOutputItems.
   // Matches the live appendOutput / seedCell path (one output per item).
-  return outputs.map((o) => {
+  return outputs.filter((o) => !isOutputAreaView(o, ctx?.widgets ?? null)).map((o) => {
     const out = new vscode.NotebookCellOutput(toOutputItems(o, ctx));
     // Surface the §3.2 "stale" badge: the cell was edited since this run.
     if (stale) out.metadata = { tithonStale: true };
@@ -322,6 +323,7 @@ class VSCodeCellSink implements CellSink {
     const e = this.ensureStarted(idx, startMs);
     if (!e) return;
     for (const item of items) {
+      if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) continue;
       if (item.output_type === "stream") {
         const mime = item.name === "stderr" ? STDERR_MIME : STDOUT_MIME;
         const out = new vscode.NotebookCellOutput([
@@ -370,6 +372,7 @@ class VSCodeCellSink implements CellSink {
     // active stdout/stderr block, so the next stream delta starts a fresh block
     // BELOW it — giving Jupyter-style interleaving (`print; display(fig); print`
     // renders as three blocks in order, not the two prints merged above the fig).
+    if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) return;
     this.chain(idx, async () => {
       if (pending.length) await this.client.prefetchArtifacts(pending);
       const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
@@ -432,9 +435,14 @@ class VSCodeCellSink implements CellSink {
       await this.prefetch(items); // image bytes, so ctx() resolves synchronously below
       this.forgetStreams(idx);
       this.forgetDisplays(idx);
-      const outs = toCellOutputs(items, false, this.ctx());
+      // Filter FIRST, then map: toCellOutputs drops items it will not render, so
+      // zipping the unfiltered list against its result shifts every index past
+      // the first drop and registers the wrong handles — a later stream delta
+      // then misses its block and opens a second one below the plot.
+      const painted = items.filter((o) => !isOutputAreaView(o, this.ctx()?.widgets ?? null));
+      const outs = toCellOutputs(painted, false, this.ctx());
       await e.replaceOutput(outs);
-      items.forEach((item, i) => {
+      painted.forEach((item, i) => {
         if (item.output_type === "stream") this.streamOut.set(`${idx}:${item.name}`, outs[i]);
         else this.registerDisplay(idx, item, outs[i]);
       });
