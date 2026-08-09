@@ -210,6 +210,60 @@ class Journal:
     def max_exec_seq(self) -> int:
         return self.db.execute("SELECT COALESCE(MAX(seq),0) FROM executions").fetchone()[0]
 
+    def has_started_since(self, seq: int = 0) -> bool:
+        """Did any execution actually BEGIN running after ``seq``?
+
+        Keyed on the ``tithon.started`` pseudo message, which the exec worker
+        appends when the kernel accepts the cell — NOT on the ``executions``
+        table. A row there is inserted when the cell is SUBMITTED, so
+        ``max_exec_seq() > 0`` (and even a status filter) counts code that never
+        touched the kernel: ``orphan_inflight`` rewrites a never-started
+        ``queued`` row to ``orphaned`` after a crash, which no status test can
+        tell apart from a run that was cut off mid-flight. A ``started`` message
+        exists only for code the kernel really began.
+
+        Used by the lost-state signal to answer "did the kernel generation that
+        just died hold anything the user would miss?" — ``seq`` is the journal
+        seq of the lifecycle event that opened that generation, so work done
+        before an accepted reset is not counted against the new kernel.
+        """
+        row = self.db.execute(
+            "SELECT 1 FROM messages WHERE msg_type='tithon.started' AND msg_seq>? LIMIT 1",
+            (seq,),
+        ).fetchone()
+        return row is not None
+
+    #: ``tithon.kernel`` statuses that begin or end a kernel GENERATION. Anything
+    #: else on that channel (``interrupted``) leaves the running kernel and its
+    #: namespace in place and must not shadow the real provenance record.
+    GENERATION_STATUSES = frozenset({"restarting", "restarted", "killed", "shutdown", "gc",
+                                     "replaced"})
+
+    def last_kernel_event(self) -> tuple[int, dict] | None:
+        """The newest kernel-GENERATION message as ``(msg_seq, content)``.
+
+        This is the DURABLE record of what last happened to this session's kernel
+        — restarted / killed / shut down / gc'd / replaced — and it outlives the
+        daemon process, which is what makes the lost-state signal survive a reboot
+        (and makes it derivable again rather than inferred from in-memory state).
+
+        Rows are streamed newest-first and the first generation status wins, so an
+        arbitrary number of interleaved ``interrupted`` events cannot push the
+        provenance record out of reach.
+        """
+        cur = self.db.execute(
+            "SELECT msg_seq, content_json FROM messages"
+            " WHERE msg_type='tithon.kernel' ORDER BY msg_seq DESC"
+        )
+        for msg_seq, content_json in cur:
+            try:
+                content = json.loads(content_json)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                continue
+            if content.get("status") in self.GENERATION_STATUSES:
+                return msg_seq, content
+        return None
+
     # -- artifacts ----------------------------------------------------------
     def find_artifact(self, artifact_id: str) -> tuple | None:
         return self.db.execute(

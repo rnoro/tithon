@@ -489,6 +489,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("tithon._cellViewState", () => ({
       cellViewUris: [...cellViewUris],
     })),
+    // Test affordance: which lost-kernel ("state cleared") warnings have fired,
+    // as `${uri}#${pid}`. Lets an integration test assert the host-reboot signal
+    // reached the client without depending on notification UI.
+    vscode.commands.registerCommand("tithon._lostStateWarnings", () =>
+      notebookCtrl.lostStateWarnings(),
+    ),
   );
 }
 
