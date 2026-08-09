@@ -193,7 +193,6 @@ a{color:inherit}
   font-family:var(--mono);font-size:13px;letter-spacing:.18em;color:var(--selene);
   text-transform:uppercase;margin-bottom:26px;
 }
-.eyebrow .gk{font-family:var(--serif);text-transform:none;letter-spacing:.06em;color:var(--gold);font-size:15px}
 h1{
   font-family:var(--serif);font-weight:400;
   font-size:clamp(2.6rem,7.2vw,5.6rem);line-height:1.08;letter-spacing:.005em;
@@ -372,35 +371,28 @@ h2 em{font-style:italic;color:var(--gold)}
 .sub a{color:var(--gold);text-decoration:none;border-bottom:1px solid rgba(233,179,104,.35)}
 .sub a:hover{border-bottom-color:var(--gold)}
 
-/* myth */
-.myth{position:relative;padding:40px 0 64px;overflow:hidden}
-.myth .ghost{
-  position:absolute;top:50%;left:50%;transform:translate(-50%,-54%);
-  font-family:var(--serif);font-size:clamp(6rem,17vw,13rem);color:transparent;
-  -webkit-text-stroke:1px rgba(36,46,77,.85);letter-spacing:.04em;white-space:nowrap;
-  user-select:none;pointer-events:none;
-}
-.myth-txt{
+/* scenario */
+.scene{position:relative;padding:40px 0 56px}
+.scene-txt{
   position:relative;font-family:var(--serif);font-size:clamp(1.25rem,2.5vw,1.7rem);
-  line-height:1.65;max-width:34ch;margin:0 auto;text-align:center;color:var(--ivory);
+  line-height:1.65;max-width:40ch;margin:0 auto;text-align:center;color:var(--ivory);
 }
-.myth-txt em{font-style:italic;color:var(--gold)}
-.myth-txt .who{color:var(--rose)}
-.myth-att{
+.scene-txt em{font-style:italic;color:var(--gold)}
+.scene-att{
   position:relative;text-align:center;margin-top:26px;font-family:var(--mono);
-  font-size:12px;color:var(--faint);letter-spacing:.14em;
+  font-size:12px;color:var(--faint);letter-spacing:.14em;line-height:1.9;
 }
 
-/* curse cards */
+/* comparison cards */
 .cards3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:44px}
 @media (max-width:880px){.cards3{grid-template-columns:1fr}}
-.curse{
+.compare{
   border:1px solid var(--line);border-radius:14px;background:var(--aegean);
   padding:24px 24px 22px;display:flex;flex-direction:column;gap:10px;
 }
-.curse h3{font-family:var(--mono);font-weight:500;font-size:14.5px;color:var(--ivory);letter-spacing:.02em}
-.curse p{font-size:14.5px;color:var(--selene);line-height:1.65}
-.curse .loss{
+.compare h3{font-family:var(--mono);font-weight:500;font-size:14.5px;color:var(--ivory);letter-spacing:.02em}
+.compare p{font-size:14.5px;color:var(--selene);line-height:1.65}
+.compare .loss{
   margin-top:auto;padding-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--rose);
   border-top:1px dashed var(--line-soft);letter-spacing:.04em;
 }
@@ -452,6 +444,18 @@ h2 em{font-style:italic;color:var(--gold)}
 .mech p{font-size:14px;color:var(--selene);line-height:1.65}
 
 /* practice */
+.vid{
+  margin-top:44px;border:1px solid var(--line);border-radius:14px;overflow:hidden;
+  background:var(--aegean);
+}
+/* the width/height attributes are a ratio hint; height:auto keeps them from
+   forcing a 1080px-tall box with letterbox bands */
+.vid video{display:block;width:100%;height:auto;aspect-ratio:16/9;background:#080c17}
+.vid figcaption{
+  padding:13px 18px;border-top:1px solid var(--line-soft);
+  font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em;line-height:1.7;
+}
+.vid figcaption b{color:var(--selene);font-weight:500}
 .practice{display:grid;grid-template-columns:1.15fr 1fr;gap:40px;margin-top:48px;align-items:start}
 @media (max-width:880px){.practice{grid-template-columns:1fr}}
 .codeblock{
@@ -484,6 +488,12 @@ h2 em{font-style:italic;color:var(--gold)}
   font-size:13.5px;color:var(--selene);line-height:1.6;
 }
 .tunnel b{color:var(--ivory);font-weight:500}
+.reqs{
+  margin-top:18px;display:flex;flex-wrap:wrap;gap:8px;
+  font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em;
+}
+.reqs span{border:1px solid var(--line-soft);border-radius:999px;padding:6px 12px}
+.reqs b{color:var(--selene);font-weight:500}
 
 /* source */
 .vs{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:48px;align-items:stretch}
@@ -515,6 +525,10 @@ footer .horizon{height:70%}
 }
 .foot-meta a{color:var(--selene);text-decoration:none}
 .foot-meta a:hover{color:var(--gold)}
+.foot-note{
+  margin-top:18px;font-family:var(--mono);font-size:11.5px;color:var(--faint);
+  opacity:.72;max-width:46ch;margin-left:auto;margin-right:auto;line-height:1.7;position:relative;
+}
 </style>
 </head>
 <body>
@@ -523,7 +537,7 @@ footer .horizon{height:70%}
   <div class="nav-in">
     <a class="wordmark" href="#">TITH<b>Ο</b>N</a>
     <div class="nav-links">
-      <a href="#curse" class="hide-m">the curse</a>
+      <a href="#problem" class="hide-m">the problem</a>
       <a href="#machinery" class="hide-m">machinery</a>
       <a href="#practice">install</a>
       <a class="ext" href="https://github.com/rnoro/tithon">github</a>
@@ -537,7 +551,7 @@ footer .horizon{height:70%}
   <div class="stars" aria-hidden="true"></div>
   <div class="stars2" aria-hidden="true"></div>
   <div class="horizon" aria-hidden="true"></div>
-  <p class="eyebrow"><span class="gk">Τιθωνός</span> &nbsp;·&nbsp; persistent sessions for remote Jupyter</p>
+  <p class="eyebrow">persistent sessions for remote Jupyter &nbsp;·&nbsp; CLI + VSCode extension</p>
   <h1>Your session <span class="dawn">outlives</span> your connection.</h1>
   <p class="lede">Tithon keeps a Jupyter kernel — and <b>every byte it ever printed</b> — alive on
   the host, independent of any client. Close your laptop mid-run; reopen hours later over SSH or a
@@ -630,32 +644,30 @@ footer .horizon{height:70%}
   </div>
 </section>
 
-<!-- ———————————— α · the curse ———————————— -->
-<section class="sect" id="curse">
+<!-- ———————————— 01 · the problem ———————————— -->
+<section class="sect" id="problem">
   <div class="wrap">
-    <div class="kicker rv"><span class="num">α´</span> the curse</div>
-    <div class="myth rv">
-      <div class="ghost" aria-hidden="true">Τιθωνός</div>
-      <p class="myth-txt"><span class="who">Ἠώς</span>, goddess of the dawn, asked Zeus to make her
-      lover immortal — and forgot to ask that he stay young. Tithonus lived forever,
-      <em>withering</em>. A remote kernel bears the same curse: the process outlives your
-      disconnect, but everything it says is lost the moment you leave.</p>
-      <p class="myth-att">TITHON LIFTS THE CURSE — IMMORTALITY, WITH THE ETERNAL YOUTH THIS TIME.<br>( AND IT RHYMES WITH PYTHON. )</p>
+    <div class="kicker rv"><span class="num">01</span> the problem</div>
+    <div class="scene rv">
+      <p class="scene-txt">You SSH into a GPU box, start a long run in a notebook, and close your
+      laptop. When you come back, the run is gone — or, if you were lucky, only
+      <em>everything it printed</em> is.</p>
+      <p class="scene-att">WHERE YOUR SESSION LIVES TODAY, AND WHAT THAT COSTS YOU:</p>
     </div>
     <div class="cards3">
-      <div class="curse rv">
+      <div class="compare rv">
         <h3>JupyterLab</h3>
         <p>Reconnects, but everything printed while you were away is gone. iopub output streams over
         the WebSocket and is never persisted server-side — there is nothing to replay.</p>
         <div class="loss">✗ output lost on disconnect</div>
       </div>
-      <div class="curse rv">
+      <div class="compare rv">
         <h3>VSCode Jupyter</h3>
         <p>Ties the kernel to the extension-host process. Close the window or drop the network and
         the kernel dies, taking the whole session — hours of state — with it.</p>
         <div class="loss">✗ kernel dies with the client</div>
       </div>
-      <div class="curse rv">
+      <div class="compare rv">
         <h3>tmux + jupyter console</h3>
         <p>Survives the disconnect, but you lose rich output — plots, HTML, widgets — and you can't
         open the same session from a second client.</p>
@@ -667,10 +679,10 @@ footer .horizon{height:70%}
   </div>
 </section>
 
-<!-- ———————————— β · the machinery ———————————— -->
+<!-- ———————————— 02 · the machinery ———————————— -->
 <section class="sect alt" id="machinery">
   <div class="wrap">
-    <div class="kicker rv"><span class="num">β´</span> the machinery</div>
+    <div class="kicker rv"><span class="num">02</span> the machinery</div>
     <h2 class="rv">A daemon owns the session.<br>The kernel answers to <em>no one</em>.</h2>
     <p class="sub rv">The kernel is plain <b>ipykernel</b> — Tithon replaces the session-management
     layer around it, not the execution engine. A long-lived daemon journals everything the kernel
@@ -710,16 +722,26 @@ footer .horizon{height:70%}
   </div>
 </section>
 
-<!-- ———————————— γ · in practice ———————————— -->
+<!-- ———————————— 03 · in practice ———————————— -->
 <section class="sect" id="practice">
   <div class="wrap">
-    <div class="kicker rv"><span class="num">γ´</span> in practice</div>
+    <div class="kicker rv"><span class="num">03</span> in practice</div>
     <h2 class="rv">Prove it in ninety seconds.</h2>
     <p class="sub rv">State lives under <b>~/.tithon</b> — socket, log, journal, artifacts. Start
     the daemon, run something, then kill the daemon mid-flight. Watch nothing happen to your kernel.</p>
+
+    <figure class="vid rv">
+      <video id="demoVid" src="demo.mp4" width="1920" height="1080" muted loop playsinline
+             controls preload="metadata"
+             aria-label="A VS Code screen recording: a notebook cell is streaming output when the daemon is killed; the connection drops, the daemon restarts, and the same cell resumes streaming from the same kernel without being re-run."></video>
+      <figcaption><b>Real VSCode, no cuts.</b> A cell is mid-run when the daemon is killed — the
+      connection drops, the daemon comes back, and the notebook re-attaches to the same kernel and
+      resumes streaming into the same cell. No restart, no re-run, no lost kernel state.</figcaption>
+    </figure>
+
     <div class="practice">
       <div class="codeblock rv">
-        <header><span class="dots"><i></i><i></i><i></i></span> the resurrection demo — CLI</header>
+        <header><span class="dots"><i></i><i></i><i></i></span> kill the daemon — CLI</header>
         <pre><span class="p">$</span> pip install tithon
 <span class="p">$</span> tithon daemon &amp;
 
@@ -737,32 +759,39 @@ footer .horizon{height:70%}
       </div>
       <div>
         <div class="steps">
-          <div class="step rv"><span class="n">α´</span>
+          <div class="step rv"><span class="n">1</span>
             <div><h3>Install the extension</h3>
             <p><code>code --install-extension rnoro.tithon</code> — or search “tithon” in the
             Extensions view.</p></div></div>
-          <div class="step rv"><span class="n">β´</span>
+          <div class="step rv"><span class="n">2</span>
             <div><h3>Open a .py as a notebook</h3>
             <p>A plain percent-format script (<code># %%</code> cells) opens as a real notebook —
             same cells, same Run buttons, same rich output. The file stays pure source; outputs
             never touch it, so diffs stay clean.</p></div></div>
-          <div class="step rv"><span class="n">γ´</span>
+          <div class="step rv"><span class="n">3</span>
             <div><h3>Pick the Tithon kernel. That's all.</h3>
             <p>Selecting the kernel attaches the session. Reopen the notebook tomorrow — output,
             progress and widgets are restored and <b>resume streaming</b>, no command needed.</p></div></div>
         </div>
         <div class="tunnel rv"><b>Over a Tunnel or Remote-SSH this is identical.</b> The extension
         host runs on the remote, so it talks to the daemon's host-local socket directly — no port
-        forwarding, nothing special for the remote case.</div>
+        forwarding, nothing special for the remote case. The daemon and the extension must run on
+        the <b>same host</b>: they share <code>~/.tithon</code>.</div>
+        <div class="reqs rv">
+          <span><b>Python 3.11+</b></span>
+          <span>Unix host — unix sockets + <b>setsid</b></span>
+          <span>Windows not supported</span>
+          <span>VSCode for the notebook UI</span>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ———————————— δ · clean source ———————————— -->
+<!-- ———————————— 04 · clean source ———————————— -->
 <section class="sect alt" id="source">
   <div class="wrap">
-    <div class="kicker rv"><span class="num">δ´</span> clean source</div>
+    <div class="kicker rv"><span class="num">04</span> clean source</div>
     <h2 class="rv">Your notebook is a <em>.py</em> file.<br>It reads like one.</h2>
     <p class="sub rv">An <b>.ipynb</b> buries fifty lines of code in two hundred fifty lines of
     JSON, then base64-encodes the plots into it. Tithon keeps source as source: outputs live in the
@@ -816,7 +845,7 @@ plt.plot(history[<span class="o">"loss"</span>])
   <div class="horizon" aria-hidden="true"></div>
   <div class="wrap">
     <div class="foot-mark rv">TITHON</div>
-    <div class="foot-gk rv">ἀθάνατος καὶ ἀγήραος — deathless, and unaging</div>
+    <div class="foot-gk rv">detached kernel · journaled output · lossless reconnect</div>
     <div class="foot-cta rv">
       <div class="pip"><span><span class="ps1">$</span> pip install tithon</span><button id="copyBtn2" type="button" aria-label="Copy install command">copy</button></div>
       <a class="btn" href="https://marketplace.visualstudio.com/items?itemName=rnoro.tithon">Marketplace ↗</a>
@@ -825,9 +854,12 @@ plt.plot(history[<span class="o">"loss"</span>])
     <div class="foot-meta rv">
       <span>MIT license</span><span>·</span>
       <span>Python 3.11+ · Unix hosts</span><span>·</span>
+      <a href="https://github.com/rnoro/tithon#cli-reference">CLI &amp; configuration</a><span>·</span>
       <a href="https://github.com/rnoro/tithon/issues">report a bug</a><span>·</span>
       <a href="https://github.com/rnoro/tithon/blob/main/docs/SPEC.md">read the spec</a>
     </div>
+    <div class="foot-note rv">Named after Tithonus, who was granted immortality without eternal
+    youth. And it rhymes with Python.</div>
   </div>
 </footer>
 
@@ -842,6 +874,23 @@ for (const id of ['copyBtn','copyBtn2']) {
     } catch { b.textContent = 'pip install tithon'; }
   });
 }
+
+/* ————— demo video —————
+   No autoplay attribute: preload="metadata" keeps the 5MB body off the wire until
+   the figure is actually on screen. Manual play must survive scrolling away, so the
+   observer only pauses what it started. */
+(() => {
+  const v = document.getElementById('demoVid');
+  if (!v || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  let auto = false;
+  new IntersectionObserver(es => {
+    for (const e of es) {
+      if (e.isIntersecting) { if (v.paused) { auto = true; v.play().catch(() => {}); } }
+      else if (auto) { auto = false; v.pause(); }
+    }
+  }, {threshold:.35}).observe(v);
+  v.addEventListener('pause', () => { auto = false; });      // a manual pause ends our claim
+})();
 
 /* ————— reveal on scroll ————— */
 const io = new IntersectionObserver(es => {
