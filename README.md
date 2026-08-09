@@ -1,8 +1,22 @@
 # Tithon
 
+**Your remote Jupyter kernel dies with your client. It shouldn't.**
+
 Keep a Jupyter kernel alive on a remote host, independent of any client. Close
 your laptop in the middle of a long run, reopen hours later over SSH or a VSCode
 tunnel, and the output is still there — and still streaming.
+
+[![PyPI](https://img.shields.io/pypi/v/tithon?logo=pypi&logoColor=white)](https://pypi.org/project/tithon/)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/rnoro.tithon?logo=visualstudiocode&logoColor=white&label=VS%20Code)][marketplace]
+[![Python](https://img.shields.io/pypi/pyversions/tithon)](https://pypi.org/project/tithon/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+![A training loop streaming into a VSCode notebook on a remote host: the tqdm bar and a step/loss log advance, the client disconnects and the notebook closes, and reopening restores the entire log and the bar at its real value while the cell's execution timer keeps counting from the original start.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
+
+> Watch the cell's execution timer across the disconnect: it keeps counting and
+> never resets, because the run was never restarted. The `tqdm` bar comes back at
+> its real value, not at zero. Nothing was re-executed and nothing was replayed
+> from the client — the kernel simply never stopped.
 
 > The name is from Tithonus, who was granted immortality but not eternal youth
 > and withered forever without dying. A remote kernel has the same curse: it
