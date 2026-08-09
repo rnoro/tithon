@@ -17,7 +17,7 @@
 import WebSocket from "ws";
 import { homedir } from "os";
 import { join } from "path";
-import { ExecutionFold, type OutputItem } from "./outputFold";
+import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
 import {
   attachOutputs,
   docCellsFromParsed,
@@ -109,6 +109,9 @@ interface SnapshotExecWire {
   cell_hash: string | null;
   origin: { uri?: string | null; range?: LineRange | null; index?: number | null } | null;
   outputs: OutputItem[];
+  /** Continuation state for `outputs` (see FoldState) — present only for a
+   *  fold the daemon still holds live, i.e. one that can still receive events. */
+  fold_state?: FoldState | null;
   started_at: number | null;
   finished_at: number | null;
 }
@@ -389,7 +392,10 @@ export class SessionClient {
       // Seed the fold from the daemon's already-folded outputs so a still
       // running execution keeps folding correctly as live events arrive.
       st.fold = new ExecutionFold();
-      st.fold.seed(e.outputs ?? []);
+      // Without fold_state a resuming client treats every item as the cell's own
+      // and scopes no clear, so an Output widget's plot would accumulate one
+      // frame per step instead of superseding.
+      st.fold.seed(e.outputs ?? [], e.fold_state ?? undefined);
     }
   }
 
@@ -443,6 +449,13 @@ export class SessionClient {
     // guard dropped exactly those updates, silently.
     if (ev.kind === "widget") {
       this.applyWidgetEvent(ev.payload);
+      // The fold needs comm too — not for output, but to track which
+      // `ipywidgets.Output` area currently claims the cell's msg_id, so a
+      // widget-scoped `clear_output` clears only that area (RISKS #17). Mirrors
+      // the daemon's `_handle_comm` feeding `_folds[exec_id]`; an event with no
+      // exec_id has no fold to claim against, exactly as on the daemon side.
+      // The widget payload's `{comm_id, data}` shape is what the fold reads.
+      if (ev.exec_id) this.ensureExec(ev.exec_id, ev.seq).fold.apply(ev.payload?.msg_type, ev.payload);
       return;
     }
     if (!ev.exec_id) return;

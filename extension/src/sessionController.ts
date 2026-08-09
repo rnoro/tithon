@@ -414,6 +414,58 @@ class VSCodeCellSink implements CellSink {
     });
   }
 
+  /**
+   * Replace the cell's outputs with an authoritative folded list. Used where an
+   * incremental op cannot express the change — an `ipywidgets.Output`'s
+   * `clear_output` removes only ITS outputs, so the cell is repainted from the
+   * fold instead of blanked (RISKS #17).
+   *
+   * Mirrors `clear()`'s two branches deliberately: never `ensureStarted()` on a
+   * cell with no live execution, which would leave a spinner no `done` ever
+   * ends (RISKS #15). Replacing drops the previous NotebookCellOutput handles,
+   * so the stream/display maps must be rebuilt, not carried over.
+   */
+  repaint(idx: number, items: OutputItem[]): void {
+    if (this.disposed) return;
+    const rec = this.execs.get(idx);
+    const paint = async (e: vscode.NotebookCellExecution) => {
+      await this.prefetch(items); // image bytes, so ctx() resolves synchronously below
+      this.forgetStreams(idx);
+      this.forgetDisplays(idx);
+      const outs = toCellOutputs(items, false, this.ctx());
+      await e.replaceOutput(outs);
+      items.forEach((item, i) => {
+        if (item.output_type === "stream") this.streamOut.set(`${idx}:${item.name}`, outs[i]);
+        else this.registerDisplay(idx, item, outs[i]);
+      });
+    };
+    if (rec?.started) {
+      this.chain(idx, () => paint(rec.exec));
+      return;
+    }
+    const c = this.cell(idx);
+    if (!c) return;
+    // Nothing to show and nothing showing: a momentary execution here would be
+    // pure UI churn on a cell that is already correct (mirrors clear()'s own
+    // outputs.length guard, which stops our own clear echoing back as a flash).
+    if (!items.length && c.outputs.length === 0) return;
+    this.chain(idx, async () => {
+      // Re-checked INSIDE the chain: `chain` defers, so a flush that passed the
+      // guard above can still land after endAll()/dispose(). Opening a proxy
+      // execution then would leave a spinner teardown can no longer end
+      // (RISKS #15). `end()` is in a `finally` for the same reason — a throw in
+      // paint() must not strand a started execution the chain then swallows.
+      if (this.disposed) return;
+      const exec = this.controller.createNotebookCellExecution(c);
+      exec.start(Date.now());
+      try {
+        await paint(exec);
+      } finally {
+        exec.end(undefined, Date.now());
+      }
+    });
+  }
+
   clear(idx: number): void {
     const rec = this.execs.get(idx);
     if (rec?.started) {
@@ -1281,6 +1333,7 @@ export class TithonNotebookController {
       cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
       sink,
       new ThrottleScheduler(50),
+      (execId) => client.outputsOf(execId),
     );
     const execs = client.executions();
     live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));

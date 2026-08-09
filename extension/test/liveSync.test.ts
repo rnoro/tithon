@@ -57,6 +57,10 @@ class TestSink implements CellSink {
     this.ops.push({ op: "clear", idx });
     this.rawStdout.set(idx, "");
   }
+  repaint(idx: number, items: OutputItem[]): void {
+    this.ops.push({ op: "repaint", idx, text: items.map((i) => textOf(i) ?? i.output_type).join(",") });
+    this.rawStdout.set(idx, "");
+  }
   status(idx: number, status: string): void {
     this.ops.push({ op: "status", idx, status });
   }
@@ -425,5 +429,90 @@ describe("LiveOutputSync — dispose() (RISKS #15: pending flush after teardown)
     live.flush(); // bypass the scheduler entirely
 
     expect(sink.ops.length).toBe(0);
+  });
+});
+
+
+describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => {
+  /** The reported shape, driven through the real client fold. */
+  function harness(foldBacked = true) {
+    const sink = new TestSink();
+    const fold = new ExecutionFold();
+    const sched = new ManualScheduler();
+    const live = new LiveOutputSync(cells, sink, sched,
+      foldBacked ? () => fold.outputs() : undefined);
+    live.seed([{ execId: "e1", cellHash: computeCellHash(src(0)), index: 0 }]);
+    const feed = (ev: LiveEvent) => {
+      // Mirrors SessionClient.handle(): fold FIRST, then notify the live sink.
+      if (ev.kind === "output") fold.apply(ev.payload.msg_type, ev.payload.content);
+      if (ev.kind === "widget") fold.apply(ev.payload.msg_type, ev.payload);
+      live.onEvent(ev);
+    };
+    return { sink, sched, live, feed, fold };
+  }
+  const widgetEv = (commId: string, msgId: string): LiveEvent => ({
+    seq: 3, exec_id: "e1", kind: "widget",
+    payload: { msg_type: "comm_msg", comm_id: commId, data: { method: "update", state: { msg_id: msgId } } },
+  });
+
+  it("emits repaint (not a blind clear) and the sibling output survives", () => {
+    const { sink, sched, feed } = harness();
+    feed(output("e1", "display_data", { data: { "text/plain": "BAR" }, metadata: {} }));
+    sched.tick();
+    feed(widgetEv("out", "req-1"));
+    feed(output("e1", "clear_output", { wait: true }));
+    feed(output("e1", "display_data", { data: { "text/plain": "PLOT" }, metadata: {} }));
+    sched.tick();
+    const last = sink.ops[sink.ops.length - 1];
+    expect(last.op).toBe("repaint");
+    expect(last.text).toBe("BAR,PLOT"); // the bar was NOT destroyed
+    expect(sink.ops.some((o) => o.op === "clear")).toBe(false);
+  });
+
+  it("a repaint supersedes the window's other output ops (no double-apply)", () => {
+    const { sink, sched, feed } = harness();
+    feed(widgetEv("out", "req-1"));
+    feed(output("e1", "clear_output", { wait: false }));
+    feed(output("e1", "display_data", { data: { "text/plain": "P" }, metadata: {} }));
+    sched.tick();
+    const painted = sink.ops.filter((o) => o.op !== "status");
+    expect(painted).toHaveLength(1);
+    expect(painted[0].op).toBe("repaint");
+  });
+
+  it("falls back to a whole-cell clear with no fold to read — lossless, not blank", () => {
+    // The fallback cannot honour a widget-scoped clear, but it must never blank
+    // the cell and swallow the outputs that follow.
+    const { sink, sched, feed } = harness(false);
+    feed(output("e1", "clear_output", { wait: true }));
+    feed(stream("e1", "new"));
+    sched.tick();
+    const ops = sink.ops.filter((o) => o.op !== "status").map((o) => o.op);
+    expect(ops).toEqual(["clear", "appendStream"]);
+    expect(sink.visibleStdout(0)).toBe("new");
+  });
+
+  it("status ops still ride through a repaint window", () => {
+    const { sink, sched, feed } = harness();
+    feed(output("e1", "clear_output", { wait: false }));
+    feed({ seq: 9, exec_id: "e1", kind: "done", payload: { status: "ok" } });
+    sched.tick();
+    expect(sink.ops.map((o) => o.op)).toContain("status");
+  });
+
+  it("a repaint does not swallow a `running` queued EARLIER in the same window", () => {
+    // Codex ② finding 1: queueRepaint used to empty the whole pending array, so
+    // started -> clear_output in one window lost `running`. The sink would then
+    // have no execution record, the repaint would open a momentary one, and the
+    // later `done` would find nothing to end — no spinner, no timing.
+    const { sink, sched, feed } = harness();
+    feed({ seq: 1, exec_id: "e1", kind: "started", payload: { ts: 1 } });
+    feed(output("e1", "clear_output", { wait: false }));
+    feed(output("e1", "display_data", { data: { "text/plain": "P" }, metadata: {} }));
+    sched.tick();
+    const ops = sink.ops.map((o) => o.op);
+    expect(ops).toContain("status");
+    expect(ops.indexOf("status")).toBeLessThan(ops.indexOf("repaint"));
+    expect(sink.ops.find((o) => o.op === "status")?.status).toBe("running");
   });
 });

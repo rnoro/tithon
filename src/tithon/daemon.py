@@ -1188,8 +1188,14 @@ class Session:
              cell_origin_uri, cell_range, cell_hash, cell_index,
              started_at, finished_at) in self.journal.executions():
             fold = self._folds.get(exec_id)
+            # `fold_state` rides beside `outputs` so a client can CONTINUE folding
+            # this execution the way the daemon does (see `fold_state`). Only a
+            # live fold has it; an execution restored from `folded_json` alone is
+            # finished, so there is nothing left to continue.
+            fold_state = None
             if fold is not None:
                 outputs = fold.outputs()
+                fold_state = fold.fold_state()
             else:
                 outputs = json.loads(folded_json) if folded_json else []
             origin = None
@@ -1209,6 +1215,7 @@ class Session:
                     "cell_hash": cell_hash,
                     "origin": origin,
                     "outputs": outputs,
+                    "fold_state": fold_state,
                     "started_at": started_at,
                     "finished_at": finished_at,
                 }
