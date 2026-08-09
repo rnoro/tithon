@@ -28,7 +28,15 @@ start_daemon() {
 }
 
 daemon_pid() { cat "$TITHON_HOME/daemon.pid" 2>/dev/null || true; }
-kernel_pid_file() { cat "$TITHON_HOME/sessions/default/kernel.pid" 2>/dev/null || true; }
+
+kernel_pids() { # EVERY session's kernel pid, one per line
+  # Not just `default`: opening a notebook creates a per-FILE session under a
+  # hashed name, so the real-VSCode tests never touch `default` at all. Sweeping
+  # only that one left a detached kernel per test alive — a full `make vscode`
+  # leaked ~34, and enough of those racing a fresh kernel spawn is what flakes
+  # the isolated tests (AGENTS.md rule 6).
+  find "${TITHON_HOME:-/nonexistent}/sessions" -name kernel.pid -exec cat {} + 2>/dev/null || true
+}
 
 status_field() { # $1 = json field name; from the DEFAULT session's status.
   # Kernel fields (kernel_pid/kernel_status/kernel_reattached/widget_models) are
@@ -53,10 +61,18 @@ kernel_dead() { # $1 = pid; true if no longer a running ipykernel (gone OR zombi
 cleanup_procs() {
   local dp kp
   dp="$(daemon_pid)"
-  kp="$(kernel_pid_file)"
   [ -n "$dp" ] && kill "$dp" 2>/dev/null
   sleep 0.3
-  [ -n "$kp" ] && kill -9 "$kp" 2>/dev/null
+  # `kernel_dead` before each kill: these pids come off disk and a finished test's
+  # kernel may already be reaped, so the number could belong to something else by
+  # now. The sweep is confined to this test's own TITHON_HOME, so a developer's
+  # real ~/.tithon kernels are out of reach by construction.
+  while read -r kp; do
+    [ -n "$kp" ] || continue
+    kernel_dead "$kp" || kill -9 "$kp" 2>/dev/null
+  done <<KPIDS
+$(kernel_pids)
+KPIDS
   [ -n "$dp" ] && kill -9 "$dp" 2>/dev/null
   return 0
 }
