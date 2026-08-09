@@ -17,11 +17,24 @@
 # Usage: bash scripts/record_demo.sh
 # Output: scripts/demo/{demo.gif,demo.mp4,demo-full.mp4,markers.txt}
 #
-# Knobs (env): DEMO_W DEMO_H DEMO_FPS DEMO_GIF_W DEMO_GIF_FPS DEMO_PRE DEMO_POST
+# `demo-full.mp4` (raw, uncropped, uncaptioned) plus `markers.txt` are also the
+# input to the Remotion project that renders the PUBLISHED docs/demo.{gif,mp4} —
+# title card, magnified callouts on the execution timer, 1080p master. That
+# project is a React toolchain kept outside this repo on purpose; only its output
+# ships. The gif/mp4 this script writes itself stay a self-contained fallback.
+#
+# For the published assets, capture bigger: DEMO_W=1920 DEMO_H=1200 DEMO_ZOOM=2.
+#
+# Knobs (env): DEMO_W DEMO_H DEMO_ZOOM DEMO_FPS DEMO_GIF_W DEMO_GIF_FPS DEMO_PRE DEMO_POST
+#
+# DEMO_ZOOM must rise with DEMO_W. VSCode's zoomLevel sets the UI's PHYSICAL size,
+# so a wider capture at a fixed zoom yields text that is smaller RELATIVE to the
+# frame — a 1920-wide grab at zoom 1 reads worse after scaling than a 1280-wide
+# one, not better. Each step is a factor of 1.2.
 set -u
 . "$(dirname "$0")/lib.sh"
 
-W="${DEMO_W:-1280}"; H="${DEMO_H:-800}"; FPS="${DEMO_FPS:-15}"
+W="${DEMO_W:-1280}"; H="${DEMO_H:-800}"; FPS="${DEMO_FPS:-15}"; ZOOM="${DEMO_ZOOM:-1}"
 GIF_W="${DEMO_GIF_W:-900}"; GIF_FPS="${DEMO_GIF_FPS:-11}"
 PRE="${DEMO_PRE:-3}"      # seconds of lead-in before the first caption marker
 POST="${DEMO_POST:-7}"    # seconds to keep rolling after the last marker
@@ -67,7 +80,7 @@ cat >"$TITHON_HOME/vscode-user/User/settings.json" <<'JSON'
 {
   "workbench.experimental.modernUI": true,
   "workbench.colorTheme": "Dark 2026",
-  "window.zoomLevel": 1,
+  "window.zoomLevel": __ZOOM__,
   "window.commandCenter": false,
   "chat.commandCenter.enabled": false,
   "workbench.startupEditor": "none",
@@ -80,6 +93,7 @@ cat >"$TITHON_HOME/vscode-user/User/settings.json" <<'JSON'
   "telemetry.telemetryLevel": "off"
 }
 JSON
+sed -i "s/__ZOOM__/${ZOOM}/" "$TITHON_HOME/vscode-user/User/settings.json"
 
 DISP=":$((60 + RANDOM % 9))"
 Xvfb "$DISP" -screen 0 "${W}x${H}x24" >/tmp/xvfb-record.log 2>&1 & XVFB_PID=$!
@@ -101,6 +115,19 @@ T0=$(date +%s.%N)
 sleep 1
 
 ( cd "$ROOT/extension" && node out-int/integration/runTest.js >"$TESTLOG" 2>&1 ) & TEST_PID=$!
+
+# Xvfb runs no window manager, so Electron keeps its own ~1440x895 default and a
+# capture wider than that records a small window on a black field. Nothing can
+# "maximize" it without a WM, so drive the geometry through X11 directly. Applied
+# twice because Electron re-lays-out once after the first resize.
+( for _ in $(seq 1 80); do
+    wid=$(DISPLAY="$DISP" xdotool search --name "Visual Studio Code" 2>/dev/null | tail -1)
+    [ -n "$wid" ] || { sleep 0.5; continue; }
+    DISPLAY="$DISP" xdotool windowmove "$wid" 0 0 windowsize "$wid" "$W" "$H" 2>/dev/null
+    sleep 2
+    DISPLAY="$DISP" xdotool windowmove "$wid" 0 0 windowsize "$wid" "$W" "$H" 2>/dev/null
+    break
+  done ) >/dev/null 2>&1 &
 
 # Timestamp each `[demo]` narrative line against the recording clock. Polling the
 # log (rather than parsing afterwards) is what ties suite phases to video time.
