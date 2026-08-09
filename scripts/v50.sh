@@ -44,6 +44,32 @@ MARK_A="FROM_CLIENT_A"
 MARK_B="FROM_CLIENT_B"
 MARK_LATE="AFTER_A_LEFT"
 
+# Client B's cell carries an ipywidget so the session's comm frames land INSIDE the
+# two-client comparison, and the post-disconnect cell updates the SAME widget so
+# they also land inside the replay comparison (it runs strictly after K). Comm is
+# the one path that used to hand-build its wire frame instead of going through
+# `event_from_message`, so "live == replay" has to be asserted on it explicitly.
+A_CELL="print('$MARK_A')"
+B_CELL="$(cat <<PY
+import ipywidgets as _W
+_wb = _W.IntProgress(value=1, max=10)
+display(_wb)
+_wb.value = 3
+print('$MARK_B')
+PY
+)"
+# The late cell both UPDATES the existing widget and OPENS a second one, so the
+# replay window (which starts strictly after K) contains a comm_open as well as a
+# comm_msg — otherwise the open could land before K and only the update would be
+# covered, depending on which client's cell finished first.
+LATE_CELL="$(cat <<PY
+_wb.value = 9
+_wb2 = _W.IntProgress(value=2, max=10)
+display(_wb2)
+print('$MARK_LATE')
+PY
+)"
+
 cleanup() {
   [ -n "${A_PID:-}" ] && kill -9 "$A_PID" 2>/dev/null
   [ -n "${B_PID:-}" ] && kill -9 "$B_PID" 2>/dev/null
@@ -87,11 +113,11 @@ await_clients() { # $1 = expected count, $2 = seconds; the daemon drops a
 #    A leaves after both executions complete; B stays for the third.
 "$PY" "$HERE/_multi_client.py" --sock "$SOCK" --session "$S" --name client-A \
   --out "$A_OUT" --ready "$A_READY" --go "$GO" \
-  --exec "print('$MARK_A')" --until-done 2 --timeout 180 &
+  --exec "$A_CELL" --until-done 2 --timeout 180 &
 A_PID=$!
 "$PY" "$HERE/_multi_client.py" --sock "$SOCK" --session "$S" --name client-B \
   --out "$B_OUT" --ready "$B_READY" --go "$GO" \
-  --exec "print('$MARK_B')" --until-done 3 --timeout 240 &
+  --exec "$B_CELL" --until-done 3 --timeout 240 &
 B_PID=$!
 
 # 2) Barrier: both attached (includes the kernel spawn on first attach).
@@ -119,7 +145,7 @@ echo "v50: client A saw both executions complete and disconnected"
 # 5) A is gone; B must still be attached and still fed.
 n="$(await_clients 1 15)" || fail "after client A left, clients=$n on $S (expected exactly B)"
 
-timeout 120 "$TITHON" run --session "$S" --timeout 90 -c "print('$MARK_LATE')" >/dev/null \
+timeout 120 "$TITHON" run --session "$S" --timeout 90 -c "$LATE_CELL" >/dev/null \
   || fail "the post-disconnect run failed"
 
 wait "$B_PID"; b_rc=$?
@@ -150,7 +176,8 @@ echo "v50: replaying from seq $K ($(wc -l <"$R_OUT") frames)"
 
 # 7) All the cross-client assertions, against the two real transcripts.
 "$PY" "$HERE/_check_multi.py" --a "$A_OUT" --b "$B_OUT" --replay "$R_OUT" --since "$K" \
-  --marker-a "$MARK_A" --marker-b "$MARK_B" --marker-late "$MARK_LATE" || exit 1
+  --marker-a "$MARK_A" --marker-b "$MARK_B" --marker-late "$MARK_LATE" \
+  --widget-value 9 || exit 1
 
 # 8) A client joining fresh (no history) must see all three executions.
 snap="$(timeout 60 "$TITHON" attach --session "$S" --once)" || fail "fresh snapshot attach failed"
@@ -159,4 +186,4 @@ for m in "$MARK_A" "$MARK_B" "$MARK_LATE"; do
 done
 echo "v50: a fresh client's snapshot carries all three executions"
 
-echo "RESULT v50 PASS 2 clients on one session: byte-identical event streams in the shared window, cross-client delivery both ways, survivor keeps streaming after the other leaves, delta replay == live, fresh snapshot complete"
+echo "RESULT v50 PASS 2 clients on one session: byte-identical event streams in the shared window, cross-client delivery both ways, survivor keeps streaming after the other leaves, delta replay == live (incl. comm frames as kind=widget, folding to the same widget state), fresh snapshot complete"
