@@ -8,17 +8,19 @@
  * path. Also checks client/daemon fold equivalence (a client that folded the
  * live raw stream agrees with one seeded from the daemon's folded snapshot).
  *
- * Skips unless a daemon socket is present (so plain `npm test` stays hermetic);
- * scripts/v7.sh starts the daemon and sets TITHON_HOME before running this file.
+ * Runs only against a daemon a verify script provisioned for it — scripts/v7.sh
+ * starts one in an isolated TITHON_HOME and sets TITHON_TEST_DAEMON=1. A plain
+ * `npm test` skips with a printed reason rather than attaching to whatever owns
+ * the shared ~/.tithon socket (see test/liveDaemon.ts); v7.sh fails if this
+ * suite reports itself skipped, so the gate cannot hide a regression.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync } from "fs";
 import { parse, cellSource } from "../src/serializer";
-import { SessionClient, defaultSocketPath } from "../src/sessionClient";
+import { SessionClient } from "../src/sessionClient";
 import { computeCellHash, type LineRange } from "../src/cellAttach";
+import { requireLiveDaemon } from "./liveDaemon";
 
-const SOCK = defaultSocketPath();
-const live = existsSync(SOCK);
+const { sock: SOCK, live } = requireLiveDaemon("v7 restore");
 
 // Percent doc: each code cell's body is exactly what we submit to the kernel,
 // so daemon cell_hash = sha256(code) == extension computeCellHash(cellSource).

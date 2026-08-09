@@ -28,8 +28,12 @@ start_daemon || fail "daemon start failed"
 echo "v7: daemon up (pid $(daemon_pid)); restore test will drive it over $TITHON_HOME/daemon.sock"
 
 OUT="$(mktemp)"
-# TITHON_HOME is exported by setup_env -> the test's defaultSocketPath() finds the socket.
-(cd "$EXT" && NO_COLOR=1 timeout 180 npx vitest run test/outputFold.test.ts test/restore.test.ts) >"$OUT" 2>&1
+# TITHON_HOME (exported by setup_env) points the suite at the isolated socket, and
+# TITHON_TEST_DAEMON=1 is the explicit "this daemon was started for you" opt-in —
+# without it the suite refuses to run at all rather than attaching to whatever owns
+# the shared ~/.tithon socket (test/liveDaemon.ts). The skip guard below is what
+# keeps that gate from turning a regression into a silent pass.
+(cd "$EXT" && NO_COLOR=1 TITHON_TEST_DAEMON=1 timeout 180 npx vitest run test/outputFold.test.ts test/restore.test.ts) >"$OUT" 2>&1
 rc=$?
 cat "$OUT"
 tests_line="$(grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+ passed' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"
