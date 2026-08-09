@@ -1,28 +1,19 @@
-# Tithon
+<h1 align="center">Tithon</h1>
 
-**Your remote Jupyter kernel dies with your client. It shouldn't.**
+<p align="center">
+  <strong>Your Jupyter kernel dies with your client. It shouldn't.</strong>
+</p>
 
-Keep a Jupyter kernel alive on a remote host, independent of any client. Close
-your laptop in the middle of a long run, reopen hours later over SSH or a VSCode
-tunnel, and the output is still there — and still streaming.
+<p align="center">
+  <a href="https://pypi.org/project/tithon/"><img src="https://img.shields.io/pypi/v/tithon?logo=pypi&amp;logoColor=white" alt="PyPI"></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=rnoro.tithon"><img src="https://img.shields.io/visual-studio-marketplace/v/rnoro.tithon?logo=visualstudiocode&amp;logoColor=white&amp;label=VS%20Code" alt="VS Code Marketplace"></a>
+  <a href="https://pypi.org/project/tithon/"><img src="https://img.shields.io/pypi/pyversions/tithon" alt="Python"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+</p>
 
-[![PyPI](https://img.shields.io/pypi/v/tithon?logo=pypi&logoColor=white)](https://pypi.org/project/tithon/)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/rnoro.tithon?logo=visualstudiocode&logoColor=white&label=VS%20Code)][marketplace]
-[![Python](https://img.shields.io/pypi/pyversions/tithon)](https://pypi.org/project/tithon/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+![A real VS Code recording shows Tithon recovering from a daemon crash: VS Code displays its native reconnect UI, then the same remote kernel resumes streaming output without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
-![A real VS Code recording with animated annotations shows Tithon keeping a remote Jupyter training run alive after disconnect, then restoring its progress, logs, and live output on reconnect.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
-
-> Watch the cell's execution timer across the disconnect: it keeps counting and
-> never resets, because the run was never restarted. The `tqdm` bar comes back at
-> its real value, not at zero. Nothing was re-executed and nothing was replayed
-> from the client — the kernel simply never stopped.
-
-> The name is from Tithonus, who was granted immortality but not eternal youth
-> and withered forever without dying. A remote kernel has the same curse: it
-> keeps running, but its output dies the moment the client disconnects. Tithon
-> lifts the curse — immortality, with the eternal youth this time. (And it
-> rhymes with Python.)
+Keep a Jupyter kernel—and its output—alive independently of the client. Close your editor, lose your connection, or return later; the same session is still there and still streaming.
 
 > **Status: alpha.** It works and it's in daily use, but you will hit rough
 > edges. Bug reports are genuinely useful — please [open an issue][issues].
@@ -46,11 +37,11 @@ lives on the client, or in a channel that doesn't outlive a disconnect. Tithon
 moves it to the host.
 
 > [!TIP]
-> And in the age of coding agents, one more: a `.ipynb` is JSON bloat — the same
+> And in the era of AI agents, one more: a `.ipynb` is JSON bloat — the same
 > notebook is ~250 lines of `"cell_type"`/`"outputs"` noise that Tithon keeps as
 > ~50 lines of clean `.py`. Output images? Tithon keeps them as real files, so an
 > agent hands them to the model as actual images it can _see_ — not base64 the
-> model burns thousands of tokens on and still can't read. **Don't feed your LLM
+> model burns thousands of tokens on and still can't read. **Don't feed your AI
 > idiot JSON.**
 
 ## Requirements
@@ -61,6 +52,8 @@ moves it to the host.
 - For the notebook UI, **VSCode** with the Tithon extension. If the host is
   remote, connect over a Tunnel or Remote-SSH — the notebook then works exactly
   as it does locally.
+
+> Windows is not currently supported.
 
 ## Install
 
