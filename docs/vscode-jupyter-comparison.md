@@ -10,12 +10,12 @@
 두 번의 독립 분석을 교차검증해 하나로 합친 문서다. 두 분석은 접근 방향이 달라 결과가 거의
 서로소였고, 중복은 2건(위젯 단방향, reconnect/crash UX)뿐이었다.
 
-| | 분석 A (sol) | 분석 B (fable) |
-| --- | --- | --- |
-| 시점 / 기준 커밋 | 2026-07-19, `84e2773` 이전 | 2026-07-25, `756497e` |
-| 접근 | 위→아래: 책임경계·프로토콜 알고리즘 차용 설계 | 아래→위: 구체적 실패 시나리오 + `file:line` |
-| 강점 | 구조적 gap, 비차용 경계, 테스트 시나리오 | 개별 결함의 재현 경로와 심각도 |
-| 약점 | 개별 버그를 거의 못 잡음 | 프로토콜/구조 레벨 gap을 통째로 놓침 |
+|                  | 분석 A (sol)                                  | 분석 B (fable)                              |
+| ---------------- | --------------------------------------------- | ------------------------------------------- |
+| 시점 / 기준 커밋 | 2026-07-19, `84e2773` 이전                    | 2026-07-25, `756497e`                       |
+| 접근             | 위→아래: 책임경계·프로토콜 알고리즘 차용 설계 | 아래→위: 구체적 실패 시나리오 + `file:line` |
+| 강점             | 구조적 gap, 비차용 경계, 테스트 시나리오      | 개별 결함의 재현 경로와 심각도              |
+| 약점             | 개별 버그를 거의 못 잡음                      | 프로토콜/구조 레벨 gap을 통째로 놓침        |
 
 §4의 모든 항목은 2026-07-25에 HEAD(`266561e`) 코드에 직접 대조해 재검증했다. 검증 과정에서
 정정된 주장은 §5에, 두 분석 모두 놓친 항목은 §4에 `본 문서` 출처로 표기했다.
@@ -44,17 +44,17 @@ Tithon의 영속 daemon 구조와 두 개의 상태 권위자가 충돌할 수 �
 
 ## 2. 구조 비교
 
-| 기준 | vscode-jupyter | Tithon | 판단 |
-| --- | --- | --- | --- |
-| Kernel 소유자 | 확장 호스트의 Jupyter session | daemon의 detached ipykernel | Tithon의 현재 경계를 유지 |
-| 상태 저장 | kernel/session과 확장 메모리 중심 | SQLite WAL journal + folded snapshot + artifact | Tithon이 reconnect/장기 실행에 더 적합 |
-| 실행 큐 | `CellExecutionQueue`가 extension 내부에서 관리 | daemon 세션별 FIFO queue | 큐를 이중화하지 말고 client adapter만 보강 |
-| 출력 완료 | shell reply, idle IOPub, message handler를 함께 추적 | shell reply 후 50ms grace | Tithon의 완료 판정 개선 필요 (§4-1) |
-| 출력 갱신 | notebook 전체 `display_id` 추적, cross-cell update | execution/cell-local map 중심 | session-level registry 차용 가치가 큼 (§4-4) |
-| Widget | kernel socket을 통한 양방향 comm | kernel → daemon → client mirror, 현재 receive-only | protocol adapter로 양방향 확장 (§4-7) |
-| Widget module | local/remote/CDN source provider와 timeout | base/controls 번들 중심 | third-party widget 계획이 있을 때만 확장 |
-| Reconnect | 연결 상태 monitor, progress, crash UX | snapshot 재동기화와 exponential backoff | transport는 Tithon 유지, UX는 Jupyter 참고 |
-| 실행 완료 신호 | idle-status + shell reply + fallback timer 휴리스틱 | journal의 명시적 `tithon.queued/started/done` | **Tithon이 우위** — §3 참조 |
+| 기준           | vscode-jupyter                                       | Tithon                                             | 판단                                         |
+| -------------- | ---------------------------------------------------- | -------------------------------------------------- | -------------------------------------------- |
+| Kernel 소유자  | 확장 호스트의 Jupyter session                        | daemon의 detached ipykernel                        | Tithon의 현재 경계를 유지                    |
+| 상태 저장      | kernel/session과 확장 메모리 중심                    | SQLite WAL journal + folded snapshot + artifact    | Tithon이 reconnect/장기 실행에 더 적합       |
+| 실행 큐        | `CellExecutionQueue`가 extension 내부에서 관리       | daemon 세션별 FIFO queue                           | 큐를 이중화하지 말고 client adapter만 보강   |
+| 출력 완료      | shell reply, idle IOPub, message handler를 함께 추적 | shell reply 후 50ms grace                          | Tithon의 완료 판정 개선 필요 (§4-1)          |
+| 출력 갱신      | notebook 전체 `display_id` 추적, cross-cell update   | execution/cell-local map 중심                      | session-level registry 차용 가치가 큼 (§4-4) |
+| Widget         | kernel socket을 통한 양방향 comm                     | kernel → daemon → client mirror, 현재 receive-only | protocol adapter로 양방향 확장 (§4-7)        |
+| Widget module  | local/remote/CDN source provider와 timeout           | base/controls 번들 중심                            | third-party widget 계획이 있을 때만 확장     |
+| Reconnect      | 연결 상태 monitor, progress, crash UX                | snapshot 재동기화와 exponential backoff            | transport는 Tithon 유지, UX는 Jupyter 참고   |
+| 실행 완료 신호 | idle-status + shell reply + fallback timer 휴리스틱  | journal의 명시적 `tithon.queued/started/done`      | **Tithon이 우위** — §3 참조                  |
 
 Jupyter 쪽은 범용 kernel, 원격 서버, raw kernel, debugger, variable explorer, telemetry까지 포함하는
 대규모 제품이다. Tithon의 핵심 소스는 훨씬 작고 목적도 "영속 session과 output restore"에 집중되어
@@ -92,18 +92,18 @@ journal을 읽어 셀 상태를 확정한다. `sessionController.ts`의 reconnec
 
 각 항목은 HEAD(`266561e`)에서 코드로 확인했다. `출처`는 어느 분석이 잡았는지를 뜻한다.
 
-| 순위 | 항목 | 출처 | 심각도 |
-| --- | --- | --- | --- |
-| 1 | 고정 50ms grace → completion barrier | sol | High |
-| 2 | `execute_reply.payload` 폐기 → `?`/`??` 무반응 | fable | High |
-| 3 | daemon 생존 중 kernel death 미탐지 | fable (= RISKS#3 잔여) | High |
-| 4 | session 전체 `display_id` resolution | sol | Medium |
-| 5 | `exec_id` 중심 execution lifecycle adapter | sol | Medium |
-| 6 | traceback 포매팅 / reconnect progress UX | fable + sol | Low |
-| 7 | `_await_reply` shell 라우팅 정리 → 양방향 widget comm | 본 문서 + 양쪽 공통 | Medium |
-| 8 | journal pruning 부재 + 시작 시 전체 스캔 | 본 문서 | Medium |
-| 9 | comm 경로의 artifact store 우회 (범위 축소판) | fable (정정) | Medium |
-| 보류 | `raises-exception` 태그 / third-party widget loader | fable / sol | — |
+| 순위 | 항목                                                  | 출처                   | 심각도 |
+| ---- | ----------------------------------------------------- | ---------------------- | ------ |
+| 1    | 고정 50ms grace → completion barrier                  | sol                    | High   |
+| 2    | `execute_reply.payload` 폐기 → `?`/`??` 무반응        | fable                  | High   |
+| 3    | daemon 생존 중 kernel death 미탐지                    | fable (= RISKS#3 잔여) | High   |
+| 4    | session 전체 `display_id` resolution                  | sol                    | Medium |
+| 5    | `exec_id` 중심 execution lifecycle adapter            | sol                    | Medium |
+| 6    | traceback 포매팅 / reconnect progress UX              | fable + sol            | Low    |
+| 7    | `_await_reply` shell 라우팅 정리 → 양방향 widget comm | 본 문서 + 양쪽 공통    | Medium |
+| 8    | journal pruning 부재 + 시작 시 전체 스캔              | 본 문서                | Medium |
+| 9    | comm 경로의 artifact store 우회 (범위 축소판)         | fable (정정)           | Medium |
+| 보류 | `raises-exception` 태그 / third-party widget loader   | fable / sol            | —      |
 
 ### 4-1. [High] 고정 50ms grace를 execution completion barrier로 교체
 
@@ -292,7 +292,7 @@ rich output 추출은 iopub `display_data`/`execute_result`/`update_display_data
 메시지는 [`_handle_comm`](../src/tithon/daemon.py#L599)이라는 **별도 경로**로 처리되며 `content`를
 (buffers는 base64로) **verbatim** 저장한다 — artifact 추출이 전혀 개입하지 않는다. `Output` 위젯의
 `outputs` trait은 nbformat output entry 모양이라 base64 이미지를 담을 수 있고, 그 경우 SQLite에
-그대로 들어간다. `.claude/CLAUDE.md`의 불변식("image/*는 base64로 embed하지 않는다") 위반이며,
+그대로 들어간다. `.claude/CLAUDE.md`의 불변식("image/\*는 base64로 embed하지 않는다") 위반이며,
 comm state에는 `ExecutionFold.artifact_ids()`에 해당하는 GC 기준도 없다.
 
 **단, 흔한 라이브 플롯 관용구는 여기에 해당하지 않는다** — §5-1의 정정을 반드시 함께 읽을 것.
