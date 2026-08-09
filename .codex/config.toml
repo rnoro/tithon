@@ -7,8 +7,13 @@
 # cross-review) wants terra/high; without this it would silently run at the user default
 # `medium`.
 #
-# `model` is intentionally left unset so it inherits gpt-5.6-terra from ~/.codex/config.toml.
+# `model` MUST be set explicitly. Verified: with no --model the run resolves to gpt-5.6-sol even
+# though ~/.codex/config.toml sets model = "gpt-5.6-terra" — the user-level model does NOT get
+# inherited here, and the bare default falls back to Sol. Leaving this unset would make the
+# flagless /codex:review run Sol+high, the most expensive combination.
+#
 # Triggers ① and ④ pass an explicit --model/--effort through codex:codex-rescue and override
 # whatever is set here.
 
+model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
