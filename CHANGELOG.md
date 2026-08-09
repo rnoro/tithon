@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/rnoro/tithon/compare/v0.2.1...v0.2.2) (2026-08-09)
+
+
+### Features
+
+* resolve a display_id session-wide, not per execution ([e45a407](https://github.com/rnoro/tithon/commit/e45a40767d521163a4aaca0a968a95a1ec70ad85))
+
+
+### Documentation
+
+* **extension:** update README.md ([8ba1865](https://github.com/rnoro/tithon/commit/8ba18659e4b69f9c76996e242e4fc43ba647216f))
+
 ## [0.2.1](https://github.com/rnoro/tithon/compare/v0.2.0...v0.2.1) (2026-08-08)
 
 

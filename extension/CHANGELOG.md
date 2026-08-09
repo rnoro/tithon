@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/rnoro/tithon/compare/vscode-v0.2.1...vscode-v0.2.2) (2026-08-09)
+
+
+### Features
+
+* resolve a display_id session-wide, not per execution ([e45a407](https://github.com/rnoro/tithon/commit/e45a40767d521163a4aaca0a968a95a1ec70ad85))
+
+
+### Bug Fixes
+
+* **extension:** simplify status UI and recovery demo ([23744f4](https://github.com/rnoro/tithon/commit/23744f423b83a59dd68a851ceee37cbacafd9fd1))
+
 ## [0.2.1](https://github.com/rnoro/tithon/compare/vscode-v0.2.0...vscode-v0.2.1) (2026-08-08)
 
 
