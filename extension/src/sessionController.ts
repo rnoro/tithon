@@ -23,6 +23,7 @@ import {
   widgetModelIdOf,
   widgetFallbackText,
   widgetPayload,
+  isDisplayOnlyWidget,
   TITHON_WIDGET_MIME,
   decodeBufferEntries,
   mergeBufferEntries,
@@ -113,7 +114,15 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       //    snapshot) -> §3.3 text fallback, else the display's own text/plain.
       const modelId = widgetModelIdOf(o);
       if (modelId) {
-        const payload = widgetPayload(o, ctx?.widgets ?? null);
+        // Interactive controls (sliders, buttons, text boxes...) have no
+        // client -> kernel comm back-channel (RISKS #4/T8) — rendering them
+        // via html-manager would produce a control that LOOKS functional but
+        // silently drops every interaction. Render only display-only widgets
+        // (and containers of them) interactively; anything else is the
+        // honest text fallback, even though the mirror state IS known.
+        const payload = isDisplayOnlyWidget(modelId, ctx?.widgets ?? null)
+          ? widgetPayload(o, ctx?.widgets ?? null)
+          : undefined;
         if (payload) {
           const items = [vscode.NotebookCellOutputItem.json(payload, TITHON_WIDGET_MIME)];
           const fb = widgetFallbackText(modelId, ctx?.widgets ?? null);

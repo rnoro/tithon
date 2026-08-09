@@ -168,6 +168,62 @@ export function widgetPayload(
   return { model_id: id, state: widgets };
 }
 
+// Widgets with no client -> kernel back-channel (RISKS #4/T8: comm is receive-only
+// today, so a control's own DOM interaction updates its LOCAL view state and never
+// reaches the kernel or errors — a slider drag or button click does nothing, with
+// no indication anything is wrong). This is an ALLOW-list, not a deny-list, on
+// purpose: an unrecognized model — including any future ipywidgets control — falls
+// back to text by default rather than risking a silent no-op control that LOOKS
+// functional. Every entry verified against the installed `@jupyter-widgets`
+// package source (its View class registers no DOM listener that writes back to
+// the model) — a Codex ② review flagged this as otherwise unverifiable and its own
+// sandbox couldn't reach node_modules to check. `OutputModel` is deliberately
+// EXCLUDED despite having no interaction of its own: its `outputs` trait can
+// nest a `display_data` item carrying ANOTHER widget's
+// `application/vnd.jupyter.widget-view+json` reference, entirely outside the
+// `children` array this function walks — an interactive widget captured inside
+// an Output widget would slip past this guard undetected (Codex ② finding 1).
+const DISPLAY_ONLY_MODELS = new Set([
+  "HTMLModel", "HTMLMathModel", "LabelModel", "ImageModel",
+  "IntProgressModel", "FloatProgressModel",
+  "BoxModel", "HBoxModel", "VBoxModel", "GridBoxModel",
+]);
+
+/**
+ * Whether this widget — and, for a container, every descendant reachable via
+ * `children` — is display-only. A container holding even one interactive or
+ * unrecognized child is NOT safe to render interactively: the child would still
+ * silently swallow its own input. Mirrors `widgetFallbackText`'s own traversal.
+ */
+export function isDisplayOnlyWidget(
+  modelId: string,
+  widgets: WidgetState | null | undefined,
+): boolean {
+  const models = widgets?.state;
+  if (!models) return false;
+  const seen = new Set<string>();
+  const check = (id: string): boolean => {
+    if (seen.has(id)) return true; // a cycle can't introduce a NEW interactive node
+    seen.add(id);
+    const s = models[id]?.state;
+    if (!s) return false; // unknown model: fail closed
+    const name = String(s._model_name ?? "");
+    if (!DISPLAY_ONLY_MODELS.has(name)) return false;
+    const ch = s.children;
+    // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
+    // that isn't an array (a malformed/unexpected shape) fails closed instead of
+    // silently being treated as childless — Codex ② finding 2.
+    if (ch === undefined) return true;
+    if (!Array.isArray(ch)) return false;
+    for (const c of ch) {
+      if (typeof c !== "string") return false;
+      if (!check(c.replace(/^IPY_MODEL_/, ""))) return false;
+    }
+    return true;
+  };
+  return check(modelId);
+}
+
 function unescapeHtml(s: string): string {
   return s
     .replace(/&lt;/g, "<")
