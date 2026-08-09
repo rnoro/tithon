@@ -11,7 +11,7 @@ tunnel, and the output is still there — and still streaming.
 [![Python](https://img.shields.io/pypi/pyversions/tithon)](https://pypi.org/project/tithon/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-![A training loop streaming into a VSCode notebook on a remote host: the tqdm bar and a step/loss log advance, the client disconnects and the notebook closes, and reopening restores the entire log and the bar at its real value while the cell's execution timer keeps counting from the original start.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
+![A real VS Code recording with animated annotations shows Tithon keeping a remote Jupyter training run alive after disconnect, then restoring its progress, logs, and live output on reconnect.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
 > Watch the cell's execution timer across the disconnect: it keeps counting and
 > never resets, because the run was never restarted. The `tqdm` bar comes back at
