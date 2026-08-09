@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
 
-![A real VS Code recording shows Tithon recovering from a daemon crash: VS Code displays its native reconnect UI, then the same remote kernel resumes streaming output without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
+![A real VS Code recording shows Tithon surviving a daemon crash: connection loss and reconnection are highlighted, then the same remote kernel resumes live output synchronization without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
 Keep a Jupyter kernel—and its output—alive independently of the client. Close your editor, lose your connection, or return later; the same session is still there and still streaming.
 
