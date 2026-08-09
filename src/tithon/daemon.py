@@ -71,6 +71,12 @@ STDIN_SETTLE_S = float(os.environ.get("TITHON_STDIN_SETTLE", "0.3"))  # seconds
 # whole session (incl. queued cells) wedges. Small enough to surface the death
 # quickly, large enough not to busy-poll.
 KERNEL_REPLY_POLL = float(os.environ.get("TITHON_KERNEL_REPLY_POLL", "1.0"))  # seconds
+# Upper bound on the completion barrier (see `_await_idle`). This is a FALLBACK for
+# a kernel that never publishes its closing `status: idle` — it is not the normal
+# path, and it must never become one: the barrier exists precisely to replace the
+# timer heuristic it used to be. The liveness poll inside the barrier returns much
+# sooner than this whenever the kernel is actually gone.
+IDLE_BARRIER_TIMEOUT = float(os.environ.get("TITHON_IDLE_BARRIER_TIMEOUT", "10"))  # s
 
 # Kernel lifetime policy (idle GC). Detached kernels otherwise live forever: with
 # per-file kernels, every file ever opened leaves one more immortal process on
@@ -195,6 +201,16 @@ class Session:
         self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
         self._msgid_to_exec: dict[str, str] = {}
+        # Shell-channel routing. One pump owns `shell_channel.get_msg()` and hands
+        # each reply to the awaiter registered under its `parent_header.msg_id`.
+        # Before this, `_await_reply` consumed the channel itself and DROPPED every
+        # message that was not the execute_reply it wanted — which silently ate
+        # comm_info_reply / inspect_reply / complete_reply and made it impossible to
+        # issue any shell request while a cell was running.
+        self._shell_waiters: dict[str, asyncio.Future] = {}
+        # Completion barrier: `status: idle` for an execution's parent, signalled
+        # from `_handle_iopub` and awaited by `_run_one` (see `_await_idle`).
+        self._idle_events: dict[str, asyncio.Event] = {}
         # The unanswered input()/getpass() prompt, if a cell is blocked waiting on
         # stdin: {exec_id, prompt, password}. Surfaced live (tithon.input_request)
         # and in the snapshot (pending_input) so a reconnecting client re-prompts.
@@ -241,8 +257,11 @@ class Session:
         self.kc = self.kernel.make_client()
         if spawned:
             await self._wait_kernel_ready(timeout=120)
-        # Capture the kernel's Python version (before the exec worker contends on
-        # the shell channel) so the client can label the kernel "Python 3.x.y".
+        # Capture the kernel's Python version so the client can label the kernel
+        # "Python 3.x.y". This reads the shell channel DIRECTLY, which is safe only
+        # because it completes before `_start_tasks()` below creates `_shell_pump` —
+        # there is no second consumer at this point. Do not move it after
+        # `_start_tasks()`: the pump would swallow the reply and this would hang.
         await self._capture_kernel_info()
         # Let the stdin DEALER finish registering at the kernel ROUTER so the first
         # cell's input()/getpass() can't lose its prompt to the connection race.
@@ -334,6 +353,7 @@ class Session:
         self._busy = False
         self._tasks = [
             asyncio.create_task(self._iopub_pump(), name=f"iopub-{self.session_id}"),
+            asyncio.create_task(self._shell_pump(), name=f"shell-{self.session_id}"),
             asyncio.create_task(self._stdin_pump(), name=f"stdin-{self.session_id}"),
             asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
         ]
@@ -476,6 +496,12 @@ class Session:
         await asyncio.sleep(STDIN_SETTLE_S)  # stdin DEALER registers before the next run
         self.kernel_status = "starting"
         self._msgid_to_exec.clear()
+        # The old kernel's channels are gone, so nothing will ever resolve a waiter
+        # registered against them, and an idle event for a pre-restart execution can
+        # never be set. `_stop_tasks` above already failed the shell waiters via the
+        # pump's cancellation; clear both maps so the fresh kernel starts clean.
+        self._fail_shell_waiters("kernel restarted")
+        self._idle_events.clear()
         self._start_tasks()
         # `deliberate` is what tells a LATER `Session.start()` (after a reboot or a
         # daemon restart) that this empty namespace was requested, not lost.
@@ -560,6 +586,13 @@ class Session:
         Deliberately not ``KernelClient.wait_for_ready``: without a parent
         KernelManager it consults the heartbeat channel, which reports "not
         beating" right after spawn and raises "Kernel died" spuriously.
+
+        Like :meth:`_capture_kernel_info` this reads the shell channel DIRECTLY.
+        That is safe only because BOTH call sites (``start`` and
+        ``_restart_kernel_inner``) run it before ``_start_tasks()`` creates
+        ``_shell_pump``, so it is never a second concurrent consumer. Moving either
+        call after ``_start_tasks()`` would make the pump swallow the reply and hang
+        this loop until its deadline.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -628,6 +661,71 @@ class Session:
             except Exception:
                 log.exception("[%s] iopub handling failed: %s", self.session_id, msg.get("header"))
 
+    async def _shell_pump(self) -> None:
+        """Sole consumer of the shell channel; routes replies by parent msg_id.
+
+        The shell channel is request/reply and MULTIPLEXED: an execute_reply, a
+        comm_info_reply and an inspect_reply can all be in flight at once. The old
+        code had `_await_reply` read the channel directly and discard anything whose
+        parent was not the cell it was waiting for, so any concurrent shell request
+        was lost — there was no way to ask the kernel anything while a cell ran.
+
+        Note the pump does NOT journal: shell replies are request-scoped answers to
+        the daemon's own questions, not session output. What the user must see from
+        a reply (`payload`) is journaled by `_emit_reply_payloads` on the awaiting
+        side, so the "every message is preserved" invariant stays anchored to the
+        iopub stream and live/replay equivalence is unaffected.
+        """
+        while True:
+            try:
+                msg = await self.kc.shell_channel.get_msg()
+            except asyncio.CancelledError:
+                # Teardown (restart/stop): nobody will answer the outstanding
+                # requests, so fail them instead of leaving `_run_one` — itself
+                # about to be cancelled — blocked on a future that can never
+                # resolve. Belt-and-braces: the exec worker is cancelled too.
+                self._fail_shell_waiters("shell pump cancelled")
+                raise
+            except Exception:
+                log.exception("[%s] shell recv failed", self.session_id)
+                await asyncio.sleep(0.2)
+                continue
+            try:
+                self._route_shell(msg)
+            except Exception:
+                log.exception("[%s] shell routing failed: %s", self.session_id, msg.get("header"))
+
+    def _route_shell(self, msg: dict) -> None:
+        """Hand one shell reply to its awaiter, if any."""
+        parent = (msg.get("parent_header") or {}).get("msg_id")
+        fut = self._shell_waiters.get(parent)
+        if fut is None:
+            # No awaiter: a reply to a request nobody is waiting on any more (its
+            # caller timed out or was cancelled). Dropping it here is correct and,
+            # unlike the old code, it is the ONLY thing dropped.
+            log.debug("[%s] unrouted shell reply parent=%s type=%s",
+                      self.session_id, parent, msg["header"]["msg_type"])
+            return
+        if not fut.done():
+            fut.set_result(msg)
+
+    def _expect_shell(self, msg_id: str) -> asyncio.Future:
+        """Register interest in the reply to `msg_id` BEFORE it can arrive.
+
+        Must be called with no await between the request that produced `msg_id` and
+        this call, so the pump cannot route the reply before the waiter exists.
+        The caller owns removal (a `finally` that pops `msg_id`).
+        """
+        fut = asyncio.get_running_loop().create_future()
+        self._shell_waiters[msg_id] = fut
+        return fut
+
+    def _fail_shell_waiters(self, reason: str) -> None:
+        for msg_id, fut in list(self._shell_waiters.items()):
+            if not fut.done():
+                fut.set_exception(ConnectionError(reason))
+        self._shell_waiters.clear()
+
     def _handle_iopub(self, msg: dict) -> None:
         msg_type = msg["header"]["msg_type"]
         content = msg.get("content", {})
@@ -654,6 +752,18 @@ class Session:
         fold.apply(msg_type, content)
         self._gc_artifacts(before, fold.artifact_ids())
         self._broadcast(event_from_message(seq, exec_id, msg_type, content))
+        # THE COMPLETION BARRIER signal (see `_await_idle`), released only after this
+        # message is journaled, folded and broadcast. `status` IS in JOURNALED_IOPUB,
+        # so releasing the waiter any earlier would let `_run_one` persist
+        # `folded_json` + `tithon.done` while the idle status itself was still
+        # unjournaled — inverting their seq order — and would release it even if the
+        # append above had raised. Today `_handle_iopub` is fully synchronous so the
+        # early placement happened to be safe; that is a distant property to depend
+        # on, and this placement makes the ordering local and explicit.
+        if msg_type == "status" and content.get("execution_state") == "idle":
+            ev = self._idle_events.get(exec_id)
+            if ev is not None:
+                ev.set()
 
     def _gc_artifacts(self, before: set[str], after: set[str]) -> None:
         """Adjust the live-reference counter for one fold transition; delete the
@@ -772,15 +882,26 @@ class Session:
             # this run" unambiguous — no run-id bookkeeping, no skip-the-wrong-cell
             # race with cells of a later, independent run.
             skip_rest = False
-            for exec_id, code in batch:
-                if skip_rest:
-                    self._mark_skipped(exec_id)
-                    continue
-                status = await self._run_one(exec_id, code, allow_stdin)
-                if status != "ok" and stop_on_error:
-                    skip_rest = True
-            self._busy = False
-            self.touch()  # the idle clock starts when the batch finishes
+            try:
+                for exec_id, code in batch:
+                    if skip_rest:
+                        self._mark_skipped(exec_id)
+                        continue
+                    status = await self._run_one(exec_id, code, allow_stdin)
+                    if status != "ok" and stop_on_error:
+                        skip_rest = True
+            except asyncio.CancelledError:
+                raise  # restart/stop: the task is meant to die here
+            except Exception:
+                # This worker is the SOLE consumer of the queue. Letting an
+                # unexpected error escape would kill it, wedging every cell queued
+                # afterwards, AND leave `_busy` set so idle-GC could never reap the
+                # session either. The shell router adds new failure paths into
+                # `_run_one`, which makes the containment worth having explicitly.
+                log.exception("[%s] exec batch failed", self.session_id)
+            finally:
+                self._busy = False
+                self.touch()  # the idle clock starts when the batch finishes
 
     async def _run_one(self, exec_id: str, code: str, allow_stdin: bool = False) -> str:
         """Execute one cell on the kernel; journal its lifecycle; return the
@@ -803,14 +924,35 @@ class Session:
             status, ec = "error", None
         else:
             msg_id = self.kc.execute(code, allow_stdin=allow_stdin)
+            # Register BOTH awaiters with no await in between, so neither pump can
+            # deliver this execution's terminator before anyone is listening.
             self._msgid_to_exec[msg_id] = exec_id
+            idle = self._idle_events.setdefault(exec_id, asyncio.Event())
+            fut = self._expect_shell(msg_id)
             log.info("[%s] exec %s started (msg_id=%s)", self.session_id, exec_id, msg_id)
-            status, ec = await self._await_reply(msg_id, exec_id)
+            try:
+                status, ec = await self._await_reply(fut, exec_id)
+                # THE COMPLETION BARRIER. `execute_reply` (shell) and the last iopub
+                # of the same execution race, and the reply routinely wins — which is
+                # why this used to be `sleep(0.05)`, a guess. When the guess lost, the
+                # folded snapshot persisted below was missing output that WAS already
+                # in the journal, so a reconnecting client's snapshot disagreed with
+                # what a live client had seen — a direct breach of the snapshot/delta
+                # equivalence the whole design rests on. Waiting for the kernel's own
+                # `status: idle` replaces the guess with the kernel's statement that
+                # this execution has published everything it is going to.
+                await self._await_idle(exec_id, idle)
+            finally:
+                self._shell_waiters.pop(msg_id, None)
+                self._idle_events.pop(exec_id, None)
+                # Only NOW is the parent→exec mapping dead. Dropping it any earlier
+                # would discard trailing iopub — the very bug the barrier fixes —
+                # while never dropping it (the old behaviour) leaks one entry per
+                # cell for the lifetime of the session.
+                self._msgid_to_exec.pop(msg_id, None)
         # If the cell ended while still blocked at a prompt (interrupted, or the
         # kernel aborted input), drop the stale prompt so the client dismisses it.
         self._clear_pending_input(exec_id)
-        # tiny grace so trailing iopub lands before the folded cache persists
-        await asyncio.sleep(0.05)
         folded = json.dumps(self._folds[exec_id].outputs())
         finished_at = self.journal.mark_done(
             exec_id, "done" if status == "ok" else "error", ec, folded
@@ -823,31 +965,71 @@ class Session:
         log.info("[%s] exec %s done status=%s", self.session_id, exec_id, status)
         return status
 
-    async def _await_reply(self, msg_id: str, exec_id: str) -> tuple[str, int | None]:
-        """Wait for this cell's ``execute_reply``, watching for kernel death.
+    async def _await_reply(self, fut: asyncio.Future, exec_id: str) -> tuple[str, int | None]:
+        """Wait for this cell's routed ``execute_reply``, watching for kernel death.
 
-        Polls with a timeout so that if the kernel dies mid-run (crash /
-        OOM-kill / ``os._exit``) — in which case no reply is ever sent — we
-        detect it and surface an error instead of blocking the exec worker (and
-        every queued cell) forever. Returns ``(status, execution_count)``.
+        The reply is delivered by :meth:`_shell_pump`, which already matched it on
+        ``parent_header.msg_id`` — so unlike the old version this no longer consumes
+        (and discards) other requests' replies.
+
+        Polls with a timeout so that if the kernel dies mid-run (crash / OOM-kill /
+        ``os._exit``) — in which case no reply is ever sent — we detect it and
+        surface an error instead of blocking the exec worker (and every queued cell)
+        forever. Returns ``(status, execution_count)``.
         """
         while True:
             try:
-                reply = await asyncio.wait_for(
-                    self.kc.shell_channel.get_msg(), KERNEL_REPLY_POLL
-                )
+                # `shield` so the poll timeout cancels only this wait, never the
+                # future the pump is still going to resolve.
+                reply = await asyncio.wait_for(asyncio.shield(fut), KERNEL_REPLY_POLL)
             except (asyncio.TimeoutError, TimeoutError):
                 if not self.kernel.is_alive():
                     self._emit_kernel_dead(exec_id)
                     return "error", None
                 continue  # still running, just slow — keep waiting
-            if (
-                reply["header"]["msg_type"] == "execute_reply"
-                and (reply.get("parent_header") or {}).get("msg_id") == msg_id
-            ):
-                content = reply["content"]
-                self._emit_reply_payloads(exec_id, content.get("payload") or [])
-                return content.get("status", "ok"), content.get("execution_count")
+            except ConnectionError:
+                # Channels torn down under us (restart/stop). The exec worker is
+                # being cancelled too; fail this cell rather than wait forever.
+                log.info("[%s] exec %s: shell channel closed before reply",
+                         self.session_id, exec_id)
+                return "error", None
+            content = reply["content"]
+            self._emit_reply_payloads(exec_id, content.get("payload") or [])
+            return content.get("status", "ok"), content.get("execution_count")
+
+    async def _await_idle(self, exec_id: str, idle: asyncio.Event) -> None:
+        """Block until the kernel publishes ``status: idle`` for this execution.
+
+        The Jupyter messaging protocol has a kernel publish ``status: busy`` before
+        it begins handling a request and ``status: idle`` once it has finished — and
+        ipykernel emits that ``idle`` after every other iopub message the execution
+        produced. ``idle`` is therefore the execution's terminator, and waiting on it
+        is what makes the fold we persist provably complete instead of probably
+        complete.
+
+        The wait is bounded, but the bound is a FALLBACK, not the mechanism: a kernel
+        SIGKILLed between its reply and its idle never publishes one, and the exec
+        worker is serial, so an unbounded wait would wedge every queued cell behind a
+        dead kernel. The liveness poll normally returns long before the timeout.
+        """
+        waited = 0.0
+        while True:
+            try:
+                await asyncio.wait_for(idle.wait(), KERNEL_REPLY_POLL)
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                if not self.kernel.is_alive():
+                    log.warning("[%s] exec %s: kernel died before publishing idle",
+                                self.session_id, exec_id)
+                    return
+                waited += KERNEL_REPLY_POLL
+                if waited >= IDLE_BARRIER_TIMEOUT:
+                    log.warning(
+                        "[%s] exec %s: no iopub idle within %.0fs — persisting the "
+                        "fold anyway (output may be incomplete)",
+                        self.session_id, exec_id, IDLE_BARRIER_TIMEOUT,
+                    )
+                    return
 
     def _emit_reply_payloads(self, exec_id: str, payloads: list) -> None:
         """Surface ``execute_reply.payload`` text as stdout stream output.
