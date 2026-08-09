@@ -23,6 +23,7 @@ import os
 import re
 import signal
 import socket
+import time
 from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -70,6 +71,18 @@ STDIN_SETTLE_S = float(os.environ.get("TITHON_STDIN_SETTLE", "0.3"))  # seconds
 # whole session (incl. queued cells) wedges. Small enough to surface the death
 # quickly, large enough not to busy-poll.
 KERNEL_REPLY_POLL = float(os.environ.get("TITHON_KERNEL_REPLY_POLL", "1.0"))  # seconds
+
+# Kernel lifetime policy (idle GC). Detached kernels otherwise live forever: with
+# per-file kernels, every file ever opened leaves one more immortal process on
+# the GPU host. A session whose kernel has been idle — no attached client,
+# nothing running or queued, no pending input() — longer than this many seconds
+# is reaped: kernel terminated, Session dropped. The journal + artifacts stay on
+# disk, so reopening the file restores its full output history under a fresh
+# kernel; only the in-memory namespace is lost. 0 (the default) disables the
+# policy — a GPU-host kernel must never be surprise-killed unless the operator
+# opted in (CLI --idle-timeout / the extension's tithon.kernelIdleTimeout).
+KERNEL_IDLE_TIMEOUT = float(os.environ.get("TITHON_KERNEL_IDLE_TIMEOUT", "0"))  # seconds; 0=off
+GC_POLL = float(os.environ.get("TITHON_GC_POLL", "60"))  # idle-GC sweep interval (s)
 
 
 def _safe_component(s: str) -> str:
@@ -182,6 +195,11 @@ class Session:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._exec_counter = 0
         self._tasks: list[asyncio.Task] = []
+        # Idle-GC bookkeeping: when work last happened (monotonic, wall-jump
+        # safe) and whether the exec worker is mid-batch (the queue alone can't
+        # tell — the running batch lives in the worker coroutine, not the queue).
+        self._busy = False
+        self._last_activity = time.monotonic()
 
     # -- lifecycle -----------------------------------------------------------
     async def start(self) -> None:
@@ -202,17 +220,52 @@ class Session:
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
         self._start_tasks()
+        # Becoming ready counts as activity: the idle clock must not include the
+        # kernel-spawn seconds, or a short timeout could reap a session in the
+        # gap between creation and the creating client's first op.
+        self.touch()
         log.info(
             "session ready id=%s kernel_pid=%s reattached=%s dir=%s",
             self.session_id, self.kernel.pid, self.kernel.reattached, self.session_dir,
         )
 
     def _start_tasks(self) -> None:
+        # A cancelled worker (kernel restart) may have died mid-batch with _busy
+        # still set; the fresh worker starts with a clean slate — without this a
+        # restarted session could never become idle-GC eligible again.
+        self._busy = False
         self._tasks = [
             asyncio.create_task(self._iopub_pump(), name=f"iopub-{self.session_id}"),
             asyncio.create_task(self._stdin_pump(), name=f"stdin-{self.session_id}"),
             asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"),
         ]
+
+    # -- idle-GC (kernel lifetime policy) --------------------------------------
+    def touch(self) -> None:
+        """Record activity now — resets the idle clock (see :meth:`gc_eligible`)."""
+        self._last_activity = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self._last_activity
+
+    def gc_eligible(self, timeout: float) -> bool:
+        """True iff the idle-GC may reap this session.
+
+        Conservative by design — reaping must never lose work, only an idle
+        namespace: an attached client, a queued or running batch, a pending
+        input() prompt, or a busy kernel each block it. The ``kernel_status``
+        guard covers the re-attach edge where the kernel is still crunching
+        code submitted before a daemon restart (busy with no in-daemon batch).
+        """
+        return (
+            timeout > 0
+            and not self._subs
+            and self._queue.qsize() == 0
+            and not self._busy
+            and self._pending_input is None
+            and self.kernel_status != "busy"
+            and self.idle_seconds() >= timeout
+        )
 
     async def _stop_tasks(self) -> None:
         for t in self._tasks:
@@ -548,6 +601,7 @@ class Session:
     async def _exec_worker(self) -> None:
         while True:
             batch, stop_on_error, allow_stdin = await self._queue.get()
+            self._busy = True  # batch in flight: the idle-GC must not reap us
             # A batch is one user action (a single cell, or a "Run All" / multi-cell
             # run). For a Run-All, native Jupyter STOPS at the first cell that
             # raises and skips the rest; we honor that here, in the daemon, so it
@@ -563,6 +617,8 @@ class Session:
                 status = await self._run_one(exec_id, code, allow_stdin)
                 if status != "ok" and stop_on_error:
                     skip_rest = True
+            self._busy = False
+            self.touch()  # the idle clock starts when the batch finishes
 
     async def _run_one(self, exec_id: str, code: str, allow_stdin: bool = False) -> str:
         """Execute one cell on the kernel; journal its lifecycle; return the
@@ -739,6 +795,7 @@ class Session:
             batch.append((exec_id, code))
             exec_ids.append(exec_id)
         self._queue.put_nowait((batch, stop_on_error, allow_stdin))
+        self.touch()
         return exec_ids
 
     def snapshot(self) -> dict:
@@ -799,6 +856,10 @@ class Session:
             "max_seq": self.journal.max_seq(),
             "executions": len(self.journal.executions()),
             "widget_models": len(self._mirror),
+            # Lifetime info for `tithon status` and the extension's kernel picker:
+            # who is watching, and how long since this kernel last did anything.
+            "clients": len(self._subs),
+            "idle_seconds": round(self.idle_seconds(), 1),
         }
 
     def read_artifact(self, artifact_id: str) -> dict:
@@ -862,11 +923,14 @@ async def _notify_overflow(ws) -> None:
 class Daemon:
     """Owns the unix socket server and a lazily-populated dict of sessions."""
 
-    def __init__(self, home: Path, workdir: Path):
+    def __init__(self, home: Path, workdir: Path, idle_timeout: float | None = None):
         self.home = home
         self.workdir = workdir
         self.sock_path = home / "daemon.sock"
         self.pid_file = home / "daemon.pid"
+        # Kernel lifetime policy: reap a session idle longer than this (seconds);
+        # <=0 disables. Constructor arg (CLI --idle-timeout) wins over the env.
+        self.idle_timeout = KERNEL_IDLE_TIMEOUT if idle_timeout is None else idle_timeout
         self._sessions: dict[str, Session] = {}
         self._sessions_lock = asyncio.Lock()
         self._stop = asyncio.Event()
@@ -917,7 +981,19 @@ class Daemon:
             self.pid_file.write_text(str(os.getpid()))
             log.info("daemon ready pid=%d sock=%s (sessions are per-file, lazy)",
                      os.getpid(), self.sock_path)
-            await self._stop.wait()
+            gc_task = None
+            if self.idle_timeout > 0:
+                gc_task = asyncio.create_task(self._gc_loop(), name="idle-gc")
+                log.info("idle-GC on: timeout=%.0fs poll=%.0fs", self.idle_timeout, GC_POLL)
+            try:
+                await self._stop.wait()
+            finally:
+                if gc_task is not None:
+                    gc_task.cancel()
+                    try:
+                        await gc_task
+                    except asyncio.CancelledError:
+                        pass
         for s in list(self._sessions.values()):
             await s.stop(kill_kernel=self._kill_kernels_on_stop)
         self.pid_file.unlink(missing_ok=True)
@@ -954,6 +1030,48 @@ class Daemon:
         await s.stop(kill_kernel=True)
         log.info("killed kernel for session %s (pid=%s)", session_id, s.kernel.pid)
         return True
+
+    async def _gc_loop(self) -> None:
+        """Kernel lifetime policy: periodically reap idle sessions.
+
+        Only sessions this daemon has LOADED are considered — a detached kernel
+        from before a daemon restart is invisible until its file is next touched
+        (lazy re-attach), at which point its idle clock starts fresh. Reaping is
+        conservative (see ``Session.gc_eligible``): surprise-killing a training
+        run is worse than leaking a kernel.
+        """
+        while True:
+            await asyncio.sleep(GC_POLL)
+            try:
+                await self._gc_sweep()
+            except Exception:  # pragma: no cover - the sweep must never die
+                log.exception("idle-GC sweep failed")
+
+    async def _gc_sweep(self) -> None:
+        """One idle-GC pass over the loaded sessions (factored out for tests)."""
+        for sid, s in list(self._sessions.items()):
+            if not s.gc_eligible(self.idle_timeout):
+                continue
+            idle = int(s.idle_seconds())
+            async with self._sessions_lock:
+                # Re-check under the lock: an attach/execute may have landed
+                # between the scan and acquiring the lock.
+                if self._sessions.get(sid) is not s or not s.gc_eligible(self.idle_timeout):
+                    continue
+                self._sessions.pop(sid)
+            # Journal the reap so the next client to open this file can see the
+            # kernel was reclaimed (delta replay), mirroring the "killed" event.
+            try:
+                s._journal_lifecycle(
+                    None, "tithon.kernel", {"status": "gc", "idle_seconds": idle}
+                )
+            except Exception:  # pragma: no cover - defensive
+                log.exception("[%s] gc lifecycle journal failed", sid)
+            await s.stop(kill_kernel=True)
+            log.info(
+                "idle-GC reaped session %s (kernel pid=%s, idle %ds; journal kept)",
+                sid, s.kernel.pid, idle,
+            )
 
     async def _handler(self, ws) -> None:
         session: Session | None = None
@@ -1009,6 +1127,7 @@ class Daemon:
                         except Exception:
                             pass
                         return
+                session.touch()  # any client op resets the idle-GC clock
 
                 if op == "attach":
                     if sub is None:
@@ -1101,4 +1220,6 @@ class Daemon:
                 pump.cancel()
             if sub is not None and session is not None:
                 session._subs.discard(sub)
+            if session is not None:
+                session.touch()  # idle clock starts when the last client leaves
             log.info("client disconnected")

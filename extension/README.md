@@ -111,6 +111,7 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | `tithon.autoStartDaemon` | `true` | Start the daemon on the host when it isn't already running (spawned detached, so it survives reconnects). |
 | `tithon.daemonCommand` | `tithon` | Command used to launch the daemon (run as `<command> daemon`). Set an absolute path if `tithon` isn't on `PATH`. |
 | `tithon.pythonPath` | `""` | Run the daemon as `<python> -m tithon daemon`. Leave empty to use the Python extension's selected interpreter. |
+| `tithon.kernelIdleTimeout` | `0` | Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. `0` = never. Applied when the extension (re)starts the daemon. |
 
 ## How it works
 
