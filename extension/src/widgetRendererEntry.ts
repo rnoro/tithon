@@ -25,6 +25,9 @@ import type { WidgetBufferEntry } from "./richOutput";
 import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
+// Must follow it: re-points the vendored light-theme text colours at the active
+// VSCode theme, winning on document order (see widgetTheme.css).
+import widgetThemeCss from "./widgetTheme.css";
 
 interface OutputItem {
   id: string;
@@ -55,9 +58,11 @@ function injectCss(): void {
   if (cssInjected) return;
   cssInjected = true;
   try {
-    const style = document.createElement("style");
-    style.textContent = widgetsCss as unknown as string;
-    document.head.appendChild(style);
+    for (const css of [widgetsCss, widgetThemeCss]) {
+      const style = document.createElement("style");
+      style.textContent = css as unknown as string;
+      document.head.appendChild(style);
+    }
   } catch {
     /* no document.head in this host */
   }
