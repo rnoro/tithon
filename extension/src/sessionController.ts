@@ -127,11 +127,20 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
   }
 }
 
-function toCellOutput(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): vscode.NotebookCellOutput {
-  const out = new vscode.NotebookCellOutput(outputs.flatMap((o) => toOutputItems(o, ctx)));
-  // Surface the §3.2 "stale" badge: the cell was edited since this run.
-  if (stale) out.metadata = { tithonStale: true };
-  return out;
+function toCellOutputs(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): vscode.NotebookCellOutput[] {
+  // One NotebookCellOutput PER folded output item — a NotebookCellOutput is a
+  // single output's mimebundle (VSCode renders only ONE of its items), so
+  // flattening every item into one output collapses e.g. tqdm-widget + stdout +
+  // matplotlib-image into a single mimebundle of which VSCode shows just one
+  // ("only one output renders"). The widget's own two items (renderer payload +
+  // text fallback) DO belong together — that grouping stays inside toOutputItems.
+  // Matches the live appendOutput / seedCell path (one output per item).
+  return outputs.map((o) => {
+    const out = new vscode.NotebookCellOutput(toOutputItems(o, ctx));
+    // Surface the §3.2 "stale" badge: the cell was edited since this run.
+    if (stale) out.metadata = { tithonStale: true };
+    return out;
+  });
 }
 
 /**
@@ -968,7 +977,7 @@ export class TithonNotebookController {
         }
         const exec = this.controller.createNotebookCellExecution(cell);
         exec.start(Date.now());
-        await exec.replaceOutput(toCellOutput(att.outputs as OutputItem[], att.stale, ctx));
+        await exec.replaceOutput(toCellOutputs(att.outputs as OutputItem[], att.stale, ctx));
         exec.end(!att.stale, Date.now());
       }
     } finally {
