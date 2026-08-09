@@ -20,7 +20,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
     (x.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!e) throw new Error("Tithon extension not found");
@@ -50,7 +50,7 @@ describe("Tithon Open-as-Text screenshot demo", () => {
     await ext().activate();
 
     // Open the Cell View (the working half), make it active.
-    await vscode.commands.executeCommand("tithon.openAsCellView", uri);
+    await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(
       () => notebookTabsFor(uri).length > 0,
       15000,

@@ -1,9 +1,8 @@
 # Tithon for VSCode
 
-Run a Python `.py` file as notebook-style cells against a **persistent remote
-kernel**. Close your laptop in the middle of a long run, reopen hours later over
-a VSCode Tunnel or Remote-SSH, and the cell outputs are still there — and still
-streaming.
+Run a Python `.py` file as a notebook against a **persistent remote kernel**.
+Close your laptop in the middle of a long run, reopen hours later over a VSCode
+Tunnel or Remote-SSH, and the cell outputs are still there — and still streaming.
 
 This is the VSCode client for [Tithon][repo]. The kernel and all session state
 live in a host-resident daemon, not in the editor, so disconnecting only stops
@@ -26,21 +25,25 @@ output snapshot into your cells, and resumes the live stream where it left off.
 - VSCode 1.85+.
 
 The intended setup is a **Tunnel** or **Remote-SSH** connection, where the
-extension host runs *on the remote host* and reaches the daemon's local socket
-directly — no port forwarding.
+extension host runs _on the remote host_ and reaches the daemon's local socket
+directly — no port forwarding. It works exactly the same locally.
 
 ## Quickstart
 
-1. Connect to the host (▸ *Connect to Tunnel…* or *Remote-SSH*) and open your
-   project folder.
-2. Open a percent-format `.py` — a file with `# %%` cell markers. It opens as
-   plain text; click **Open as Cell View** in the editor title bar (or run
-   *Tithon: Open as Cell View*) to switch to notebook-style cells.
-3. Run a cell with the **Run Cell** CodeLens, then run **Tithon: Start Live
-   Output Sync** to stream output into the cells as it is produced.
-4. Close the laptop or drop the connection. The daemon and kernel keep running.
-5. Reconnect later and run **Tithon: Resync Outputs from Daemon** (or just
-   reopen the file): the outputs are back and resume streaming.
+A percent-format `.py` (a plain script with `# %%` cell markers) opens as a
+**notebook** backed by the daemon — same cells, same Run buttons, same rich
+output as a Jupyter `.ipynb`, except the kernel and its output live on the host
+and survive your disconnects.
+
+1. Open a `.py`. It opens as plain text by default; switch it with **Open as
+   Notebook** — the CodeLens at the top of the file, or the editor title menu.
+2. Pick the **Tithon** kernel and run cells as usual.
+
+That's all. Selecting the kernel attaches the session and restores any earlier
+output automatically; new output then streams into the cells live as it is
+produced. Close the laptop or drop the connection — the daemon and kernel keep
+running. Reopen the notebook later (VSCode remembers the kernel) and the outputs
+are back and resume streaming, with **no command to run**.
 
 Outputs are matched to cells by content hash, so they survive edits and reopens;
 an output whose cell changed after it ran is flagged stale. The `.py` itself
@@ -48,26 +51,28 @@ stays pure source — outputs never touch the file, so diffs stay clean.
 
 ## What you get
 
-- **Cell View** for percent `.py` files, with per-cell run and a kernel toolbar
-  (interrupt / restart / select interpreter).
-- **Live output sync** — stdout/stderr, `matplotlib` figures, and rich
-  `display_data` stream into cells in real time.
-- **Output restore** — reconnect after any disconnect and the folded output
-  state is rebuilt into the cells.
+- **Notebook view** for percent `.py` files, with per-cell run and a kernel
+  toolbar (interrupt / restart / select interpreter).
+- **Automatic restore + live sync** — selecting the kernel (or reopening the
+  file) rebuilds the folded output state into the cells and resumes streaming;
+  stdout/stderr, `matplotlib` figures, and rich `display_data` arrive in real
+  time, with no manual command.
 - **ipywidgets** — `tqdm` bars and interactive widgets render through a bundled
   widget renderer and come back at their real state, not their initial value.
 
 ## Commands
 
+Restore and live sync happen automatically, so there are no commands for them.
+The rest are run from the command palette or the notebook's kernel toolbar:
+
 | Command | What it does |
 | --- | --- |
-| `Tithon: Start Live Output Sync` | Keep a session open and stream output into cells live. |
-| `Tithon: Resync Outputs from Daemon` | Reconnect and restore the journal's folded outputs into the cells. |
+| `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text. |
 | `Tithon: Restart Kernel` | Restart the session's kernel. |
 | `Tithon: Interrupt Kernel` | Interrupt the running cell. |
 | `Tithon: Select Python Interpreter` | Choose the interpreter the daemon runs the kernel as. |
-| `Tithon: Open as Cell View` / `Open as Text Editor` | Toggle a `.py` between Cell View and plain text. |
 | `Tithon: Restart Daemon` | Restart the host daemon. |
+| `Tithon: Terminate Kernel…` | Kill the session's kernel. |
 
 `Run Cell` is offered as a CodeLens above each `# %%` cell.
 
@@ -85,7 +90,7 @@ The extension and the daemon must share `TITHON_HOME` (both default to
 `~/.tithon` for the same user on the host). Because the extension host runs on
 the host under a Tunnel/Remote-SSH session, it uses the host-local socket and
 needs no forwarding. If you instead run the extension on your laptop against a
-*remote* daemon, you must forward the unix socket yourself (SSH `RemoteForward`,
+_remote_ daemon, you must forward the unix socket yourself (SSH `RemoteForward`,
 `socat`, …) — that is not the default path.
 
 See the [main project README][repo] and the [design spec][spec] for the full

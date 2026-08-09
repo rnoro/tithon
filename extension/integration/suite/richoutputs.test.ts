@@ -41,7 +41,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.startLive"));
+    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -79,7 +79,7 @@ describe("Tithon rich outputs in a real VSCode host (v28)", () => {
     // final state — restoring against a still-running cell captures a partial bar.
     await waitFor(() => nb.cellAt(nbIdx).executionSummary?.timing?.endTime !== undefined, 30000,
       "tqdm.notebook cell to finish");
-    await vscode.commands.executeCommand("tithon.restoreOutputs");
+    await vscode.commands.executeCommand("tithon._restore");
     await waitFor(() => streamText(nb.cellAt(nbIdx)).includes("100%"), 20000,
       "tqdm.notebook widget text to reconstruct the final bar");
     const nbText = streamText(nb.cellAt(nbIdx));

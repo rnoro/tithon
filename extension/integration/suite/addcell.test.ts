@@ -2,11 +2,11 @@
  * v14 — REAL VSCode: a cell ADDED after live sync started still streams output
  * live, with no manual restore (ADR-022). This is the user's report on 0.0.3:
  * the first cell showed output, but a newly-added cell showed nothing until
- * "Tithon: Restore Cell Outputs" was run — because the live index was built once
- * at startLive and didn't include the new cell.
+ * a manual restore was run — because the live index was built once at
+ * live-sync start and didn't include the new cell.
  *
  * Flow: run cell 0 (starts live), then insert a new cell and run it, and assert
- * the new cell shows its output WITHOUT invoking tithon.restoreOutputs.
+ * the new cell shows its output WITHOUT any manual restore step.
  */
 import * as assert from "assert";
 import * as vscode from "vscode";
@@ -34,7 +34,7 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 function findTithonExtension(): vscode.Extension<unknown> {
   const ext = vscode.extensions.all.find((e) =>
     (e.packageJSON?.contributes?.commands ?? []).some(
-      (c: { command?: string }) => c.command === "tithon.startLive",
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
     ),
   );
   if (!ext) throw new Error("Tithon extension not found");

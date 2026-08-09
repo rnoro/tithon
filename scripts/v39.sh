@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# v39 — REAL VSCode: the manual Cell View <-> Text toggle for a `.py`. A `.py`
-#       opens as plain text by default; the Cell View is opt-in (ADR-032; the
+# v39 — REAL VSCode: the manual Notebook <-> Text toggle for a `.py`. A `.py`
+#       opens as plain text by default; the Notebook is opt-in (ADR-032; the
 #       content-based auto-open heuristic was removed as a fragile session-state
-#       machine). Asserts: (1) the opt-in `tithon.openAsCellView` opens a RUNNABLE
+#       machine). Asserts: (1) the opt-in `tithon.openAsNotebook` opens a RUNNABLE
 #       notebook even for a markerless .py (empty selector), (2) "Open as Text"
 #       resolves with no argument via the active editor (the toolbar path).
 . "$(dirname "$0")/lib.sh"

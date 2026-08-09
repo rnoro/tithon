@@ -2,7 +2,7 @@
 # v11 — REAL VSCode "just press the play button" path (the flow a user actually
 #       does, and the one that was broken — see DECISIONS ADR-019 #1).
 #   - opens a tithon-py notebook, selects the Tithon kernel,
-#   - runs a cell via the NATIVE command (no manual tithon.startLive),
+#   - runs a cell via the NATIVE command (no manual live-sync step),
 #   - asserts the cell shows the streamed output.
 # Before the fix the cell stayed empty (executeHandler was a no-op and the submit
 # path closed its socket before output arrived). Needs network + xvfb (see
