@@ -56,8 +56,10 @@ scripts/screenshots/
 # daemon startup log (nohup)
 nohup.out
 
-# Local Agent
-.claude/
+# Local Agent Context
+.agents/
+AGENTS.md
+CLAUDE.md
 
 # OS
 .DS_Store
@@ -67,3 +69,5 @@ Thumbs.db
 
 # vendored upstream reference checkout (docs/vscode-jupyter-comparison.md)
 vscode-jupyter/
+
+data/
