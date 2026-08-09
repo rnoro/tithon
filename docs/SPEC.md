@@ -145,7 +145,12 @@ journal the daemon keeps a **folded snapshot** per execution — the _current_
 display state:
 
 - `stream` text merged with carriage-return semantics applied,
-- `update_display_data` collapsed to the latest value per `display_id`,
+- `update_display_data` collapsed to the latest value per `display_id`. A
+  `display_id` is scoped to the SESSION, not to one execution, so the update
+  folds into the execution whose `display_data` created the id — which may be a
+  different (already finished) cell than the one that emitted the update. The
+  journal row stays attributed to its true emitter and carries the resolved fold
+  target beside it, so a live broadcast and a `since-N` replay never disagree,
 - `clear_output` honored.
 
 A client attaching gets **snapshot + delta-since**, so reconnect cost is
@@ -430,7 +435,12 @@ text fallback.
 **Partial / not yet implemented**
 
 - Bidirectional widgets (client → kernel control, e.g. slider drag).
-- In-place `update_display_data` (currently appended).
+- `update_display_data` emitted after its cell's completion barrier released (a
+  background thread or timer, so the parent `msg_id` no longer maps to an
+  execution) is dropped before display resolution — not journaled, not
+  broadcast. A `display_id` the daemon has no owner for instead falls back to its
+  emitter, where it folds to a no-op. In-place update — same cell and across
+  cells — is otherwise implemented.
 - Idle-GC of kernels predating a daemon restart: the sweep only sees sessions
   this daemon has loaded, so a detached kernel is invisible until its file is
   next opened (lazy re-attach restarts its idle clock).
