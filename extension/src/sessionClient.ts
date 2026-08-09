@@ -408,6 +408,24 @@ export class SessionClient {
       this.pendingInputData = null;
       return;
     }
+    // Kernel lifecycle. Keeping the cached kernel view current through EVENTS —
+    // not just the snapshot — is what lets a warning be driven by the settled
+    // state rather than by one message: a reconnect replays "the kernel died"
+    // and, if another client already restarted it, "restarted" right after, and
+    // only the last one is true by the time the batch is applied.
+    if (ev.kind === "kernel") {
+      const status = ev.payload?.status;
+      if (status === "dead") {
+        this.kernelInfoData = { ...(this.kernelInfoData ?? {}), status: "dead" };
+      } else if (status === "restarted" || status === "replaced") {
+        this.kernelInfoData = {
+          ...(this.kernelInfoData ?? {}),
+          status: "idle",
+          pid: ev.payload?.pid ?? this.kernelInfoData?.pid ?? null,
+        };
+      }
+      return;
+    }
     if (!ev.exec_id) return;
     const st = this.ensureExec(ev.exec_id, ev.seq);
     st.seq = Math.max(st.seq, ev.seq ?? st.seq);
