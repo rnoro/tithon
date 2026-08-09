@@ -29,13 +29,22 @@ import pytest
 from tithon.kernel import KernelHandle
 
 # The leader forks one long-lived child (the "worker") and then sleeps, mirroring
-# a cell that started a DataLoader and is waiting on it.
-LEADER = (
-    "import subprocess, sys, time;"
-    "c = subprocess.Popen(['sleep', '300']);"
-    "print(c.pid, flush=True);"
-    "time.sleep(300)"
-)
+# a cell that started a DataLoader and is waiting on it. A real `fork` rather
+# than a spawned command, because the worker inheriting the kernel's argv is both
+# what makes `ps` report a crowd of kernels and what `_is_ours` proves ownership
+# with.
+LEADER = """
+import os, time
+worker = os.fork()          # a fork: keeps the leader's argv, like a DataLoader worker
+if worker == 0:
+    time.sleep(300)
+    os._exit(0)
+execd = os.fork()           # in the same group, but its argv is its own
+if execd == 0:
+    os.execvp("sleep", ["sleep", "300"])
+print(worker, execd, flush=True)
+time.sleep(300)
+"""
 
 
 def _pid_gone(pid: int, timeout: float = 5.0) -> bool:
@@ -71,18 +80,19 @@ def handle(tmp_path):
     h.conn_file.write_text("{}")
     started: list[subprocess.Popen] = []
 
-    def start() -> tuple[int, int]:
+    def start() -> tuple[int, int, int]:
+        """-> (leader, forked worker, exec'd group member)"""
         proc = subprocess.Popen(
             [sys.executable, "-c", LEADER, "ipykernel_launcher", "-f", str(h.conn_file)],
             stdout=subprocess.PIPE,
             start_new_session=True,  # same detaching as the real _spawn
         )
         started.append(proc)
-        worker = int(proc.stdout.readline().decode().strip())
+        worker, execd = (int(x) for x in proc.stdout.readline().split())
         h.pid = proc.pid
         h.pgid = h._resolve_pgid(proc.pid)
         h.pid_file.write_text(str(proc.pid))
-        return proc.pid, worker
+        return proc.pid, worker, execd
 
     yield h, start
     for proc in started:  # nothing may outlive the test, pass or fail
@@ -98,18 +108,19 @@ def handle(tmp_path):
 
 def test_kill_takes_down_the_workers_the_kernel_forked(handle):
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     assert h.pgid == leader  # setsid: the kernel leads its own group
 
     h.kill()
 
     assert _pid_gone(leader), "kernel leader survived kill()"
     assert _pid_gone(worker), "forked worker outlived its kernel (orphan)"
+    assert _pid_gone(execd), "an exec'd group member outlived its kernel"
 
 
 def test_kill_leaves_processes_outside_the_kernels_group_alone(handle, tmp_path):
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     bystander = subprocess.Popen(["sleep", "300"], start_new_session=True)
     try:
         h.kill()
@@ -124,7 +135,7 @@ def test_kill_leaves_processes_outside_the_kernels_group_alone(handle, tmp_path)
 def test_kill_sweeps_workers_of_a_kernel_that_already_died(handle):
     """A crashed kernel takes the `gone` shortcut — its workers still must go."""
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     os.kill(leader, signal.SIGKILL)  # crash / OOM-kill: only the leader dies
     assert _pid_gone(leader)
     assert _alive(worker)
@@ -137,7 +148,7 @@ def test_kill_sweeps_workers_of_a_kernel_that_already_died(handle):
 def test_spawn_sweeps_orphans_left_by_a_previous_kernel(handle):
     """A daemon restart forgets the pgid; the pid file is what is left of it."""
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     os.kill(leader, signal.SIGKILL)
     assert _pid_gone(leader)
 
@@ -157,7 +168,7 @@ def test_orphan_sweep_spares_a_group_whose_leader_pid_was_recycled(handle, tmp_p
     was reused, since our own orphaned group can never have one.
     """
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     other_dir = tmp_path / "sessions" / "recycled"
     other_dir.mkdir(parents=True)
     fresh = KernelHandle(other_dir, tmp_path, other_dir / "kernel.log")
@@ -184,7 +195,7 @@ def test_resolve_pgid_declines_a_process_that_does_not_lead_its_group(tmp_path):
 
 def test_group_members_ignores_zombies(handle):
     h, start = handle
-    leader, worker = start()
+    leader, worker, execd = start()
     os.kill(worker, signal.SIGKILL)
     os.kill(leader, signal.SIGKILL)  # leader is our child -> unreaped zombie
     time.sleep(0.2)
@@ -192,3 +203,42 @@ def test_group_members_ignores_zombies(handle):
     # The leader is still listed by /proc, so a killpg(0) probe would say the
     # group is populated; only the state check makes the group read as empty.
     assert leader not in h._group_members(leader)
+
+
+def test_orphan_sweep_spares_a_group_whose_recycled_leader_died_into_a_zombie(handle, tmp_path):
+    """The hole "no LIVE leader" leaves open, and why argv is the real proof.
+
+    A recycled pid can lead a new group and then exit into a zombie while its
+    children run on. The member scan filters zombies out, so the group presents
+    exactly like one of our orphaned ones — no live leader, live members. Only
+    "does a member still carry OUR connection file" separates the two.
+    """
+    h, start = handle
+    leader, worker, execd = start()
+    os.kill(leader, signal.SIGKILL)  # a zombie: our fixture has not reaped it
+    assert leader not in h._group_members(leader)  # invisible to the scan
+    other_dir = tmp_path / "sessions" / "stranger"
+    other_dir.mkdir(parents=True)
+    stranger = KernelHandle(other_dir, tmp_path, other_dir / "kernel.log")
+    stranger.conn_file.write_text("{}")
+    stranger.pid_file.write_text(str(leader))  # "its" old kernel had that pid
+
+    stranger._sweep_orphans()
+
+    assert _alive(worker), "swept a group whose members belong to another session"
+
+
+def test_orphan_sweep_declines_a_group_with_no_member_carrying_our_argv(handle, tmp_path):
+    """Conservative by design: an exec'd worker is a leak, not a licence."""
+    h, start = handle
+    leader, worker, execd = start()
+    # Leave only the exec'd member: an exec replaced the inherited argv, so
+    # nothing in the group ties it to this session any more.
+    os.kill(worker, signal.SIGKILL)
+    os.kill(leader, signal.SIGKILL)
+    assert _pid_gone(worker) and _pid_gone(leader)
+
+    fresh = KernelHandle(h.session_dir, h.workdir, h.log_path)
+    fresh._sweep_orphans()
+
+    assert _alive(execd), "swept a group with nothing tying it to us"

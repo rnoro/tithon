@@ -480,7 +480,10 @@ class Session:
         # re-attaches. For a deliberate interpreter switch we kill it so the new
         # daemon spawns a fresh kernel under the new Python.
         if kill_kernel:
-            self.kernel.kill()
+            # Off the event loop: the teardown is synchronous and waits on real
+            # processes (TERM→KILL for the kernel, then for its whole group), so
+            # inline it would stall EVERY other session and the socket handler.
+            await asyncio.to_thread(self.kernel.kill)
 
     async def restart_kernel(self) -> int:
         """Kill this session's kernel and spawn a fresh one (new namespace).
@@ -535,7 +538,7 @@ class Session:
             None, "tithon.kernel",
             {"status": "restarting", "pid": self.kernel.pid, "deliberate": True},
         )
-        self.kernel.restart()
+        await asyncio.to_thread(self.kernel.restart)  # blocking teardown; see `stop`
         self.kc = self.kernel.make_client()
         await self._wait_kernel_ready(timeout=120)
         await asyncio.sleep(STDIN_SETTLE_S)  # stdin DEALER registers before the next run

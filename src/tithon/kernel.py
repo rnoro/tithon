@@ -47,13 +47,23 @@ class KernelHandle:
             os.kill(pid, 0)
         except OSError:
             return None
+        if not self._is_ours(pid):
+            return None  # pid was recycled by an unrelated process
+        return pid
+
+    def _is_ours(self, pid: int) -> bool:
+        """True iff ``pid``'s argv names THIS session's kernel.
+
+        Also true for a WORKER the kernel forked: a fork inherits the argv, which
+        is why a `DataLoader` pool shows up as a crowd of `ipykernel_launcher`
+        processes in `ps`. :meth:`_sweep_orphans` relies on exactly that to prove
+        an unattached process group is ours.
+        """
         try:
             cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode().replace("\0", " ")
         except OSError:
-            return None
-        if "ipykernel_launcher" not in cmdline or str(self.conn_file) not in cmdline:
-            return None  # pid was recycled by an unrelated process
-        return pid
+            return False
+        return "ipykernel_launcher" in cmdline and str(self.conn_file) in cmdline
 
     def is_alive(self) -> bool:
         """True iff our kernel process is still running.
@@ -127,6 +137,10 @@ class KernelHandle:
         them running, re-parented to init, holding CPU and GPU memory with
         nothing left that could ever collect them (see :meth:`_sweep_group`).
         This is also what ``jupyter_client`` does for its own kernels.
+
+        The group is the boundary, so a descendant that deliberately left it —
+        its own ``setsid`` / ``start_new_session=True`` — is out of reach, by the
+        same mechanism that keeps the kernel itself alive across a daemon death.
 
         Liveness is checked via ``_alive_pid`` (``/proc`` cmdline), not
         ``os.kill(pid, 0)``: a dead-but-unreaped child is a ZOMBIE whose pid
@@ -233,10 +247,13 @@ class KernelHandle:
                 os.killpg(pgid, sig)
             except OSError:
                 return
-            for _ in range(20):  # up to ~1s to exit between TERM and KILL
+            # Coarser than the leader's own poll: each check can cost a full
+            # /proc scan, and nothing is waiting on this latency (callers run
+            # `kill` off the event loop).
+            for _ in range(10):  # up to ~1s to exit between TERM and KILL
                 if not self._group_alive(pgid):
                     return
-                time.sleep(0.05)
+                time.sleep(0.1)
         log.warning("kernel pgid=%d still has members after SIGKILL", pgid)
 
     def _sweep_orphans(self) -> None:
@@ -248,11 +265,21 @@ class KernelHandle:
         group with no leader. Nothing else will ever collect them, so the next
         spawn does it.
 
-        Two conditions make this safe against a recycled pid: the recorded pid
-        must not be a live kernel of ours (``_alive_pid``), and the group must
-        have no live leader. A recycled pid can only own a group of its own by
-        being that group's leader, and while the old group still has members its
-        number cannot have been recycled at all.
+        Unlike :meth:`kill`, this pgid comes off DISK, so it carries no proof
+        that the group is ours and three conditions have to establish one: the
+        recorded pid must not be a live kernel of ours (``_alive_pid``), the
+        group must have no live leader (a recycled pid can only own a group by
+        leading it), and at least one member must still carry our connection
+        file in its argv (``_is_ours``). The last is what makes it safe: "no LIVE
+        leader" alone is not, because a recycled pid can lead a new group and
+        then die into a zombie, which the member scan filters out — the innocent
+        children would then look exactly like our orphans.
+
+        The cost of that strictness is a false negative: a worker that exec'd
+        something else (or a ``multiprocessing`` pool using the *spawn* start
+        method) leaves no member carrying our argv, and its group is left alone.
+        Declining to sweep leaks processes; sweeping the wrong group kills a
+        stranger's.
         """
         if self._alive_pid() is not None:
             return
@@ -265,6 +292,8 @@ class KernelHandle:
         members = self._group_members(pid)
         if not members or pid in members:
             return
+        if not any(self._is_ours(m) for m in members):
+            return  # cannot prove this group is ours; see the docstring
         log.warning("sweeping %d orphan(s) left by dead kernel pid=%d", len(members), pid)
         self._sweep_group(pid)
 
