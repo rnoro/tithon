@@ -32,7 +32,7 @@ from urllib.request import url2pathname
 from websockets.asyncio.server import unix_serve
 
 from .artifacts import ArtifactStore
-from .folding import ExecutionFold
+from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
 from .widgets import WidgetMirror, is_comm
@@ -542,11 +542,12 @@ class Session:
         for exec_id in targets:
             fold = self._folds[exec_id]
             before = fold.artifact_ids()
-            seq = self.journal.append_message(exec_id, "clear_output", {"wait": False})
-            fold.apply("clear_output", {"wait": False})
+            content = {"wait": False, SCOPE_KEY: SCOPE_CELL}
+            seq = self.journal.append_message(exec_id, "clear_output", content)
+            fold.apply("clear_output", content)
             self._gc_artifacts(before, fold.artifact_ids())
             self.journal.set_folded(exec_id, json.dumps(fold.outputs()))
-            self._broadcast(event_from_message(seq, exec_id, "clear_output", {"wait": False}))
+            self._broadcast(event_from_message(seq, exec_id, "clear_output", content))
         if targets:
             log.info("[%s] user-cleared %d execution(s)", self.session_id, len(targets))
         return len(targets)
@@ -803,6 +804,18 @@ class Session:
             }
         seq = self.journal.append_message(exec_id, msg_type, stored)
         self._mirror.apply(msg_type, content, buffers)
+        # The fold needs comm too, but only to track which Output area claims
+        # this execution's msg_id (see `ExecutionFold`) — it produces no output
+        # item. `_handle_iopub` returns early for comm, so without this the LIVE
+        # fold would never see a claim while `_rebuild_folds` — which replays
+        # every journaled row — always would, and a restart would fold the same
+        # session differently. A comm with no exec_id (a background thread
+        # updating a widget after the barrier popped `_msgid_to_exec`) has no
+        # fold to claim against; rebuild skips it too, since `messages_for_exec`
+        # cannot return a NULL-exec_id row — so both paths agree by omission.
+        fold = self._folds.get(exec_id) if exec_id is not None else None
+        if fold is not None:
+            fold.apply(msg_type, content)
         # Same builder as the attach-backlog path (ADR-083), so a live and a
         # resuming client get the identical frame for this row — including any
         # `_buffers_b64` on `stored`, which event_from_message forwards when
@@ -1052,7 +1065,7 @@ class Session:
             text = data.get("text/plain") if isinstance(data, dict) else None
             if not text:
                 continue
-            content = {"name": "stdout", "text": str(text)}
+            content = {"name": "stdout", "text": str(text), SCOPE_KEY: SCOPE_CELL}
             seq = self.journal.append_message(exec_id, "stream", content)
             fold.apply("stream", content)
             self._broadcast(event_from_message(seq, exec_id, "stream", content))
@@ -1063,6 +1076,7 @@ class Session:
         caller (shared with the normal path). Marks the kernel status ``dead``."""
         self.kernel_status = "dead"
         content = {
+            SCOPE_KEY: SCOPE_CELL,
             "ename": "KernelDied",
             "evalue": "the kernel died during execution (crash, OOM-kill, or os._exit)",
             "traceback": [
