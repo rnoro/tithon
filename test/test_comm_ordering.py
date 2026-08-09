@@ -74,3 +74,27 @@ def test_live_mirror_matches_a_rebuild_after_a_failed_append(tmp_path):
     s2._rebuild_mirror()
 
     assert s2._mirror.snapshot() == live_snapshot
+
+
+def test_handle_comm_never_journals_malformed_content(tmp_path):
+    """Codex ② finding (RISKS #14 review): a structurally malformed comm_open
+    (JSON-legal, schema-illegal — `state` is a string, not a dict) must be
+    rejected by would_accept() BEFORE journal.append_message runs, so it is
+    never durably journaled. Pre-fix (mutate-then-journal), apply() would
+    raise on this input WITHOUT ever reaching the journal — a one-time,
+    self-healing in-memory failure. Naively journaling first would have made
+    it durable, crashing _rebuild_mirror on every future restart instead."""
+    s = make_session(tmp_path)
+    s._handle_comm("e1", "comm_open", {
+        "comm_id": "c1", "target_name": "jupyter.widget", "data": {"state": "not-a-dict"},
+    }, [])
+    assert len(s._mirror) == 0
+    assert s.journal.messages_after(0) == []
+
+
+def test_comm_type_seq_index_exists(tmp_path):
+    """RISKS #9a Codex review: comm_messages_after must be able to seek
+    directly to comm rows rather than scanning the whole session history."""
+    s = make_session(tmp_path)
+    idx_names = {r[1] for r in s.journal.db.execute("PRAGMA index_list(messages)").fetchall()}
+    assert "idx_messages_type_seq" in idx_names

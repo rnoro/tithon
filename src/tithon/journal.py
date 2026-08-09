@@ -17,7 +17,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .widgets import is_comm  # comm-type predicate only; widgets.py imports nothing local
+from .widgets import COMM_TYPES, is_comm  # widgets.py imports nothing local
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS executions(
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS messages(
   ts           REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_exec ON messages(exec_id);
+CREATE INDEX IF NOT EXISTS idx_messages_type_seq ON messages(msg_type, msg_seq);
 CREATE TABLE IF NOT EXISTS artifacts(
   artifact_id TEXT PRIMARY KEY,
   sha256      TEXT NOT NULL,
@@ -142,6 +143,22 @@ class Journal:
             " WHERE msg_seq>? ORDER BY msg_seq",
             (seq,),
         ).fetchall()
+
+    def comm_messages_after(self, seq: int) -> sqlite3.Cursor:
+        """Comm-type rows (msg_seq, exec_id, msg_type, content_json) with
+        msg_seq > seq, as a lazily-iterated cursor (no `.fetchall()`), using
+        `idx_messages_type_seq` to seek directly to comm rows instead of
+        scanning the session's whole history. The `IN` clause is built from
+        `COMM_TYPES` (widgets.py) — the SAME authority `is_comm()` uses — so a
+        future addition to that tuple cannot silently diverge between live
+        classification and this rebuild query (RISKS #9a)."""
+        placeholders = ",".join("?" for _ in COMM_TYPES)
+        return self.db.execute(
+            "SELECT msg_seq, exec_id, msg_type, content_json FROM messages"
+            f" WHERE msg_seq>? AND msg_type IN ({placeholders})"
+            " ORDER BY msg_seq",
+            (seq, *COMM_TYPES),
+        )
 
     def messages_for_exec(self, exec_id: str) -> list[tuple]:
         return self.db.execute(

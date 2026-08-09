@@ -543,12 +543,26 @@ class Session:
             log.info("[%s] swept %d orphaned artifact(s)", self.session_id, removed)
 
     def _rebuild_mirror(self) -> None:
-        """Replay journaled comm messages to restore widget state after restart."""
-        for _seq, _exec_id, msg_type, content_json in self.journal.messages_after(0):
-            if is_comm(msg_type):
+        """Replay journaled comm messages to restore widget state after restart.
+
+        Streams the journal via a cursor filtered to comm rows in SQL (RISKS
+        #9a) — a long stream/output history is never fetched or parsed here,
+        so restart cost scales with widget traffic, not total history length.
+        `WidgetMirror.apply()` itself never raises on malformed content (it
+        validates and rejects instead — RISKS #14's journal-before-mutate
+        ordering means a malformed row, once journaled, replays on every
+        future restart), but the surrounding `_buffers_b64` decode is daemon
+        code, not the mirror's — one bad row here must skip and continue, not
+        abort every OTHER widget's rebuild.
+        """
+        for seq, _exec_id, msg_type, content_json in self.journal.comm_messages_after(0):
+            try:
                 content = json.loads(content_json)
                 buffers = [base64.b64decode(b) for b in content.pop("_buffers_b64", [])]
                 self._mirror.apply(msg_type, content, buffers)
+            except Exception:
+                log.exception("[%s] skipping malformed comm row at seq=%d during rebuild",
+                               self.session_id, seq)
 
     async def _wait_kernel_ready(self, timeout: float = 120.0) -> None:
         """Poll kernel_info until the kernel replies.
