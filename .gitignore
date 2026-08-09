@@ -64,3 +64,6 @@ nohup.out
 Thumbs.db
 *.swp
 *~
+
+# vendored upstream reference checkout (docs/vscode-jupyter-comparison.md)
+vscode-jupyter/
