@@ -158,6 +158,15 @@ def _session_layout(
     return base / digest[:16], default_workdir
 
 
+class SessionKilledError(Exception):
+    """Raised by a Session op that lost a race against its own removal.
+
+    See `Session._killed`: kill_kernel/idle-GC pop the session from the manager
+    and the op (e.g. restart_kernel) was already past that lookup, bound to the
+    now-orphaned Session object.
+    """
+
+
 class Subscriber:
     """One attached client's event queue + a 'too slow, drop me' flag."""
 
@@ -234,6 +243,13 @@ class Session:
         # the user's own restart as a crash.
         self._restarting = False
         self._restart_lock = asyncio.Lock()
+        # Set once this session has been popped from SessionManager._sessions
+        # (kill_kernel or idle-GC), under this SAME lock. A connection binds its
+        # `session` reference once (see `_handler`) and never re-resolves it, so a
+        # restart request already in flight on a just-removed session must not
+        # respawn — that would leave a kernel/pump pair orphaned outside the
+        # manager while a fresh session/kernel gets created for the next lookup.
+        self._killed = False
 
     # -- lifecycle -----------------------------------------------------------
     async def start(self) -> None:
@@ -429,6 +445,12 @@ class Session:
         ``tithon.kernel`` event tells clients to reset (clear spinners).
         """
         async with self._restart_lock:
+            if self._killed:
+                # A concurrent kill_kernel/idle-GC already removed this session
+                # from the manager while this request was queued for the lock —
+                # see `_killed`. Respawning now would orphan a kernel/pump pair
+                # nothing can ever reach again.
+                raise SessionKilledError(self.session_id)
             # Suppress the liveness watchdog for the whole teardown+respawn window:
             # the kernel IS momentarily dead here, deliberately.
             self._restarting = True
@@ -1388,13 +1410,18 @@ class Daemon:
             s = self._sessions.pop(session_id, None)
         if s is None:
             return False
-        try:
-            # `deliberate` so reopening the file later does not warn about a loss.
-            s._journal_lifecycle(
-                None, "tithon.kernel", {"status": "killed", "deliberate": True})
-        except Exception:  # pragma: no cover - defensive
-            log.exception("[%s] kill lifecycle broadcast failed", session_id)
-        await s.stop(kill_kernel=True)
+        # Share the session's own restart lock with restart_kernel(): a restart
+        # already in flight on this (now-removed) session must finish — or see
+        # `_killed` and bail — before kill tears it down, never concurrently.
+        async with s._restart_lock:
+            s._killed = True
+            try:
+                # `deliberate` so reopening the file later does not warn about a loss.
+                s._journal_lifecycle(
+                    None, "tithon.kernel", {"status": "killed", "deliberate": True})
+            except Exception:  # pragma: no cover - defensive
+                log.exception("[%s] kill lifecycle broadcast failed", session_id)
+            await s.stop(kill_kernel=True)
         log.info("killed kernel for session %s (pid=%s)", session_id, s.kernel.pid)
         return True
 
@@ -1451,15 +1478,18 @@ class Daemon:
                 if self._sessions.get(sid) is not s or not s.gc_eligible(self.idle_timeout):
                     continue
                 self._sessions.pop(sid)
-            # Journal the reap so the next client to open this file can see the
-            # kernel was reclaimed (delta replay), mirroring the "killed" event.
-            try:
-                s._journal_lifecycle(
-                    None, "tithon.kernel", {"status": "gc", "idle_seconds": idle}
-                )
-            except Exception:  # pragma: no cover - defensive
-                log.exception("[%s] gc lifecycle journal failed", sid)
-            await s.stop(kill_kernel=True)
+            # Same exclusion as `_kill_session` — see its comment.
+            async with s._restart_lock:
+                s._killed = True
+                # Journal the reap so the next client to open this file can see the
+                # kernel was reclaimed (delta replay), mirroring the "killed" event.
+                try:
+                    s._journal_lifecycle(
+                        None, "tithon.kernel", {"status": "gc", "idle_seconds": idle}
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    log.exception("[%s] gc lifecycle journal failed", sid)
+                await s.stop(kill_kernel=True)
             log.info(
                 "idle-GC reaped session %s (kernel pid=%s, idle %ds; journal kept)",
                 sid, s.kernel.pid, idle,
@@ -1595,7 +1625,19 @@ class Daemon:
                         n = session.clear_outputs(msg.get("exec_ids") or [])
                     await ws.send(json.dumps({"op": "cleared", "count": n}))
                 elif op == "restart_kernel":
-                    pid = await session.restart_kernel()
+                    try:
+                        pid = await session.restart_kernel()
+                    except SessionKilledError:
+                        # Lost the race against a concurrent kill_kernel/idle-GC —
+                        # see Session._killed. `session` stays bound to this now-
+                        # stopped Session for the rest of the connection (bound
+                        # once above, never re-resolved), so any FURTHER op sent
+                        # here would queue against a worker that no longer exists
+                        # (Codex ② caught this) — end the connection like the
+                        # session-creation-failure path above does, not `continue`.
+                        await ws.send(json.dumps(
+                            {"op": "error", "message": "session was killed"}))
+                        return
                     await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
                 elif op == "get_artifact":
                     art = session.read_artifact(msg.get("artifact_id", ""))
