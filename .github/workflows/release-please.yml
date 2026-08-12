@@ -14,6 +14,39 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # Release Please parses a merged grouped PR's body to discover each release.
+      - name: Restore merged release metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {restoreReleasePrBody} = require('./.github/scripts/format-release-pr-body');
+            const targetBranch = context.ref.replace('refs/heads/', '');
+            const releaseBranch = `release-please--branches--${targetBranch}`;
+            const {data: pullRequests} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+
+            for (const pullRequest of pullRequests) {
+              if (
+                !pullRequest.merged_at ||
+                pullRequest.head.ref !== releaseBranch ||
+                pullRequest.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`
+              ) continue;
+              const body = restoreReleasePrBody(pullRequest.body ?? '');
+              if (body !== pullRequest.body) {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pullRequest.number,
+                  body,
+                });
+              }
+            }
+
       - uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
@@ -22,3 +55,43 @@ jobs:
           # NOTE: releases created with GITHUB_TOKEN do NOT trigger other workflows.
           # If you later add a PyPI / VS Code Marketplace publish workflow that should
           # fire on release, create a PAT and pass it here as `token: ${{ secrets.... }}`.
+
+      - name: Keep release notes visible
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {formatReleasePrBody} = require('./.github/scripts/format-release-pr-body');
+            const targetBranch = context.ref.replace('refs/heads/', '');
+            const releaseBranch = `release-please--branches--${targetBranch}`;
+            const openPullRequests = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              base: targetBranch,
+              per_page: 100,
+            });
+            const {data: mergedPullRequests} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            const pullRequests = [...openPullRequests, ...mergedPullRequests]
+              .filter(pullRequest =>
+                pullRequest.head.ref === releaseBranch &&
+                pullRequest.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`
+              );
+
+            for (const pullRequest of new Map(
+              pullRequests.map(pullRequest => [pullRequest.number, pullRequest]),
+            ).values()) {
+              const body = formatReleasePrBody(pullRequest.body ?? '');
+              if (body !== pullRequest.body) {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pullRequest.number,
+                  body,
+                });
+              }
+            }
