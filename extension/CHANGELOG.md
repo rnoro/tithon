@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.2](https://github.com/rnoro/tithon/compare/vscode-v0.2.1...vscode-v0.2.2) (2026-08-12)
+
+
+### Features
+
+* resolve a display_id session-wide, not per execution ([4c573a8](https://github.com/rnoro/tithon/commit/4c573a88a6bee8bac20ab32258cdc4aa1dc9555c))
+
+
+### Bug Fixes
+
+* **extension:** repaint a live cell slot by slot, not whole-list ([e270a71](https://github.com/rnoro/tithon/commit/e270a71786b20a5963f4d1eb5317c2ba1eb39e65))
+* **extension:** simplify status UI and recovery demo ([9f3e104](https://github.com/rnoro/tithon/commit/9f3e1046bae9463e56714ee6b047370accb4269a))
+* one interrupt path, answered before any session bind ([592646d](https://github.com/rnoro/tithon/commit/592646d75ab6aa7403c73a6fbcd005639ddfc0ba))
+
 ## [0.2.1](https://github.com/rnoro/tithon/compare/vscode-v0.2.0...vscode-v0.2.1) (2026-08-08)
 
 
