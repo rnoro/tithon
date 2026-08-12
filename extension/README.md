@@ -107,6 +107,10 @@ stays pure source — outputs never touch the file, so diffs stay clean.
   time, with no manual command.
 - **ipywidgets** — `tqdm` bars and interactive widgets render through a bundled
   widget renderer and come back at their real state, not their initial value.
+- **Shareable outputs** — the folded output state is kept as text in
+  `<project>/.tithon/` (images referenced as deduplicated files, not embedded).
+  Commit it and whoever clones the repository opens the file with your results
+  already in it; leave it uncommitted to keep them to yourself.
 
 ## Commands
 
@@ -120,7 +124,8 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | `Tithon: Interrupt Kernel` | Interrupt the running cell. |
 | `Tithon: Select Python Interpreter` | Choose the interpreter the daemon runs the kernel as. |
 | `Tithon: Restart Daemon` | Restart the host daemon. |
-| `Tithon: Terminate Kernel…` | Kill the session's kernel. |
+| `Tithon: Terminate Kernel…` | Kill the session's kernel. Reopening the file then leaves the cells empty — terminating means you are done with that session. |
+| `Tithon: Restore Previous Outputs` | Put a terminated session's outputs back into the cells. |
 
 `Run Cell` is offered as a CodeLens above each `# %%` cell.
 

@@ -248,6 +248,33 @@ class ExecutionFold:
                 )
             )
 
+    @classmethod
+    def hydrate(cls, outputs: list[dict], state: dict | None = None) -> "ExecutionFold":
+        """Rebuild a fold from a persisted `outputs()` + `fold_state()` pair.
+
+        The inverse of those two, for an execution whose raw messages are NOT in
+        this journal — one imported from a shared sidecar (see `sidecar.py`).
+        Such an execution must not rebuild as an empty fold: `artifact_ids()`
+        feeds the startup GC refcount, so an empty one would make the sweep
+        delete the very image files the import brought in.
+        """
+        fold = cls()
+        owners = (state or {}).get("owners") or []
+        for i, item in enumerate(outputs):
+            owner = owners[i] if i < len(owners) else None
+            if item.get("output_type") == "stream":
+                buf = StreamBuf()
+                buf.write(item.get("text", ""))
+                it = {"output_type": "stream", "name": item.get("name", "stdout"), "_buf": buf}
+            else:
+                it = dict(item)
+            fold._items.append(cls._own(it, owner))
+        if state:
+            fold._claims = list(state.get("claims") or [])
+            fold._pending_clear = bool(state.get("pending_clear"))
+            fold._pending_owner_clear = set(state.get("pending_owner_clear") or [])
+        return fold
+
     def fold_state(self) -> dict:
         """Continuation state a client needs BEYOND `outputs()` to keep folding
         identically. `outputs()` is renderable output only, so a client seeded

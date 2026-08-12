@@ -342,19 +342,56 @@ drives the same daemon over the socket:
 ## 6. On-disk layout
 
 ```
-$TITHON_HOME (default ~/.tithon)/
+$TITHON_HOME (default ~/.tithon)/          # machine-local; never in a repo
   daemon.sock                  # unix socket (0600)
   daemon.pid
   daemon.log
   sessions/<session-dir>/
     meta.json
+    kernel.json                # carries an hmac-sha256 key
     journal.db                 # SQLite (WAL): executions, messages, artifacts
 
-<workdir>/.tithon/outputs/     # rich-output files, sha256-deduplicated
-  exec{N}_{idx}_{sha8}.png
+<workdir>/.tithon/             # the document's output state; shareable
+  outputs/                     # rich-output files, sha256-deduplicated
+    exec{N}_{idx}_{sha8}.png
+  cells/<relpath>.json         # folded snapshot per source file
 ```
 
 The `.tithon/outputs/` location is configurable (default: inside the workspace).
+
+**What lives where, and why.** The journal is this machine's verbatim
+write-ahead record — binary, WAL, unbounded, rewritten on every run — so it can
+neither be committed nor merged, and it sits in `$TITHON_HOME` beside the kernel
+connection file whose hmac key must never reach a repository.
+
+What a *reader* of a shared notebook needs is not that record but the **fold**:
+the current output state per execution. The daemon projects it onto
+`.tithon/cells/<relpath>.json` (stable key order, one field per line). Cloning
+the project therefore restores the outputs — the one property `.ipynb` has that
+a percent-format `.py` does not — while images stay as deduplicated files rather
+than one base64 blob per frame, so a live-updating plot commits **one** file.
+
+It is published once per **user action** — when a submitted batch drains, or a
+clear lands — not once per cell: rebuilding it re-serializes every execution's
+fold, so per-cell writes would make a Run All quadratic in the notebook's
+length. The shared file therefore lags a running batch by design; that is sound
+because it is a projection of a journal that already holds everything, and a
+daemon that dies mid-batch republishes when `_recover_inflight` terminalizes the
+cell it was on. A publish that fails (read-only checkout, full disk) also
+suppresses the artifact reclaim that would otherwise follow a clear, so the
+shared file never names an image that has already been deleted.
+
+The journal stays authoritative for the machine that ran the cells: a sidecar is
+imported only into a session with no local executions of its own, and an imported
+execution is terminal, message-less, and has its fold hydrated from the stored
+snapshot (`ExecutionFold.hydrate`) so the startup artifact sweep counts its
+images as live instead of reclaiming them.
+
+Nothing machine-specific is written. A cell's origin carries its index and range
+but no uri, and execution ids are renumbered on import — the file is tracked,
+hand-editable and merge-prone, so its ids are data rather than keys, and each row
+is rebound to the reading file's own uri (which the sidecar's location already
+implies) so that per-file restore scoping keeps it.
 
 ---
 
@@ -479,7 +516,7 @@ make core        # v1–v4 v47 v49 v50 v57 core journal / daemon lifecycle
 make serializer  # v6       percent <-> notebook round-trip
 make backpressure# v9       slow-client host protection
 make widgets     # v5 v29 v30           ipywidget mirror + render + live animation
-make restore     # v7 v8 v15 v16 v22 v38 reconnect: output + cell-state restore, orphan
+make restore     # v7 v8 v15 v16 v22 v38 v61 v62 reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37       live streaming into cells
 make kernels     # v17–v21 v23 v24 v26 v40 v45   per-file kernels + lifecycle + idle-GC
 make richoutputs # v27 v28 v31 v34 v35   matplotlib/tqdm images, live-plot GC, clear, storage
@@ -506,6 +543,8 @@ Capability → what it guarantees → how it is verified:
 | Bounded render cost      | Coalescing caps UI updates                          | `liveSync.test.ts` (50k events → 1 sink call)      |
 | Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
+| Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |
+| Deliberate close         | A killed session is not re-seeded; history kept     | `v62`, `test_closed_by_user.py`                    |
 
 `make vscode` downloads VSCode and needs system libraries (Debian/Ubuntu):
 

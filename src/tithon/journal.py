@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS artifacts(
   rel_path    TEXT NOT NULL,
   bytes_len   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta(
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 #: iopub message types preserved verbatim in the journal
@@ -134,6 +138,10 @@ class Journal:
         if "allow_stdin" not in cols:
             self.db.execute(
                 "ALTER TABLE executions ADD COLUMN allow_stdin INTEGER NOT NULL DEFAULT 0"
+            )
+        if "imported" not in cols:  # added with shared-sidecar import
+            self.db.execute(
+                "ALTER TABLE executions ADD COLUMN imported INTEGER NOT NULL DEFAULT 0"
             )
         mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)").fetchall()}
         if "target_exec" not in mcols:  # added with session-wide display_id routing
@@ -508,6 +516,78 @@ class Journal:
     def all_artifacts(self) -> list[tuple]:
         """(artifact_id, rel_path) for every registered artifact (startup sweep)."""
         return self.db.execute("SELECT artifact_id, rel_path FROM artifacts").fetchall()
+
+    # -- session meta (kv) -------------------------------------------------
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return default if row is None else row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    # -- imported (shared sidecar) executions ------------------------------
+    def count_executions(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM executions").fetchone()[0]
+
+    def count_local_executions(self) -> int:
+        """Executions that ran on THIS machine (never imported from a sidecar).
+
+        The re-import gate: a pulled sidecar may replace imported rows freely,
+        but never once the user has run something here — that history is theirs
+        and is not represented in the incoming file.
+        """
+        return self.db.execute(
+            "SELECT COUNT(*) FROM executions WHERE imported=0"
+        ).fetchone()[0]
+
+    def imported_exec_ids(self) -> set[str]:
+        """Executions whose outputs came from a sidecar, so have no raw messages.
+
+        `_rebuild_folds` replays raw messages to rebuild a fold; these rows have
+        none, so their folds are hydrated from ``folded_json`` instead.
+        """
+        return {
+            r[0] for r in self.db.execute("SELECT exec_id FROM executions WHERE imported=1")
+        }
+
+    def drop_imported(self) -> int:
+        """Remove every imported execution (a newer sidecar supersedes them).
+
+        Imported rows own no ``messages`` rows, so nothing else has to be
+        cleaned up here; their artifacts are reclaimed by the ordinary
+        fold-driven sweep once the re-import has rebuilt the folds.
+        """
+        cur = self.db.execute("DELETE FROM executions WHERE imported=1")
+        return cur.rowcount or 0
+
+    def import_execution(self, exec_id: str, seq: int, code: str, status: str,
+                         execution_count: int | None, folded_json: str,
+                         origin: dict | None = None, cell_hash: str | None = None,
+                         started_at: float | None = None,
+                         finished_at: float | None = None) -> None:
+        """Insert one execution restored from a sidecar, already terminal.
+
+        Terminal on arrival by construction (`sidecar.py` never writes an
+        in-flight execution): a ``queued``/``running`` row here would be flipped
+        to ``orphaned`` by the next `orphan_inflight()` and shown as a cell that
+        was cut off mid-run on a machine that never ran it.
+        """
+        uri = origin.get("uri") if origin else None
+        rng = origin.get("range") if origin else None
+        idx = origin.get("index") if origin else None
+        self.db.execute(
+            "INSERT OR REPLACE INTO executions(exec_id, session_id, seq, code, status,"
+            " execution_count, cell_origin_uri, cell_range, cell_hash, cell_index,"
+            " started_at, finished_at, folded_json, imported)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+            (exec_id, self.session_id, seq, code, status, execution_count, uri,
+             json.dumps(rng) if rng is not None else None, cell_hash, idx,
+             started_at, finished_at, folded_json),
+        )
 
     def close(self) -> None:
         self.db.close()

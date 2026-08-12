@@ -1374,11 +1374,40 @@ export class TithonNotebookController {
     this.reconnectAttempts.delete(key);
     this.finishReconnectProgress(key, "cancelled"); // deliberate stop, not a fault
     this.invalidateWidgetUpdatesFor(key);
+    this.closedRestoreOffered.delete(key); // reopening the file may offer again
     const s = this.liveSessions.get(key);
     if (s) {
       s.dispose();
       this.liveSessions.delete(key);
     }
+  }
+
+  /** Notebooks already told this session was closed. An auto-reconnect calls
+   *  startLive again, and one prompt per open is enough. */
+  private readonly closedRestoreOffered = new Set<string>();
+
+  /**
+   * Tell the user their closed session still holds output, and offer it back.
+   *
+   * A prompt rather than a silent restore: skipping the seed is the point, since
+   * they ended the session on purpose. But saying nothing would read as "the
+   * history is gone", which is the opposite of what happened and of what Tithon
+   * promises.
+   */
+  private offerClosedSessionRestore(notebook: vscode.NotebookDocument, count: number): void {
+    const key = notebook.uri.toString();
+    if (this.closedRestoreOffered.has(key)) return;
+    this.closedRestoreOffered.add(key);
+    const restore = "Restore outputs";
+    void vscode.window
+      .showInformationMessage(
+        `Kernel was closed for this file. ${count} previous execution` +
+          `${count === 1 ? "" : "s"} kept, not restored.`,
+        restore,
+      )
+      .then((choice) => {
+        if (choice === restore) void this.restore(notebook);
+      });
   }
 
   /** URIs the user wants kept live (set in ensureLive, cleared by disposeLive).
@@ -1701,7 +1730,16 @@ export class TithonNotebookController {
     const trace: Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }> = [];
     for (const ex of execs) trace.push({ execId: ex.execId, originIndex: ex.origin?.index, cellHash: ex.cellHash, mappedCell: live.cellOf(ex.execId), staleMap: live.staleOf(ex.execId), status: ex.status });
     this.lastSeedTrace.set(notebook.uri.toString(), trace);
-    for (const ex of execs) {
+    // ...unless the user ENDED this session rather than losing it. Restoring is
+    // what makes a crash, a reboot or a dropped tunnel invisible; replaying the
+    // same outputs after a deliberate "Kill Kernel" instead contradicts what the
+    // user just did, on this open and every open after it. The history is not
+    // gone: `tithon.restoreOutputs` (and the prompt below) still seed it.
+    // Only the SEED is skipped: live sync below still runs, so the next cell the
+    // user executes streams into the notebook normally.
+    const closed = client.isClosedByUser();
+    if (closed && execs.length) this.offerClosedSessionRestore(notebook, execs.length);
+    for (const ex of closed ? [] : execs) {
       const idx = live.cellOf(ex.execId);
       if (idx === undefined) continue;
       // "skipped": a Run-All cell that never ran (the run stopped on an earlier
@@ -1863,9 +1901,13 @@ function fmtIdle(seconds: number): string {
  * (onDidChangeSelectedNotebooks) and executing a cell both call ensureLive,
  * which restores the folded snapshot and starts live mirroring with no manual
  * step. The former `tithon.startLive` palette command was wholly redundant with
- * that auto path and was removed; `tithon.restoreOutputs` was likewise removed
- * from the user surface, surviving only as the test-only `tithon._restore`
- * handle the restore-path suites use to force a re-seed (ADR-068).
+ * that auto path and was removed.
+ *
+ * `tithon.restoreOutputs` is the exception: a session the user CLOSED is not
+ * re-seeded on open, so for that case — and only that case — a re-seed is
+ * something they have to be able to ask for. The test-only `tithon._restore`
+ * handle stays separate so the restore-path suites keep forcing a re-seed
+ * without depending on the user-facing command's wording.
  */
 export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
   const controller = new TithonNotebookController();
@@ -1893,6 +1935,21 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         await controller.pickAndKillKernel();
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon terminate kernel: ${String(err)}`);
+      }
+    }),
+    // Bring back the output of a session the user closed. Every other restore
+    // happens automatically on kernel selection; this one cannot, because
+    // skipping it is exactly what "the user closed this session" means.
+    vscode.commands.registerCommand("tithon.restoreOutputs", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb) {
+        vscode.window.showInformationMessage("Tithon: open a notebook first.");
+        return;
+      }
+      try {
+        await controller.restore(nb);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon restore: ${String(err)}`);
       }
     }),
     // Test-only: force a one-shot restore (fresh attach -> re-seed the folded

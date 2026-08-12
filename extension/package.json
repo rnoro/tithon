@@ -103,6 +103,12 @@
         "title": "Tithon: Terminate Kernel…",
         "category": "Tithon",
         "icon": "$(trash)"
+      },
+      {
+        "command": "tithon.restoreOutputs",
+        "title": "Tithon: Restore Previous Outputs",
+        "category": "Tithon",
+        "icon": "$(history)"
       }
     ],
     "configuration": {

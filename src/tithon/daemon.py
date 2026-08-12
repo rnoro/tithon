@@ -36,6 +36,7 @@ from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
 from .widgets import WidgetMirror, is_comm
+from . import sidecar
 
 log = logging.getLogger("tithon.daemon")
 
@@ -197,6 +198,20 @@ class Session:
         self.journal = Journal(session_dir / "journal.db", session_id)
         self.kernel = KernelHandle(session_dir, workdir, session_dir / "kernel.log")
         self.artifacts = ArtifactStore(workdir, self.journal)
+        # The project-local, git-shareable projection of this file's folds
+        # (see sidecar.py). None for the CLI/default session and for a file
+        # outside the project root — neither has a document inside the project.
+        self.sidecar_path = sidecar.sidecar_path(workdir, _uri_to_path(session_id))
+        # Set when the user ENDS this session on purpose (kill kernel, or a
+        # daemon shutdown that takes the kernels with it), cleared by the next
+        # execution. Persisted in the journal because it must outlive the daemon:
+        # reconnecting after a crash has to restore, reopening after a
+        # deliberate close must not (see `_handler`'s kill_kernel).
+        self.closed_by_user = self.journal.get_meta("closed_by_user") == "1"
+        # Executions restored from the shared sidecar rather than run here; they
+        # own no raw messages, so `_rebuild_folds` hydrates their folds and
+        # `_execution_snapshots` withholds a continuation state for them.
+        self._imported: set[str] = set()
         self.kc = None
         self.kernel_status = "unknown"
         self.kernel_pyversion: str | None = None  # e.g. "3.11.5"
@@ -293,6 +308,10 @@ class Session:
                 await asyncio.sleep(STDIN_SETTLE_S)
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
+        # Must precede the rebuild (it hydrates the imported folds) and the
+        # `_exec_counter` seed below (local executions continue after the
+        # imported seqs rather than colliding with them).
+        self._import_sidecar()
         self._rebuild_folds()
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
@@ -569,6 +588,31 @@ class Session:
         self._journal_lifecycle(None, "tithon.kernel", {"status": "interrupted"})
         return ok
 
+    def set_closed_by_user(self, closed: bool) -> None:
+        """Record durably whether the user ENDED this session or it merely stopped.
+
+        Restoring a file's cells on open is only justified when the disconnect
+        was involuntary — a daemon restart, a host reboot, an idle-GC reap, a
+        dropped tunnel. When the user killed the kernel themselves, re-seeding
+        hands back output they deliberately walked away from, and every later
+        reopen keeps handing it back. The journal holds the flag because it has
+        to outlive the daemon that observed the intent.
+
+        Not a delete: the history stays, and a client can still ask for it (the
+        snapshot carries `closed_by_user`, not a truncated execution list).
+
+        A KILLED session can never be re-armed. Two clients can be attached at
+        once, and a connection binds its `session` reference for life (see
+        `_killed`): after client B kills the kernel, client A's already-bound
+        handler can still submit — which would clear the flag on a session that
+        is being torn down, so the next open would restore the very history the
+        kill was meant to retire.
+        """
+        if self.closed_by_user == closed or (not closed and self._killed):
+            return
+        self.closed_by_user = closed
+        self.journal.set_meta("closed_by_user", "1" if closed else "0")
+
     def clear_outputs(self, exec_ids: list[str] | None) -> int:
         """Permanently clear the folded outputs of executions (all if ``None``).
 
@@ -589,18 +633,89 @@ class Session:
             list(self._folds) if exec_ids is None
             else [e for e in exec_ids if e in self._folds]
         )
+        reclaim: list[tuple[set[str], set[str]]] = []
         for exec_id in targets:
             fold = self._folds[exec_id]
             before = fold.artifact_ids()
             content = {"wait": False, SCOPE_KEY: SCOPE_CELL}
             seq = self.journal.append_message(exec_id, "clear_output", content)
             fold.apply("clear_output", content)
-            self._gc_artifacts(before, fold.artifact_ids())
             self.journal.set_folded(exec_id, json.dumps(fold.outputs()))
             self._broadcast(event_from_message(seq, exec_id, "clear_output", content))
+            reclaim.append((before, fold.artifact_ids()))
         if targets:
+            # The clear reaches the shared snapshot too — otherwise a colleague
+            # who pulls still sees output this user deleted on purpose.
+            #
+            # Published BEFORE the image files are reclaimed, and the reclaim is
+            # abandoned if that write failed (full disk, read-only checkout).
+            # Either order without the gate leaves the shared snapshot naming an
+            # image that is already deleted — which a clone imports as an output
+            # it cannot render. Leaking the files is the recoverable half: the
+            # next successful publish is followed by the startup sweep.
+            if self._publish_sidecar():
+                for before, after in reclaim:
+                    self._gc_artifacts(before, after)
+            else:
+                log.warning("[%s] shared snapshot stale; keeping %d cleared image set(s)",
+                            self.session_id, len(reclaim))
             log.info("[%s] user-cleared %d execution(s)", self.session_id, len(targets))
         return len(targets)
+
+    def _import_sidecar(self) -> None:
+        """Seed this session from the project's shared snapshot, if that is the
+        only history there is.
+
+        The gate is `count_local_executions()`, not "is the journal empty": once
+        the user has run a cell here, THIS machine's record is authoritative and
+        a pulled sidecar must not overwrite it. Before that, a sidecar whose
+        bytes differ from the last imported ones replaces the imported rows
+        wholesale — so pulling a notebook a colleague re-ran shows their new
+        outputs instead of the ones cloned last week.
+        """
+        if self.sidecar_path is None:
+            return
+        found = sidecar.read(self.sidecar_path)
+        if found is None:
+            return
+        doc, sha = found
+        if self.journal.get_meta("sidecar_sha") == sha:
+            return
+        if self.journal.count_local_executions():
+            return
+        dropped = self.journal.drop_imported()
+        imported = sidecar.import_into(self.journal, self.artifacts.workdir, doc)
+        self.journal.set_meta("sidecar_sha", sha)
+        log.info("[%s] imported %d shared execution(s), replacing %d",
+                 self.session_id, imported, dropped)
+
+    def _publish_sidecar(self) -> bool:
+        """Rewrite the project's shared snapshot from the current folds.
+
+        Returns whether the shared file now agrees with the folds — False means
+        it is stale, and a caller about to delete image files it may still name
+        must hold off (see `clear_outputs`).
+
+        Called wherever an execution reaches a terminal state or its output is
+        cleared — the same moments `folded_json` is written — so the shared file
+        never claims output the daemon has already dropped. Its own sha is
+        recorded so the next start does not read back its own write as an
+        incoming change (`_import_sidecar`).
+
+        Never fatal: a read-only checkout or a full disk must not fail the run
+        that produced the output.
+        """
+        if self.sidecar_path is None:
+            return True  # nothing shared, so nothing can be left inconsistent
+        doc = sidecar.build(self._execution_snapshots())
+        try:
+            sidecar.write(self.sidecar_path, doc)
+        except OSError as e:
+            log.warning("[%s] could not publish %s: %s", self.session_id, self.sidecar_path, e)
+            return False
+        self.journal.set_meta("sidecar_sha", hashlib.sha256(
+            sidecar.dumps(doc).encode("utf-8")).hexdigest())
+        return True
 
     def _rebuild_folds(self) -> None:
         """Recompute in-memory folded snapshots from raw journal messages.
@@ -619,8 +734,18 @@ class Session:
         that predated artifact GC)."""
         # Seed every execution first: `self._folds` must stay total (`_handle_iopub`
         # indexes it unguarded), including for an execution that produced no output.
-        for exec_id, *_ in self.journal.executions():
-            self._folds[exec_id] = ExecutionFold()
+        # An IMPORTED execution owns no raw messages for the pass below to replay,
+        # so it is hydrated from its stored fold instead — an empty one would both
+        # render the shared cell blank and make the sweep at the end of this
+        # function delete the image files the import just brought in.
+        self._imported = self.journal.imported_exec_ids()
+        for exec_id, _seq, _code, _status, _count, folded_json, *_ in self.journal.executions():
+            if exec_id in self._imported:
+                self._folds[exec_id] = ExecutionFold.hydrate(
+                    json.loads(folded_json) if folded_json else []
+                )
+            else:
+                self._folds[exec_id] = ExecutionFold()
         self._display_registry.clear()
         for _seq, exec_id, msg_type, content_json in self.journal.all_messages():
             if msg_type.startswith("tithon."):
@@ -825,6 +950,9 @@ class Session:
                 self._recovering = False
                 self._busy = False
                 self.touch()
+                # A cell that was in flight across a daemon restart also ends in
+                # a shareable state — publish it like any other completion.
+                self._publish_sidecar()
                 if self._recovery_gate is not None:
                     self._recovery_gate.set()
 
@@ -1160,6 +1288,13 @@ class Session:
             finally:
                 self._busy = False
                 self.touch()  # the idle clock starts when the batch finishes
+                # Once per USER ACTION, not once per cell. Publishing rebuilds
+                # every execution's fold, so a per-cell write makes a Run-All
+                # quadratic in the notebook's length. The file is a projection of
+                # a journal that already holds everything, so it is free to lag a
+                # running batch — and a daemon that dies mid-batch republishes
+                # when `_recover_inflight` terminalizes the cell it was on.
+                self._publish_sidecar()
 
     async def _run_one(self, exec_id: str, code: str, allow_stdin: bool = False) -> str:
         """Execute one cell on the kernel; journal its lifecycle; return the
@@ -1404,6 +1539,9 @@ class Session:
         of this batch (native "Run All" semantics — see _exec_worker).
         ``allow_stdin`` (per user action) enables the input()/getpass() bridge:
         a client that can present an input box opts in, CLI/default stays off."""
+        # Running a cell re-opens a session the user had closed: from here on
+        # its output is current again, so restore-on-open is armed once more.
+        self.set_closed_by_user(False)
         batch: list[tuple[str, str]] = []
         exec_ids: list[str] = []
         for cell in cells:
@@ -1430,7 +1568,13 @@ class Session:
         self.touch()
         return exec_ids
 
-    def snapshot(self) -> dict:
+    def _execution_snapshots(self) -> list[dict]:
+        """Every execution in the shape clients and the sidecar both consume.
+
+        ONE builder: the shared sidecar is written from these exact dicts, so a
+        cell restored from a cloned snapshot and the same cell restored over the
+        socket cannot disagree about what the output was.
+        """
         execs = []
         for (exec_id, seq, code, status, execution_count, folded_json,
              cell_origin_uri, cell_range, cell_hash, cell_index,
@@ -1443,7 +1587,11 @@ class Session:
             fold_state = None
             if fold is not None:
                 outputs = fold.outputs()
-                fold_state = fold.fold_state()
+                # An imported execution ran on someone else's machine and is
+                # terminal by construction, so there is nothing left to continue
+                # and its hydrated fold has no real area ownership to advertise.
+                if exec_id not in self._imported:
+                    fold_state = fold.fold_state()
             else:
                 outputs = json.loads(folded_json) if folded_json else []
             origin = None
@@ -1468,6 +1616,9 @@ class Session:
                     "finished_at": finished_at,
                 }
             )
+        return execs
+
+    def snapshot(self) -> dict:
         return {
             "session": self.session_id,
             "max_seq": self.journal.max_seq(),
@@ -1482,7 +1633,10 @@ class Session:
                 "generation": self.kernel_generation,
             },
             "queue_len": self._queue.qsize(),
-            "executions": execs,
+            "executions": self._execution_snapshots(),
+            # The user closed this session on purpose, so its history is history:
+            # a client restores nothing until asked (see `closed_by_user`).
+            "closed_by_user": self.closed_by_user,
             "widgets": self._mirror.snapshot(),
             # A cell blocked on input()/getpass() at attach time, so a reconnecting
             # client re-presents the prompt (None when nothing is waiting).
@@ -1677,8 +1831,14 @@ class Daemon:
         half-stopped session, tells any attached client the kernel is gone (a
         ``tithon.kernel`` ``killed`` event so spinners clear), then stops the
         session and kills its kernel. The journal/session dir stay on disk, so
-        reopening the file re-creates the session lazily with a fresh kernel and
-        the restored output history. Returns False if no such live session.
+        reopening the file re-creates the session lazily with a fresh kernel —
+        but NOT with its cells re-seeded, because this is the user deliberately
+        ending the session (`set_closed_by_user`). Returns False if no such
+        live session.
+
+        The idle-GC reap must never come through here: it kills a kernel the
+        user did not ask about, so it keeps its own sweep (`_gc_sweep`) and
+        leaves restore-on-open armed.
         """
         if not session_id:
             return False
@@ -1709,6 +1869,7 @@ class Daemon:
                 if self._sessions.get(session_id) is s:
                     self._sessions.pop(session_id)
             try:
+                s.set_closed_by_user(True)
                 # `deliberate` so reopening the file later does not warn about a loss.
                 s._journal_lifecycle(
                     None, "tithon.kernel", {"status": "killed", "deliberate": True})

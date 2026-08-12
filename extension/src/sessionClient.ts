@@ -134,6 +134,10 @@ export class SessionClient {
    *  Seeded from the snapshot (reconnect re-prompts) and kept current by the
    *  tithon.input_request / input_resolved events. Null when nothing is waiting. */
   private pendingInputData: PendingInput | null = null;
+  /** The user ended this session on purpose (killed its kernel), so its output
+   *  is history rather than the current state of the file — the seed on open is
+   *  skipped until they ask for it back. Cleared by the next execution. */
+  private closedByUser = false;
   /** id -> resolved bytes (null = fetched but not found). Dedupes refetches and,
    *  being byte-budgeted LRU, bounds memory when a live plot yields a new image
    *  every step (each a distinct sha → otherwise cached forever). */
@@ -200,6 +204,13 @@ export class SessionClient {
   /** Kernel info from the snapshot (status/pid/python), or null pre-attach. */
   kernelInfo(): KernelSnapshot | null {
     return this.kernelInfoData;
+  }
+
+  /** Did the user END this session, rather than merely lose it? The executions
+   *  are still here either way — this only says whether restoring them on open
+   *  is what the user asked for (see the daemon's `set_closed_by_user`). */
+  isClosedByUser(): boolean {
+    return this.closedByUser;
   }
 
   /** The widget state mirror from the snapshot (for the §3.3 text fallback). */
@@ -374,9 +385,11 @@ export class SessionClient {
     kernel?: KernelSnapshot;
     widgets?: WidgetState;
     pending_input?: PendingInput | null;
+    closed_by_user?: boolean;
   }): void {
     this.syncSeq = snap.max_seq ?? this.syncSeq;
     if (snap.kernel) this.kernelInfoData = snap.kernel;
+    this.closedByUser = snap.closed_by_user === true;
     if (snap.widgets) this.widgetState = snap.widgets;
     // A reconnecting client re-presents a prompt the kernel is still blocked on.
     this.pendingInputData = snap.pending_input ?? null;
