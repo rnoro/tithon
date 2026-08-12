@@ -1830,6 +1830,26 @@ class Daemon:
                     await ws.send(json.dumps(
                         {"op": "kernel_killed", "ok": ok, "session": target}))
                     continue
+                # The stop button. Answered HERE — above the session bind — because
+                # `_get_session()` holds `_sessions_lock` across a kernel spawn, so
+                # binding first would make an interrupt for an already-running file
+                # wait out an unrelated file's startup. The lookup takes no lock (a
+                # dict read with no await is atomic under asyncio) and creates
+                # nothing: a session that does not exist has no cell to stop, and
+                # spawning a kernel just to signal it would be the delay this op
+                # exists to avoid. A killed session is skipped — its pid may already
+                # belong to someone else.
+                if op == "interrupt":
+                    sid = msg.get("session", DEFAULT_SESSION)
+                    target_s = self._sessions.get(sid)
+                    if target_s is not None and not target_s._killed:
+                        target_s.touch()  # a stop press is activity: hold idle-GC off
+                        ok = target_s.interrupt()
+                    else:
+                        ok = False
+                    log.info("[%s] interrupt ok=%s", sid, ok)
+                    await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
+                    continue
                 # A connection is bound to one session, fixed on the first op.
                 # The first op may carry the client's project root (`workdir`) so
                 # a freshly-created session roots its artifacts/kernel there.
@@ -1907,10 +1927,6 @@ class Daemon:
                              session.session_id, len(exec_ids), stop_on_error,
                              session._queue.qsize())
                     await ws.send(json.dumps({"op": "execute_ack", "exec_ids": exec_ids}))
-                elif op == "interrupt":
-                    ok = session.interrupt()
-                    log.info("[%s] interrupt ok=%s", session.session_id, ok)
-                    await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
                 elif op == "input_reply":
                     # Answer a pending input()/getpass() prompt. Sent over the live
                     # attach connection (fire-and-forget); ack so a caller can await.

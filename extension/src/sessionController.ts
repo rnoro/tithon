@@ -978,11 +978,14 @@ export class TithonNotebookController {
     this.daemon = new DaemonClient(sockPath);
     // Native cell play button: start live sync then submit each cell to the daemon.
     this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
-    // Cell STOP button (and Interrupt): the cell runs on the daemon's kernel, not
-    // a VSCode-managed execution, so there's no cancellation token to honor —
-    // wire interruptHandler so the ⏹ button SIGINTs the kernel. The running cell
-    // raises KeyboardInterrupt -> errors -> the live sink ends it; the kernel
-    // stays alive so the cell can be re-run.
+    // Cell STOP button (and the toolbar Interrupt VSCode draws once this handler
+    // exists): the cell runs on the daemon's kernel, not a VSCode-managed
+    // execution, so there's no cancellation token to honor — wire
+    // interruptHandler so ⏹ SIGINTs the kernel. The running cell raises
+    // KeyboardInterrupt -> errors -> the live sink ends it; the kernel stays
+    // alive so the cell can be re-run. Because this handler already gives the
+    // toolbar its button, the extension must not contribute a second one
+    // (`notebook/toolbar` in package.json) — see `interruptKernel`.
     this.controller.interruptHandler = (nb) => this.interruptKernel(nb);
     // Auto restore + live sync exactly when OUR kernel becomes the notebook's
     // selected kernel — this is the right moment (createNotebookCellExecution
@@ -1487,10 +1490,26 @@ export class TithonNotebookController {
     await this.ensureLive(notebook); // re-attach: clears spinners, re-seeds state
   }
 
-  /** Interrupt the running cell of a file's kernel. */
+  /**
+   * Interrupt a file's kernel — the ONE interrupt path. Every affordance routes
+   * here: the cell ⏹ and `notebook.cell.cancelExecution` (through
+   * `controller.interruptHandler`), the `tithon.interruptKernel` command, and
+   * Escape at an input prompt. Keep it that way; a second entry point that
+   * SIGINTs the same kernel is just a second button for one action.
+   *
+   * Reports its own outcome and never throws, so every caller behaves alike —
+   * including `interruptHandler`, which VSCode gives nowhere to surface a
+   * rejection (a failed stop press used to be silent on that path).
+   */
   async interruptKernel(notebook: vscode.NotebookDocument): Promise<void> {
-    await ensureDaemon(this.sockPath);
-    await this.daemon.interrupt(notebook.uri.toString());
+    try {
+      await ensureDaemon(this.sockPath);
+      const ok = await this.daemon.interrupt(notebook.uri.toString());
+      vscode.window.setStatusBarMessage(
+        ok ? "Tithon: interrupt sent" : "Tithon: no running kernel to interrupt", 3000);
+    } catch (err) {
+      vscode.window.showErrorMessage(`Tithon interrupt: ${String(err)}`);
+    }
   }
 
   /** Notebook uris with an input box currently open (one prompt at a time). */
@@ -1518,7 +1537,7 @@ export class TithonNotebookController {
         ignoreFocusOut: true, // a blocked cell must not lose its prompt on focus change
       });
       if (value === undefined) {
-        await this.interruptKernel(notebook).catch(() => undefined);
+        await this.interruptKernel(notebook);
       } else {
         client.sendInput(value);
       }

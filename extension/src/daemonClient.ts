@@ -33,6 +33,14 @@ export interface KernelInfo {
   idle_seconds?: number;
 }
 
+/**
+ * How long a stop press waits for the daemon's `interrupted` reply. The reply
+ * only reports that SIGINT was delivered — the cell ends later, on its own — so
+ * a wait this long means the daemon itself is wedged. Bounded so the button
+ * reports that instead of hanging with no feedback at all.
+ */
+const INTERRUPT_TIMEOUT_MS = 5000;
+
 /** The session id is the file uri: one kernel + journal per file (like Jupyter). */
 function sessionOf(origin?: ExecOrigin): string {
   return origin?.uri ?? "default";
@@ -142,12 +150,22 @@ export class DaemonClient {
     }
   }
 
-  /** Interrupt the running cell of a file's kernel. `session` is the file uri. */
-  async interrupt(session: string): Promise<void> {
+  /**
+   * Interrupt the running cell of a file's kernel; true if the signal was
+   * delivered. `session` is the file uri.
+   *
+   * Dials its OWN connection on purpose — do not move this onto the live attach
+   * socket. That one can be mid-backlog (a snapshot is megabytes), and the
+   * daemon reads one connection's ops in order, so a stop press queued behind a
+   * replay would arrive after the cell it meant to stop. The daemon answers
+   * `interrupt` before binding a session for the same reason.
+   */
+  async interrupt(session: string): Promise<boolean> {
     const ws = await this.open();
     try {
       ws.send(JSON.stringify({ op: "interrupt", session }));
-      await this.waitFor(ws, (m) => m.op === "interrupted");
+      const m = await this.waitFor(ws, (m) => m.op === "interrupted", INTERRUPT_TIMEOUT_MS);
+      return !!m.ok;
     } finally {
       ws.close();
     }
@@ -181,8 +199,16 @@ export class DaemonClient {
     }
   }
 
-  private waitFor(ws: WebSocket, pred: (m: any) => boolean): Promise<any> {
+  /** `timeoutMs` bounds the wait; without it the caller waits indefinitely. */
+  private waitFor(
+    ws: WebSocket, pred: (m: any) => boolean, timeoutMs?: number,
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        ws.off("message", onMsg);
+      };
       const onMsg = (raw: WebSocket.RawData) => {
         let m: any;
         try {
@@ -193,18 +219,24 @@ export class DaemonClient {
         // Session start failed (e.g. kernel exited on startup — ADR-059/060):
         // reject with the daemon's actionable reason, not a generic close error.
         if (m.op === "error") {
-          ws.off("message", onMsg);
+          done();
           reject(new Error(m.message || "daemon error"));
           return;
         }
         if (pred(m)) {
-          ws.off("message", onMsg);
+          done();
           resolve(m);
         }
       };
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          done();
+          reject(new Error(`daemon did not answer within ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
       ws.on("message", onMsg);
-      ws.once("error", reject);
-      ws.once("close", () => reject(new Error("daemon closed connection")));
+      ws.once("error", (e) => { done(); reject(e); });
+      ws.once("close", () => { done(); reject(new Error("daemon closed connection")); });
     });
   }
 }

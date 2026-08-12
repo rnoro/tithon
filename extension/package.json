@@ -146,11 +146,6 @@
       ],
       "notebook/toolbar": [
         {
-          "command": "tithon.interruptKernel",
-          "when": "notebookType == tithon-py",
-          "group": "navigation/execute@1"
-        },
-        {
           "command": "tithon.restartKernel",
           "when": "notebookType == tithon-py",
           "group": "navigation/execute@2"

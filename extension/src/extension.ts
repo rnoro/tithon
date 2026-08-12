@@ -472,15 +472,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       });
     }),
+    // Palette/keybinding entry to the same interrupt the cell ⏹ uses. It reports
+    // its own outcome, so there is nothing to wrap here (see `interruptKernel`).
     vscode.commands.registerCommand("tithon.interruptKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
-      if (!nb) return;
-      try {
-        await notebookCtrl.interruptKernel(nb);
-        vscode.window.setStatusBarMessage("Tithon: interrupt sent", 3000);
-      } catch (err) {
-        vscode.window.showErrorMessage(`Tithon interrupt: ${String(err)}`);
-      }
+      if (nb) await notebookCtrl.interruptKernel(nb);
     }),
     // Test affordance (like tithon._activeExecCells): expose the single-
     // representation bookkeeping so integration tests can assert a URI is not
