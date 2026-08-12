@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { WIDGET_VIEW_MIME, imageOf, imageRefsOf, isDisplayOnlyWidget, isOutputAreaView, type WidgetState, widgetFallbackText, widgetModelIdOf } from "../src/richOutput";
+import { WIDGET_VIEW_MIME, imageOf, imageRefsOf, isDisplayOnlyWidget, isOutputAreaView, type WidgetState, widgetFallbackText, widgetModelIdOf, widgetPayload } from "../src/richOutput";
 import type { OutputItem } from "../src/outputFold";
 
 const ref = (id: string) => ({
@@ -147,5 +147,62 @@ describe("isOutputAreaView — an Output widget's own view is redundant", () => 
   it("is false for a non-widget output and when the mirror is unknown", () => {
     expect(isOutputAreaView({ output_type: "stream", name: "stdout", text: "x" }, widgets)).toBe(false);
     expect(isOutputAreaView(view("out"), null)).toBe(false);
+  });
+});
+
+describe("widgetPayload — only the models this view reaches", () => {
+  // Two independent tqdm bars in one session, plus the layout/style models
+  // ipywidgets references from OUTSIDE `children`.
+  const mirror: WidgetState = {
+    version_major: 2,
+    version_minor: 0,
+    state: {
+      barA: {
+        state: {
+          _model_name: "HBoxModel",
+          children: ["IPY_MODEL_progA"],
+          layout: "IPY_MODEL_layoutA",
+        },
+      },
+      progA: { state: { _model_name: "FloatProgressModel", value: 3, max: 10, style: "IPY_MODEL_styleA" } },
+      layoutA: { state: { _model_name: "LayoutModel" } },
+      styleA: { state: { _model_name: "ProgressStyleModel" } },
+      barB: { state: { _model_name: "HBoxModel", children: ["IPY_MODEL_progB"] } },
+      progB: { state: { _model_name: "FloatProgressModel", value: 1, max: 4 } },
+    },
+  };
+  const view = (modelId: string): OutputItem => ({
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: modelId } },
+    metadata: {},
+  });
+
+  it("carries the view's transitive closure, following refs outside children", () => {
+    const p = widgetPayload(view("barA"), mirror)!;
+    expect(p.model_id).toBe("barA");
+    expect(Object.keys(p.state.state!).sort()).toEqual(["barA", "layoutA", "progA", "styleA"]);
+  });
+
+  it("leaves another cell's widgets out — html-manager instantiates every model it is given", () => {
+    const p = widgetPayload(view("barA"), mirror)!;
+    expect(p.state.state).not.toHaveProperty("barB");
+    expect(p.state.state).not.toHaveProperty("progB");
+    // and the protocol version the mirror declared rides along
+    expect(p.state.version_major).toBe(2);
+  });
+
+  it("is undefined when the model is not mirrored (fresh run) so the caller falls back to text", () => {
+    expect(widgetPayload(view("nope"), mirror)).toBeUndefined();
+    expect(widgetPayload(view("barA"), null)).toBeUndefined();
+  });
+
+  it("terminates on a reference cycle", () => {
+    const cyclic: WidgetState = {
+      state: {
+        a: { state: { _model_name: "BoxModel", children: ["IPY_MODEL_b"] } },
+        b: { state: { _model_name: "BoxModel", children: ["IPY_MODEL_a"] } },
+      },
+    };
+    expect(Object.keys(widgetPayload(view("a"), cyclic)!.state.state!).sort()).toEqual(["a", "b"]);
   });
 });

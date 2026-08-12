@@ -67,6 +67,30 @@ export function workdirForUri(uri: vscode.Uri): string | undefined {
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
 const STDERR_MIME = "application/vnd.code.notebook.stderr";
 
+/**
+ * Test-only view of what the live MODEL holds, so a suite can measure the skew
+ * between the model and what the document actually shows. The widget path
+ * (coalesced comm deltas postMessaged to the renderer) and the cell-output path
+ * (chained VSCode edits) render the same instant of kernel time independently,
+ * so a suite has to read both from one place to tell them apart.
+ */
+export interface LiveDiag {
+  /** Highest journal seq this client has applied. */
+  syncSeq: number;
+  /** Sink ops accepted but not yet applied to the document. */
+  backlog: number;
+  execs: Array<{
+    execId: string;
+    cell: number | undefined;
+    status: string;
+    /** Tail of the fold's stdout text — what the cell WOULD show if current. */
+    stream: string;
+    images: number;
+    /** Text rendering of each widget view from the LIVE mirror (tqdm's bar). */
+    widgets: string[];
+  }>;
+}
+
 /** Render context: prefetched image bytes + the widget mirror (both sync). */
 interface RenderCtx {
   /** Bytes of a prefetched image artifact, or undefined if not (yet) fetched. */
@@ -144,6 +168,50 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
   }
 }
 
+/**
+ * Which SLOT of a cell's output list an item occupies, for a repaint that
+ * updates in place. Two items with the same key across two folds are the same
+ * on-screen output (the stdout block, that widget's view, the plot) even when
+ * their content differs; the checks follow {@link toOutputItems}' own priority
+ * so a key can never describe an item as a widget that renders as an image.
+ */
+function slotKey(o: OutputItem): string {
+  if (o.output_type === "stream") return `s:${o.name}`;
+  if (o.output_type === "error") return "e";
+  if (imageOf(o)) return "img";
+  const w = widgetModelIdOf(o);
+  if (w) return `w:${w}`;
+  return `d:${(o as { display_id?: string }).display_id ?? ""}`;
+}
+
+/** Whether this item renders as a LIVE widget view (html-manager), not text. */
+function isLiveWidget(o: OutputItem, ctx?: RenderCtx): boolean {
+  if (o.output_type === "stream" || o.output_type === "error" || imageOf(o)) return false;
+  const id = widgetModelIdOf(o);
+  if (!id) return false;
+  return isDisplayOnlyWidget(id, ctx?.widgets ?? null) && !!widgetPayload(o, ctx?.widgets ?? null);
+}
+
+/** Cheap identity of an item's rendered CONTENT — unchanged means nothing to write. */
+function slotFingerprint(o: OutputItem): string {
+  if (o.output_type === "stream") return o.text;
+  if (o.output_type === "error") return `${o.ename} ${o.evalue} ${(o.traceback ?? []).join("\n")}`;
+  // Images are `$tithon_artifact` references by then, so this stays small.
+  return JSON.stringify(o.data ?? {});
+}
+
+/** One painted output: the slot it fills and what it currently shows. */
+interface PaintedSlot {
+  key: string;
+  fingerprint: string;
+  /** Rendered as a live widget view — kept current by the renderer's own
+   *  update channel, so a repaint must NOT rewrite it (see `repaint`). */
+  live: boolean;
+  /** The folded item behind it, so a live widget's bootstrap snapshot can be
+   *  re-materialized from the current mirror when the run ends. */
+  item: OutputItem;
+}
+
 function toCellOutputs(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): vscode.NotebookCellOutput[] {
   // One NotebookCellOutput PER folded output item — a NotebookCellOutput is a
   // single output's mimebundle (VSCode renders only ONE of its items), so
@@ -194,6 +262,16 @@ class VSCodeCellSink implements CellSink {
   // Per-cell promise chain: image appends fetch bytes asynchronously, so the
   // cell's done/end must queue behind them or VSCode rejects "execution ended".
   private readonly tail = new Map<number, Promise<void>>();
+  /** Chained ops queued but not yet applied. The rendered cell is exactly this
+   *  many operations behind the fold, so it is the skew a live viewer sees
+   *  between the widget path (latest-wins postMessage) and cell output. */
+  private queued = 0;
+  /** Per cell: the repaint queued but not yet started, latest fold wins. */
+  private readonly pendingRepaint = new Map<number, { items: OutputItem[] }>();
+  /** Per cell: what the document currently shows, so a repaint can update only
+   *  the slots that changed (see {@link repaintInPlace}). Dropped wherever the
+   *  cell's outputs are destroyed, alongside the display handles. */
+  private readonly painted = new Map<number, { outs: vscode.NotebookCellOutput[]; slots: PaintedSlot[] }>();
   // Set by endAll() (live sync torn down). A structural backstop for RISKS #15:
   // even if a stray flush reaches the sink after teardown (e.g. a scheduler
   // that ignores cancel()), create() refuses to spin up a NEW proxy execution
@@ -216,8 +294,124 @@ class VSCodeCellSink implements CellSink {
 
   /** Serialize async work per cell so image appends and the final end stay ordered. */
   private chain(idx: number, work: () => Promise<void>): void {
-    const next = (this.tail.get(idx) ?? Promise.resolve()).then(work).catch(() => undefined);
+    this.queued += 1;
+    const next = (this.tail.get(idx) ?? Promise.resolve())
+      .then(work)
+      .catch(() => undefined)
+      .then(() => { this.queued -= 1; });
     this.tail.set(idx, next);
+  }
+
+  /** Ops accepted but not yet applied to the document (see {@link queued}). */
+  backlog(): number {
+    return this.queued;
+  }
+
+  /**
+   * Fold a new repaint into the one already queued for this cell, if any.
+   * Returns true when it was absorbed (caller must not queue another).
+   *
+   * Safe because a repaint paints the WHOLE authoritative fold: the newer list is
+   * a superset of what the queued one would have shown. See `repaint`.
+   */
+  private supersedeRepaint(idx: number, items: OutputItem[]): boolean {
+    const pending = this.pendingRepaint.get(idx);
+    if (pending) {
+      pending.items = items;
+      return true;
+    }
+    this.pendingRepaint.set(idx, { items });
+    return false;
+  }
+
+  private slotOf(o: OutputItem): PaintedSlot {
+    const ctx = this.ctx();
+    const live = isLiveWidget(o, ctx);
+    return {
+      key: slotKey(o),
+      // A live widget is fingerprinted by the SET of models it reaches, not by
+      // their values: the renderer keeps the values current from the comm update
+      // channel, but that channel carries only `comm_msg` — a container that
+      // gains a CHILD references a model the renderer has never been given, and
+      // can only get it by being rebuilt from a fresh payload.
+      fingerprint: live
+        ? Object.keys(widgetPayload(o, ctx.widgets)?.state.state ?? {}).sort().join(",")
+        : slotFingerprint(o),
+      live,
+      item: o,
+    };
+  }
+
+  /**
+   * Update an already-painted cell slot by slot instead of replacing its whole
+   * output list. Returns false when the shape changed (an output appeared,
+   * vanished or moved) and only a full `replaceOutput` can express it.
+   *
+   * Two things make this worth the bookkeeping on a live-plot cell, where the
+   * fold repaints on EVERY frame:
+   *  - a live widget view is left completely alone. Its output item is only the
+   *    bootstrap snapshot; the renderer keeps the view current from the comm
+   *    update channel. Rewriting it tears the view down and rebuilds it from
+   *    scratch — measured at three full html-manager rebuilds per plot frame on
+   *    the user's training loop, plus the mirror re-serialized into each one.
+   *  - an unchanged image or stream block is not rewritten at all, so a frame
+   *    costs one `replaceOutputItems` for the picture that actually changed.
+   */
+  private async repaintInPlace(
+    idx: number,
+    e: vscode.NotebookCellExecution,
+    items: OutputItem[],
+  ): Promise<boolean> {
+    const prev = this.painted.get(idx);
+    const cell = this.cell(idx);
+    if (!prev || !cell) return false;
+    // The cell must still hold exactly what we painted; anything else (a user
+    // clear, another window, a seed) invalidates our handles.
+    if (prev.outs.length !== items.length || cell.outputs.length !== prev.outs.length) return false;
+    const slots = items.map((o) => this.slotOf(o));
+    if (slots.some((s, i) => s.key !== prev.slots[i].key)) return false;
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const before = prev.slots[i];
+        const now = slots[i];
+        if (now.fingerprint === before.fingerprint && now.live === before.live) continue;
+        await e.replaceOutputItems(toOutputItems(items[i], this.ctx()), prev.outs[i]);
+      }
+    } catch {
+      // A handle VSCode no longer accepts (the cell was rewritten under us).
+      // Fall back to the full replace rather than leaving the cell half-updated.
+      this.painted.delete(idx);
+      return false;
+    }
+    // Same handles, so the stream/display registrations stay valid: a stream
+    // delta after this repaint continues the SAME block, and a cross-cell
+    // update_display still finds the output it owns.
+    this.painted.set(idx, { outs: prev.outs, slots });
+    return true;
+  }
+
+  /**
+   * Rewrite the cell's live widget outputs from the CURRENT mirror.
+   *
+   * `repaintInPlace` deliberately never touches them, so their item data still
+   * holds the snapshot from whenever the view was created. That is invisible
+   * while the renderer is being fed live updates, but the moment the run ends
+   * those stop — and a view re-created later (the output scrolled out of view
+   * and back) is built from the item data. Refreshing once at the end leaves the
+   * bootstrap snapshot equal to the widget's final state.
+   */
+  private async refreshWidgetOutputs(idx: number, e: vscode.NotebookCellExecution): Promise<void> {
+    const prev = this.painted.get(idx);
+    if (!prev) return;
+    const slots = prev.slots;
+    for (let i = 0; i < slots.length; i++) {
+      if (!slots[i].live || !slots[i].item) continue;
+      try {
+        await e.replaceOutputItems(toOutputItems(slots[i].item!, this.ctx()), prev.outs[i]);
+      } catch {
+        return; // handles no longer valid — the next repaint rebuilds them
+      }
+    }
   }
 
   /** Prefetch every image artifact referenced by these outputs before rendering. */
@@ -282,6 +476,10 @@ class VSCodeCellSink implements CellSink {
     for (const e of this.displays.values()) {
       if (e.idx === idx) e.outs = [];
     }
+    // The painted-slot map answers the same question for the WHOLE cell ("do the
+    // handles I hold still describe what is on screen"), so it dies at exactly
+    // the same four points; a repaint then rebuilds it with a full replace.
+    this.painted.delete(idx);
   }
 
   /**
@@ -498,29 +696,43 @@ class VSCodeCellSink implements CellSink {
    *
    * Mirrors `clear()`'s two branches deliberately: never `ensureStarted()` on a
    * cell with no live execution, which would leave a spinner no `done` ever
-   * ends (RISKS #15). Replacing drops the previous NotebookCellOutput handles,
-   * so the stream/display maps must be rebuilt, not carried over.
+   * ends (RISKS #15).
+   *
+   * The paint itself takes the cheapest form that expresses the change:
+   * {@link repaintInPlace} first, and a whole-list `replaceOutput` only when the
+   * output list's SHAPE changed. That matters because the live-plot idiom
+   * repaints on every frame — replacing the list each time re-creates every
+   * output, including widget views the renderer was animating. The full-replace
+   * path drops the previous NotebookCellOutput handles, so it rebuilds the
+   * stream/display maps; the in-place path keeps both.
    */
   repaint(idx: number, items: OutputItem[]): void {
     if (this.disposed) return;
     const rec = this.execs.get(idx);
     const paint = async (e: vscode.NotebookCellExecution) => {
-      await this.prefetch(items); // image bytes, so ctx() resolves synchronously below
-      this.forgetStreams(idx);
-      this.invalidateDisplays(idx); // replaceOutput below drops every existing handle
+      // Popped when the paint STARTS, not when it was queued: a repaint arriving
+      // from here on must queue behind this one, not mutate the list being painted.
+      const latest = this.pendingRepaint.get(idx)?.items ?? items;
+      this.pendingRepaint.delete(idx);
+      await this.prefetch(latest); // image bytes, so ctx() resolves synchronously below
       // Filter FIRST, then map: toCellOutputs drops items it will not render, so
       // zipping the unfiltered list against its result shifts every index past
       // the first drop and registers the wrong handles — a later stream delta
       // then misses its block and opens a second one below the plot.
-      const painted = items.filter((o) => !isOutputAreaView(o, this.ctx()?.widgets ?? null));
+      const painted = latest.filter((o) => !isOutputAreaView(o, this.ctx()?.widgets ?? null));
+      if (await this.repaintInPlace(idx, e, painted)) return;
+      this.forgetStreams(idx);
+      this.invalidateDisplays(idx); // replaceOutput below drops every existing handle
       const outs = toCellOutputs(painted, false, this.ctx());
       await e.replaceOutput(outs);
+      this.painted.set(idx, { outs, slots: painted.map((o) => this.slotOf(o)) });
       painted.forEach((item, i) => {
         if (item.output_type === "stream") this.streamOut.set(`${idx}:${item.name}`, outs[i]);
         else this.refreshDisplay(idx, item, outs[i]);
       });
     };
     if (rec?.started) {
+      if (this.supersedeRepaint(idx, items)) return;
       this.chain(idx, () => paint(rec.exec));
       return;
     }
@@ -536,13 +748,19 @@ class VSCodeCellSink implements CellSink {
       this.chain(idx, async () => this.invalidateDisplays(idx));
       return;
     }
+    if (this.supersedeRepaint(idx, items)) return;
     this.chain(idx, async () => {
       // Re-checked INSIDE the chain: `chain` defers, so a flush that passed the
       // guard above can still land after endAll()/dispose(). Opening a proxy
       // execution then would leave a spinner teardown can no longer end
       // (RISKS #15). `end()` is in a `finally` for the same reason — a throw in
       // paint() must not strand a started execution the chain then swallows.
-      if (this.disposed) return;
+      if (this.disposed) {
+        // Only paint() pops the queued entry, so drop it here or a repaint that
+        // never runs would keep absorbing every later one for this cell.
+        this.pendingRepaint.delete(idx);
+        return;
+      }
       const exec = this.controller.createNotebookCellExecution(c);
       exec.start(Date.now());
       try {
@@ -603,6 +821,10 @@ class VSCodeCellSink implements CellSink {
             rec.exec.start(endMs);
             rec.started = true;
           }
+          // Before the end, not after: an ended execution can no longer edit
+          // output, and this is the last chance to leave every live widget's
+          // bootstrap snapshot equal to its final state (see refreshWidgetOutputs).
+          await this.refreshWidgetOutputs(idx, rec.exec);
           rec.exec.end(status === "done", endMs);
         } finally {
           // Forget the stream map ON THE CHAIN, not synchronously at the call
@@ -683,7 +905,7 @@ export class TithonNotebookController {
     string,
     {
       dispose: () => void; refresh: () => void; activeCells: () => number[];
-      hasPendingFlush: () => boolean;
+      hasPendingFlush: () => boolean; diag: () => LiveDiag;
     }
   >();
 
@@ -1389,7 +1611,7 @@ export class TithonNotebookController {
     notebook: vscode.NotebookDocument,
   ): Promise<{
     dispose: () => void; refresh: () => void; activeCells: () => number[];
-    hasPendingFlush: () => boolean;
+    hasPendingFlush: () => boolean; diag: () => LiveDiag;
   }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     const client = new SessionClient(
@@ -1534,6 +1756,29 @@ export class TithonNotebookController {
       refresh,
       activeCells: () => sink.activeCells(),
       hasPendingFlush: () => live.hasPendingFlush(),
+      diag: () => ({
+        syncSeq: client.syncSeq,
+        backlog: sink.backlog(),
+        execs: client.executions().map((e) => {
+          const items = client.outputsOf(e.execId);
+          const widgets = client.widgets();
+          return {
+            execId: e.execId,
+            cell: live.cellOf(e.execId),
+            status: e.status,
+            stream: items
+              .filter((o) => o.output_type === "stream")
+              .map((o) => (o as { text: string }).text)
+              .join("")
+              .slice(-200),
+            images: items.filter((o) => imageRefsOf(o).length > 0).length,
+            widgets: items
+              .map((o) => widgetModelIdOf(o))
+              .filter((id): id is string => !!id)
+              .map((id) => widgetFallbackText(id, widgets) ?? `[${id}]`),
+          };
+        }),
+      }),
     };
   }
 
@@ -1548,6 +1793,13 @@ export class TithonNotebookController {
    *  so the test can wait for it instead of inferring timing indirectly. */
   hasPendingFlush(notebook: vscode.NotebookDocument): boolean {
     return this.liveSessions.get(notebook.uri.toString())?.hasPendingFlush() ?? false;
+  }
+
+  /** Test-only: {@link LiveDiag} for a notebook, or null when it has no live
+   *  session. Reads the model and the sink backlog at ONE instant, which is what
+   *  makes the model-vs-document skew measurable at all. */
+  liveDiag(notebook: vscode.NotebookDocument): LiveDiag | null {
+    return this.liveSessions.get(notebook.uri.toString())?.diag() ?? null;
   }
 
   /** True while an auto-reconnect progress notification is open for this
@@ -1681,6 +1933,13 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     vscode.commands.registerCommand("tithon._activeExecCells", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       return nb ? controller.activeExecCells(nb) : [];
+    }),
+    // Test-only: the live model's current state (fold tail + widget mirror text +
+    // sink backlog) for the active notebook, so a suite can measure how far the
+    // rendered cell trails the model — the live-desync regression guard.
+    vscode.commands.registerCommand("tithon._liveDiag", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.liveDiag(nb) : null;
     }),
     // Test-only: the most recent reconnect seed mapping for the active notebook.
     vscode.commands.registerCommand("tithon._seedTrace", () => {

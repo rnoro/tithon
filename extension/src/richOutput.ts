@@ -153,19 +153,64 @@ export interface TithonWidgetPayload {
   state: WidgetState;
 }
 
+/** Prefix ipywidgets uses to reference one model from another's trait value. */
+const MODEL_REF = "IPY_MODEL_";
+
+/** Model ids `state` references, anywhere in its nested arrays/objects. */
+function referencedModels(state: unknown, out: Set<string>): void {
+  if (typeof state === "string") {
+    if (state.startsWith(MODEL_REF)) out.add(state.slice(MODEL_REF.length));
+    return;
+  }
+  if (Array.isArray(state)) {
+    for (const v of state) referencedModels(v, out);
+    return;
+  }
+  if (state && typeof state === "object") {
+    for (const v of Object.values(state as Record<string, unknown>)) referencedModels(v, out);
+  }
+}
+
 /**
  * Build the self-contained widget payload for a widget-view output: the model id
  * plus the mirror state that html-manager needs to instantiate it. Returns
  * undefined when the model isn't in the mirror (e.g. a fresh live run whose state
  * lives only in the snapshot) — the caller then uses the text fallback.
+ *
+ * The state is narrowed to the models this view actually reaches — following
+ * `IPY_MODEL_` references transitively, the same way ipywidgets' own
+ * `unpack_models` deserializer resolves them, so a `layout`/`style`/`children`
+ * reference is followed wherever it sits in the trait. The mirror is
+ * SESSION-wide: sending all of it would put every widget of every cell in every
+ * widget output, and html-manager's `set_state` instantiates each one — a
+ * training cell with three tqdm bars re-created ~35 models per bar and shipped
+ * the whole mirror three times per repaint (measured: 34KB x3 per plot frame).
  */
 export function widgetPayload(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): TithonWidgetPayload | undefined {
   const id = widgetModelIdOf(item);
-  if (!id || !widgets?.state?.[id]) return undefined;
-  return { model_id: id, state: widgets };
+  const models = widgets?.state;
+  if (!id || !models?.[id]) return undefined;
+  const reachable: Record<string, WidgetStateEntry> = {};
+  const queue = [id];
+  while (queue.length) {
+    const next = queue.pop()!;
+    if (reachable[next] || !models[next]) continue;
+    reachable[next] = models[next];
+    const refs = new Set<string>();
+    referencedModels(models[next].state, refs);
+    for (const r of refs) if (!reachable[r]) queue.push(r);
+  }
+  return {
+    model_id: id,
+    state: {
+      version_major: widgets?.version_major ?? 2,
+      version_minor: widgets?.version_minor ?? 0,
+      state: reachable,
+    },
+  };
 }
 
 // Widgets with no client -> kernel back-channel (RISKS #4/T8: comm is receive-only
