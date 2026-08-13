@@ -10,7 +10,7 @@
 #     serializer   v6                     percent <-> notebook round-trip                      (hermetic)
 #     backpressure v9                     slow-client host protection                          (hermetic)
 #     widgets      v5 v29 v30             ipywidget mirror + html-manager render + live anim
-#     restore      v7 v8 v15 v16 v22 v38 v61 v62  reconnect: output + cell-state restore, orphan, shared-sidecar clone, closed-session
+#     restore      v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect: output + cell-state restore, orphan, shared-sidecar clone, closed-session (daemon + real VSCode)
 #     livesync     v10 v11 v12 v13 v14 v33 v37 v51 v53 v56 v59  live streaming into cells (native run, edits, display, cross-cell display, dispose-flush race, training-loop sync)
 #     kernels      v17 v18 v19 v20 v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60  per-file kernels + lifecycle (restart/interrupt/terminate/autostart/idle-GC/host-reboot/liveness-watchdog/reconnect-progress-UX/process-group cleanup/interrupt priority)
 #     richoutputs  v27 v28 v31 v34 v35 v54 v55  matplotlib/tqdm images, live-plot GC, durable clear, storage, sibling-output survival, session-wide display_id
@@ -36,15 +36,15 @@ core_s="v1 v2 v3 v4 v47 v49 v50 v57"
 serializer_s="v6"
 backpressure_s="v9"
 widgets_s="v5 v29 v30"
-restore_s="v7 v8 v15 v16 v22 v38 v61 v62"
-livesync_s="v10 v11 v12 v13 v14 v33 v37 v51 v53 v56 v59"
+restore_s="v7 v8 v15 v16 v22 v38 v61 v62 v63"
+livesync_s="v10 v11 v12 v13 v14 v33 v37 v51 v53 v56 v59 v63"
 kernels_s="v17 v18 v19 v20 v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60"
 richoutputs_s="v27 v28 v31 v34 v35 v54 v55"
 notebook_s="v32 v39 v41 v42 v43 v44"
 
 # --- meta bundles ------------------------------------------------------------
 fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v55 v57 v58 v60 v61 v62"   # every hermetic test
-vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59"
+vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v63"
 
 bundle="${1:-fast}"
 case "$bundle" in

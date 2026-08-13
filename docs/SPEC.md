@@ -516,7 +516,7 @@ make core        # v1–v4 v47 v49 v50 v57 core journal / daemon lifecycle
 make serializer  # v6       percent <-> notebook round-trip
 make backpressure# v9       slow-client host protection
 make widgets     # v5 v29 v30           ipywidget mirror + render + live animation
-make restore     # v7 v8 v15 v16 v22 v38 v61 v62 reconnect restore, orphan, cloned repo, closed session
+make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63 reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37       live streaming into cells
 make kernels     # v17–v21 v23 v24 v26 v40 v45   per-file kernels + lifecycle + idle-GC
 make richoutputs # v27 v28 v31 v34 v35   matplotlib/tqdm images, live-plot GC, clear, storage
@@ -544,7 +544,7 @@ Capability → what it guarantees → how it is verified:
 | Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |
-| Deliberate close         | A killed session is not re-seeded; history kept     | `v62`, `test_closed_by_user.py`                    |
+| Deliberate close         | A killed session is not re-seeded; history kept     | `v62` (daemon), `v63` (real VSCode seed gate)      |
 
 `make vscode` downloads VSCode and needs system libraries (Debian/Ubuntu):
 
