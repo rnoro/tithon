@@ -7,6 +7,7 @@
  *  - the widget renderer messaging (push mirror snapshots to the renderer).
  * The output<->cell attachment uses the journal's cell_hash (see cellAttach).
  */
+import * as path from "path";
 import * as vscode from "vscode";
 import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
@@ -108,6 +109,19 @@ function resolveNotebookUri(arg: unknown): vscode.Uri | undefined {
     if (candidate instanceof vscode.Uri) return candidate;
   }
   return undefined;
+}
+
+/**
+ * The file a per-file command should act on, from either representation. The
+ * notebook editor is consulted BEFORE the text editor: inside a Cell View,
+ * `activeTextEditor` is the focused CELL (`vscode-notebook-cell:`), not the .py.
+ */
+function resolveTargetUri(arg: unknown): vscode.Uri | undefined {
+  return (
+    resolveNotebookUri(arg) ??
+    vscode.window.activeNotebookEditor?.notebook.uri ??
+    vscode.window.activeTextEditor?.document.uri
+  );
 }
 
 /** Close every open Cell-View (tithon-py notebook) tab for `uriStr`. */
@@ -272,37 +286,142 @@ async function redirectPseudoPathDefinition(tab: vscode.Tab): Promise<void> {
   }
 }
 
+/* ===========================================================================
+ * DURABLE "open this .py as a Notebook" — the editor-association rules.
+ *
+ * `contributes.notebooks[].priority: "option"` keeps an unassociated `.py`
+ * resolving to the TEXT editor while `vscode.openWith(uri, "tithon-py")` still
+ * works, so Tithon writes NOTHING to settings just to stay out of the way. The
+ * only settings write left is the user's explicit per-file opt-in below.
+ *
+ * A1. Write ONLY `inspect().workspaceValue`, never the object `get()` returns.
+ *     `get()` merges User + Workspace, so spreading it into a Workspace update
+ *     copies the user's unrelated associations into a COMMITTED
+ *     `.vscode/settings.json`.
+ *
+ * A2. Resolution is longest-pattern-STRING-wins, not semantic specificity
+ *     (`getRawAssociationsForResourceFromSetting` sorts by
+ *     `filenamePattern.length` desc; `getConfiguredDefaultEditor` takes `[0]`),
+ *     and per key a Workspace value beats a User one. That is what lets a
+ *     `**`+`/<rel>.py` pattern outrank a pre-existing User `*.py`. Equal-length
+ *     matches are an unordered tie — do not rely on precedence there.
+ *
+ * A3. A pattern containing `/` is matched against `` `${scheme}:${uri.path}` ``,
+ *     one without `/` against the basename alone. Measured consequences: an
+ *     ABSOLUTE `/abs/x.py` pattern never matches, and neither does a
+ *     scheme-qualified `file:` + `**`+`/x.py`. Only a bare suffix glob matches.
+ *
+ * A4. Config alone does not switch an ALREADY-OPEN editor, and must not try to
+ *     by itself: the text -> Cell View switch is the ordered, serialized
+ *     `openAsNotebook` path (I2/I5 above). The command writes the key, then
+ *     delegates the switch to that command.
+ *
+ * A5. There is no per-session "prefer text" override. `openAsText` stays a
+ *     per-open escape hatch that leaves the association alone — a session-state
+ *     override is exactly the ADR-067 failure mode that was deleted.
+ *
+ * A6. A DIFF resolves to the notebook diff editor only when BOTH sides match an
+ *     association (measured: one side pinned still gives a text diff, both gives
+ *     a notebook diff, on 1.85.0 and 1.133.0 alike). A git diff pairs `git:` and
+ *     `file:` URIs of the SAME path, and the pattern matches on the path, so
+ *     pinning a file silently turns its source-control diffs into notebook
+ *     diffs. A `.py` carries no outputs, so that trades line-level review for
+ *     cell chrome; `workbench.diffEditorAssociations` -> "default" keeps it
+ *     textual. Diff resolution reads that setting FIRST and falls back to
+ *     `workbench.editorAssociations` only when it matched nothing, so the entry
+ *     REPLACES rather than merges — which is also why forgetting a file must
+ *     retract it, or a stale entry keeps overriding that path. The setting does
+ *     not exist on the `engines.vscode` floor, hence the capability check —
+ *     see `isRegisteredSetting`.
+ * ======================================================================== */
+
+const ASSOCIATIONS_KEY = "workbench.editorAssociations";
+const DIFF_ASSOCIATIONS_KEY = "workbench.diffEditorAssociations";
+
 /**
- * Make .py open as TEXT by default. The tithon-py notebook needs a `*.py`
- * selector so `Open as Cell View` (vscode.openWith) works, but a notebook
- * selector also makes it the DEFAULT editor for .py — which the user does not
- * want. So we yield the default back to the text editor via editorAssociations,
- * leaving the Cell View available on demand (openWith / Reopen With). Guarded:
- * we only set it when the user has no `*.py` association, so an explicit user
- * choice (incl. "notebook as default") is never overwritten.
+ * Is `key` a registered configuration on the VSCode running us? `update()` on an
+ * unregistered key THROWS ("not a registered configuration"), and
+ * `workbench.diffEditorAssociations` is absent on our `engines.vscode` floor
+ * (measured: registered on 1.133.0, not on 1.85.0). `inspect()` answers without
+ * throwing — an unregistered key comes back as `{ key }` alone, a registered one
+ * always carries a `defaultValue`.
  */
-async function ensureTextDefaultForPy(): Promise<void> {
+function isRegisteredSetting(key: string): boolean {
+  return vscode.workspace.getConfiguration().inspect(key)?.defaultValue !== undefined;
+}
+
+/**
+ * The association pattern that pins ONE file to the Cell View, or undefined when
+ * the file is outside every workspace folder (nothing to scope a Workspace write
+ * to). Root-relative, so `**` + `/sub/train.py` outranks a User `*.py` by A2.
+ *
+ * This is a suffix glob, not a file identity: in a multi-root window two roots
+ * with the same relative path collide. Lengthening the suffix until exactly one
+ * workspace file matches is the known refinement.
+ */
+function associationPatternFor(uri: vscode.Uri): string | undefined {
+  // Both commands can be reached from the palette, where the target falls back
+  // to whatever editor is active — pinning a .md (or a `git:` revision) to a
+  // Python notebook type would be a resolution the user could not undo from the
+  // same menu, since the inverse only offers itself for a .py.
+  if (uri.scheme !== "file" || !uri.path.toLowerCase().endsWith(".py")) return undefined;
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!folder) return undefined;
+  const rel = path.relative(folder.uri.fsPath, uri.fsPath).split(path.sep).join("/");
+  if (!rel || rel.startsWith("..")) return undefined;
+  return `**/${rel}`;
+}
+
+/**
+ * Apply `mutate` to the WORKSPACE-scoped value of `key` only (A1) and write the
+ * result back. Returns false when there is nothing to change. Rejections are
+ * left to the caller to surface — a silently dropped write leaves the user with
+ * a menu item that appears to do nothing.
+ */
+async function updateWorkspaceAssociations(
+  key: string,
+  mutate: (assoc: Record<string, string>) => boolean,
+): Promise<boolean> {
+  const cfg = vscode.workspace.getConfiguration();
+  const current = cfg.inspect<Record<string, string>>(key)?.workspaceValue ?? {};
+  const next = { ...current };
+  if (!mutate(next)) return false;
+  await cfg.update(
+    key,
+    Object.keys(next).length ? next : undefined,
+    vscode.ConfigurationTarget.Workspace,
+  );
+  return true;
+}
+
+/**
+ * Keep `pattern`'s diffs textual while it is pinned (A6). Best effort by design:
+ * the setting is missing below VSCode ~1.9x, where the only consequence is that
+ * this file's git diffs render as notebook diffs — the pin itself still works,
+ * so this must never abort it.
+ */
+async function syncDiffAssociation(pattern: string, pinned: boolean): Promise<void> {
+  if (!isRegisteredSetting(DIFF_ASSOCIATIONS_KEY)) return;
   try {
-    const cfg = vscode.workspace.getConfiguration();
-    const assoc = cfg.get<Record<string, string>>("workbench.editorAssociations") ?? {};
-    if (!("*.py" in assoc)) {
-      await cfg.update(
-        "workbench.editorAssociations",
-        { ...assoc, "*.py": "default" },
-        vscode.ConfigurationTarget.Global,
-      );
-    }
-  } catch {
-    /* settings may be read-only in some hosts; the opt-in command still works */
+    await updateWorkspaceAssociations(DIFF_ASSOCIATIONS_KEY, (assoc) => {
+      if (pinned) {
+        if (assoc[pattern] === "default") return false;
+        assoc[pattern] = "default";
+        return true;
+      }
+      if (assoc[pattern] !== "default") return false;
+      delete assoc[pattern];
+      return true;
+    });
+  } catch (err) {
+    vscode.window.showWarningMessage(
+      `Tithon: the editor association was saved, but this file's diffs could not be kept textual — ${String(err)}`,
+    );
   }
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const client = new DaemonClient();
-
-  // .py opens as a plain text editor by default; Cell View is opt-in. Awaited so
-  // the association is in place before the user opens a .py (activates on startup).
-  await ensureTextDefaultForPy();
 
   // The reconnect/restore half (subscribe -> fold -> restore -> attach),
   // verified end-to-end against a real daemon by scripts/v7.
@@ -423,8 +542,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     // Open the active .py (or a given uri) as the Tithon Cell View notebook.
-    // .py opens as TEXT by default now (no *.py notebook selector); this is the
-    // explicit opt-in. VSCode remembers the choice per file via "keep" too.
+    // A .py resolves to TEXT unless associated (`priority: "option"`), so this is
+    // the one-off opt-in; `tithon.alwaysOpenAsNotebook` is the durable one.
     vscode.commands.registerCommand("tithon.openAsNotebook", async (arg?: vscode.Uri) => {
       const uri = arg ?? vscode.window.activeTextEditor?.document.uri;
       if (!uri) {
@@ -471,6 +590,73 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           vscode.window.showErrorMessage(`Tithon open as text: ${String(err)}`);
         }
       });
+    }),
+    // Make this ONE file open as the Cell View from now on, in this workspace.
+    // `priority: "option"` means an unassociated .py resolves to text, so the
+    // durable choice is exactly this key and nothing else (see the A1-A5 block).
+    vscode.commands.registerCommand("tithon.alwaysOpenAsNotebook", async (arg?: unknown) => {
+      const uri = resolveTargetUri(arg);
+      if (!uri) {
+        vscode.window.showInformationMessage("Tithon: open a .py file first");
+        return;
+      }
+      const pattern = associationPatternFor(uri);
+      if (!pattern) {
+        vscode.window.showWarningMessage(
+          "Tithon: this only applies to a .py file inside the open workspace folder — there is nowhere to save the choice otherwise.",
+        );
+        return;
+      }
+      try {
+        await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+          if (assoc[pattern] === "tithon-py") return false;
+          assoc[pattern] = "tithon-py";
+          return true;
+        });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon: could not save the editor association — ${String(err)}`);
+        return;
+      }
+      await syncDiffAssociation(pattern, true);
+      // A4: the association decides FUTURE opens. Switching what is on screen
+      // now is the ordered, serialized toggle's job — never an ad-hoc openWith.
+      if (!hasCellViewTab(uri)) {
+        await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
+      }
+      vscode.window.setStatusBarMessage(
+        `Tithon: ${path.basename(uri.fsPath)} now opens as a Notebook in this workspace`,
+        4000,
+      );
+    }),
+    // The inverse. Removes only its own key; every other association — including
+    // ones the user or VSCode's own "Configure default editor" wrote — is left
+    // byte-identical. Deliberately does NOT close the Cell View on screen: this
+    // is about future opens, and "Open as Text" is the per-open escape (A5).
+    vscode.commands.registerCommand("tithon.forgetAlwaysOpenAsNotebook", async (arg?: unknown) => {
+      const uri = resolveTargetUri(arg);
+      const pattern = uri ? associationPatternFor(uri) : undefined;
+      if (!uri || !pattern) {
+        vscode.window.showInformationMessage(
+          "Tithon: open a .py file inside the workspace folder first",
+        );
+        return;
+      }
+      try {
+        const changed = await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+          if (assoc[pattern] !== "tithon-py") return false;
+          delete assoc[pattern];
+          return true;
+        });
+        await syncDiffAssociation(pattern, false);
+        vscode.window.setStatusBarMessage(
+          changed
+            ? `Tithon: ${path.basename(uri.fsPath)} opens as text again`
+            : `Tithon: ${path.basename(uri.fsPath)} was not pinned to the Notebook view`,
+          4000,
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon: could not update the editor association — ${String(err)}`);
+      }
     }),
     // Palette/keybinding entry to the same interrupt the cell ⏹ uses. It reports
     // its own outcome, so there is nothing to wrap here (see `interruptKernel`).

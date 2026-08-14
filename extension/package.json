@@ -44,6 +44,7 @@
       {
         "type": "tithon-py",
         "displayName": "Tithon Notebook",
+        "priority": "option",
         "selector": [
           {
             "filenamePattern": "*.py"
@@ -86,6 +87,18 @@
         "title": "Open as Text Editor",
         "category": "Tithon",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "tithon.alwaysOpenAsNotebook",
+        "title": "Always Open This File as a Notebook",
+        "category": "Tithon",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "tithon.forgetAlwaysOpenAsNotebook",
+        "title": "Stop Always Opening This File as a Notebook",
+        "category": "Tithon",
+        "icon": "$(pinned)"
       },
       {
         "command": "tithon.selectInterpreter",
@@ -148,9 +161,24 @@
           "command": "tithon.openAsText",
           "when": "notebookType == tithon-py",
           "group": "navigation"
+        },
+        {
+          "command": "tithon.alwaysOpenAsNotebook",
+          "when": "resourceExtname == .py && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "1_tithon@1"
         }
       ],
       "notebook/toolbar": [
+        {
+          "command": "tithon.alwaysOpenAsNotebook",
+          "when": "notebookType == tithon-py",
+          "group": "tithon@1"
+        },
+        {
+          "command": "tithon.forgetAlwaysOpenAsNotebook",
+          "when": "notebookType == tithon-py",
+          "group": "tithon@2"
+        },
         {
           "command": "tithon.restartKernel",
           "when": "notebookType == tithon-py",
@@ -170,6 +198,14 @@
       "commandPalette": [
         {
           "command": "tithon.killKernel"
+        },
+        {
+          "command": "tithon.alwaysOpenAsNotebook",
+          "when": "resourceExtname == .py"
+        },
+        {
+          "command": "tithon.forgetAlwaysOpenAsNotebook",
+          "when": "resourceExtname == .py"
         }
       ]
     }

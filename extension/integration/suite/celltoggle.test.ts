@@ -4,7 +4,8 @@
  * the content-based auto-open heuristic was removed for being a fragile session-
  * state machine). Guards:
  *   (1) the opt-in `tithon.openAsNotebook` opens a RUNNABLE Tithon notebook even
- *       for a markerless .py — proves vscode.openWith works with an EMPTY selector
+ *       for a .py carrying no `# %%` markers — the serializer must synthesize a
+ *       single cell rather than yield an empty notebook
  *       (was scripts/v25.sh / editordefault.test.ts);
  *   (2) "Open as Text" resolves with NO argument via the active notebook editor —
  *       the realistic toolbar path (was scripts/v36.sh / opentext.test.ts).
@@ -60,14 +61,14 @@ const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
 
 describe("Tithon manual Cell View <-> Text toggle (v39)", () => {
   // (1) The opt-in Cell View opens and runs (merged from v25/editordefault).
-  it("opt-in 'Open as Cell View' opens a runnable notebook (empty selector)", async () => {
+  it("opt-in 'Open as Cell View' opens a runnable notebook (markerless .py)", async () => {
     const plainUri = vscode.Uri.file(process.env.TITHON_HELPER!); // markerless script
     await ext().activate();
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
 
-    // A markerless .py opens as TEXT; opting in must open a real Tithon notebook.
-    // The notebook type has an EMPTY selector, so this also proves
-    // vscode.openWith(uri, "tithon-py") works with no filename selector.
+    // A .py opens as TEXT (the notebook contribution is `priority: "option"`);
+    // opting in must open a real Tithon notebook even when the file carries no
+    // `# %%` markers at all.
     await vscode.commands.executeCommand("vscode.open", plainUri);
     await waitFor(() => vscode.window.activeTextEditor?.document.uri.toString() === plainUri.toString(),
       15000, "markerless .py opened as text");

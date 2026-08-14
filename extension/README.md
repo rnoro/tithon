@@ -119,7 +119,8 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 
 | Command | What it does |
 | --- | --- |
-| `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text. |
+| `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text, once. |
+| `Tithon: Always Open This File as a Notebook` / `Stop Always Opening…` | Make the choice stick: this one file opens as a notebook from now on, in this workspace. |
 | `Tithon: Restart Kernel` | Restart the session's kernel. |
 | `Tithon: Interrupt Kernel` | Interrupt the running cell. |
 | `Tithon: Select Python Interpreter` | Choose the interpreter the daemon runs the kernel as. |
@@ -128,6 +129,16 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | `Tithon: Restore Previous Outputs` | Put a terminated session's outputs back into the cells. |
 
 `Run Cell` is offered as a CodeLens above each `# %%` cell.
+
+A `.py` opens as a normal text editor unless you say otherwise — Tithon never
+converts an editor you already have open. `Always Open This File as a Notebook`
+records the choice as one `workbench.editorAssociations` entry in the workspace's
+`.vscode/settings.json`, so it survives reloads and can be committed for the team.
+If you want *every* `.py` in a workspace to open as a notebook, that is VSCode's
+own setting rather than a Tithon command — `Reopen With…` → `Configure default
+editor…` on a `.py`, choosing `Tithon Notebook`. It writes `"*.py":
+"tithon-py"`, which applies to every Python file in scope, `setup.py` and
+`conftest.py` included.
 
 ## Settings
 

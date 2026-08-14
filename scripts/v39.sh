@@ -3,7 +3,7 @@
 #       opens as plain text by default; the Notebook is opt-in (ADR-032; the
 #       content-based auto-open heuristic was removed as a fragile session-state
 #       machine). Asserts: (1) the opt-in `tithon.openAsNotebook` opens a RUNNABLE
-#       notebook even for a markerless .py (empty selector), (2) "Open as Text"
+#       notebook even for a .py with no `# %%` markers, (2) "Open as Text"
 #       resolves with no argument via the active editor (the toolbar path).
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v39 FAIL $1"; exit 1; }
@@ -43,4 +43,4 @@ passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*/
 rm -f "$OUT"
 
 [ "$rc" -eq 0 ] || fail "VSCode Cell View<->Text toggle test failed (rc=$rc)"
-echo "RESULT v39 PASS real VSCode host: opt-in Cell View opens+runs (empty selector); no-arg Open-as-Text toggles back; $passed_line"
+echo "RESULT v39 PASS real VSCode host: opt-in Cell View opens+runs (markerless .py); no-arg Open-as-Text toggles back; $passed_line"
