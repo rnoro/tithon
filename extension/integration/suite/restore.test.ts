@@ -86,9 +86,7 @@ describe("Tithon restore inside a real VSCode host (v8)", () => {
     // value cell: execute_result text/plain "42"
     const hasValue = flat.some((o) => o.text.trim() === "42");
     // boom cell: an error output carrying ValueError
-    const hasError = flat.some(
-      (o) => o.mime.includes("error") && o.text.includes("ValueError"),
-    );
+    const hasError = flat.some((o) => o.mime.includes("error") && o.text.includes("ValueError"));
 
     assert.ok(hasLoop, `expected a cell with stdout "0\\n1\\n2\\n"; got ${JSON.stringify(all)}`);
     assert.ok(hasValue, `expected a cell with execute_result "42"; got ${JSON.stringify(all)}`);

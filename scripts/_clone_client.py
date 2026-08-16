@@ -7,6 +7,7 @@ plot is only actually restored if its bytes can still be served.
 
 Prints one ``KEY=VALUE`` line per fact so the shell script can assert on them.
 """
+
 import asyncio
 import json
 import sys
@@ -18,8 +19,9 @@ async def main(sock_path: str, session: str, workdir: str) -> None:
     async with unix_connect(sock_path, max_size=None) as ws:
         # last_seen_seq=0 is the "give me the full snapshot" attach the extension
         # uses on open; a negative value is a live-only attach and sends none.
-        await ws.send(json.dumps(
-            {"op": "attach", "last_seen_seq": 0, "session": session, "workdir": workdir}))
+        await ws.send(
+            json.dumps({"op": "attach", "last_seen_seq": 0, "session": session, "workdir": workdir})
+        )
         snap = None
         while True:
             m = json.loads(await ws.recv())
@@ -48,13 +50,18 @@ async def main(sock_path: str, session: str, workdir: str) -> None:
                         print(f"ARTIFACT_REL={ref.get('rel_path')}")
         print(f"KINDS={','.join(kinds)}")
         # Text output must survive verbatim, not just structurally.
-        texts = [o.get("text", "") for e in execs for o in (e.get("outputs") or [])
-                 if o.get("output_type") == "stream"]
+        texts = [
+            o.get("text", "")
+            for e in execs
+            for o in (e.get("outputs") or [])
+            if o.get("output_type") == "stream"
+        ]
         print(f"STREAM_TEXT={''.join(texts).strip()}")
 
         for aid in art_ids[:1]:
-            await ws.send(json.dumps(
-                {"op": "get_artifact", "artifact_id": aid, "session": session}))
+            await ws.send(
+                json.dumps({"op": "get_artifact", "artifact_id": aid, "session": session})
+            )
             while True:
                 m = json.loads(await ws.recv())
                 if m.get("op") == "artifact":

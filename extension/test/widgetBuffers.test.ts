@@ -47,7 +47,12 @@ describe("html-manager set_state applies a live buffer update to an existing mod
     await manager.set_state({
       version_major: 2,
       version_minor: 0,
-      state: { img1: { state: {}, buffers: [{ encoding: "base64", path: ["value"], data: b64("UPDATED-BYTES") }] } },
+      state: {
+        img1: {
+          state: {},
+          buffers: [{ encoding: "base64", path: ["value"], data: b64("UPDATED-BYTES") }],
+        },
+      },
     } as any);
 
     expect(bytesOf(model!.get("value"))).toBe("UPDATED-BYTES");
@@ -87,10 +92,16 @@ describe("decodeBufferEntries / mergeBufferEntries (client-side mirror helpers)"
       { encoding: "base64", path: ["value"], data: b64("old-value") },
       { encoding: "base64", path: ["thumbnail"], data: b64("thumb") },
     ];
-    const next: WidgetBufferEntry[] = [{ encoding: "base64", path: ["value"], data: b64("new-value") }];
+    const next: WidgetBufferEntry[] = [
+      { encoding: "base64", path: ["value"], data: b64("new-value") },
+    ];
     const merged = mergeBufferEntries(prev, next);
-    expect(merged.find((b) => JSON.stringify(b.path) === JSON.stringify(["value"]))?.data).toBe(b64("new-value"));
-    expect(merged.find((b) => JSON.stringify(b.path) === JSON.stringify(["thumbnail"]))?.data).toBe(b64("thumb"));
+    expect(merged.find((b) => JSON.stringify(b.path) === JSON.stringify(["value"]))?.data).toBe(
+      b64("new-value"),
+    );
+    expect(merged.find((b) => JSON.stringify(b.path) === JSON.stringify(["thumbnail"]))?.data).toBe(
+      b64("thumb"),
+    );
   });
 
   it("an empty update returns the prior entries unchanged", () => {
@@ -168,7 +179,10 @@ describe("widgetRendererEntry.activate — live update wiring (RISKS #13)", () =
     receive?.({ type: "tithon.widget-update", comm_id: id, state: { value: 90, max: 100 } });
 
     const deadline = Date.now() + 2000;
-    while (posted.filter((m) => m.type === "tithon.widget-updated").length < 2 && Date.now() < deadline) {
+    while (
+      posted.filter((m) => m.type === "tithon.widget-updated").length < 2 &&
+      Date.now() < deadline
+    ) {
       await new Promise((r) => setTimeout(r, 10));
     }
     const bar = host.querySelector(".progress-bar") as HTMLElement | null;

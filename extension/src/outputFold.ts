@@ -63,8 +63,18 @@ class StreamBuf {
 
 export type OutputItem =
   | { output_type: "stream"; name: string; text: string }
-  | { output_type: "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; display_id?: string }
-  | { output_type: "execute_result"; data: Record<string, unknown>; metadata?: Record<string, unknown>; execution_count?: number | null }
+  | {
+      output_type: "display_data";
+      data: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      display_id?: string;
+    }
+  | {
+      output_type: "execute_result";
+      data: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      execution_count?: number | null;
+    }
   | { output_type: "error"; ename?: string; evalue?: string; traceback?: string[] };
 
 interface StreamSlot {
@@ -251,7 +261,11 @@ export class ExecutionFold {
   outputs(): OutputItem[] {
     return this.items.map((it) => {
       if (it.output_type === "stream") {
-        return { output_type: "stream", name: (it as StreamSlot).name, text: (it as StreamSlot).buf.text };
+        return {
+          output_type: "stream",
+          name: (it as StreamSlot).name,
+          text: (it as StreamSlot).buf.text,
+        };
       }
       const { owner: _owner, ...rest } = it as any;
       return rest as OutputItem;

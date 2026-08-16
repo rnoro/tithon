@@ -28,8 +28,12 @@ interface LiveDiag {
   syncSeq: number;
   backlog: number;
   execs: Array<{
-    execId: string; cell: number | undefined; status: string;
-    stream: string; images: number; widgets: string[];
+    execId: string;
+    cell: number | undefined;
+    status: string;
+    stream: string;
+    images: number;
+    widgets: string[];
   }>;
 }
 
@@ -58,7 +62,11 @@ function renderedStdout(cell: vscode.NotebookCell): string | undefined {
   return undefined;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
@@ -68,7 +76,10 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -82,20 +93,28 @@ describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", f
     const nb = await vscode.workspace.openNotebookDocument(uri);
     const editor = await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount > LOOP_CELL, 30000, `>${LOOP_CELL} cells`);
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     // The editor SELECTION is what notebook.cell.execute runs; without it
     // nothing is submitted at all (addcell.test.ts documents the same trap).
     editor.selections = [new vscode.NotebookRange(0, LOOP_CELL + 1)];
     await vscode.commands.executeCommand("notebook.cell.execute", {
-      ranges: [new vscode.NotebookRange(0, LOOP_CELL + 1)], document: uri,
+      ranges: [new vscode.NotebookRange(0, LOOP_CELL + 1)],
+      document: uri,
     });
 
     const loop = () => nb.cellAt(LOOP_CELL);
-    await waitFor(async () => {
-      const d = (await vscode.commands.executeCommand("tithon._liveDiag")) as LiveDiag | null;
-      return !!d?.execs.some((e) => e.cell === LOOP_CELL && stepOf(e.stream) !== undefined);
-    }, 180000, "loop cell to reach its first step");
+    await waitFor(
+      async () => {
+        const d = (await vscode.commands.executeCommand("tithon._liveDiag")) as LiveDiag | null;
+        return !!d?.execs.some((e) => e.cell === LOOP_CELL && stepOf(e.stream) !== undefined);
+      },
+      180000,
+      "loop cell to reach its first step",
+    );
 
     // Put the loop cell's OUTPUT on screen: VSCode instantiates a renderer only
     // for a visible output, so the widget-churn assertion below is vacuous
@@ -103,11 +122,20 @@ describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", f
     editor.selections = [new vscode.NotebookRange(0, nb.cellCount)];
     await vscode.commands.executeCommand("notebook.cell.collapseCellInput");
     editor.selection = new vscode.NotebookRange(LOOP_CELL, LOOP_CELL + 1);
-    editor.revealRange(new vscode.NotebookRange(LOOP_CELL, LOOP_CELL + 1),
-      vscode.NotebookEditorRevealType.InCenter);
+    editor.revealRange(
+      new vscode.NotebookRange(LOOP_CELL, LOOP_CELL + 1),
+      vscode.NotebookEditorRevealType.InCenter,
+    );
 
     // Sample model vs document at the same instant, all the way through the run.
-    const samples: Array<{ t: number; model?: number; bar?: number; shown?: number; backlog: number; images: number }> = [];
+    const samples: Array<{
+      t: number;
+      model?: number;
+      bar?: number;
+      shown?: number;
+      backlog: number;
+      images: number;
+    }> = [];
     const t0 = Date.now();
     let running = true;
     while (running && Date.now() - t0 < 300000) {
@@ -126,22 +154,31 @@ describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", f
       await new Promise((r) => setTimeout(r, 400));
     }
 
-    const skews = samples.filter((s) => s.model !== undefined && s.shown !== undefined)
+    const skews = samples
+      .filter((s) => s.model !== undefined && s.shown !== undefined)
       .map((s) => ({ ...s, skew: s.model! - s.shown! }));
     const maxSkew = Math.max(0, ...skews.map((s) => s.skew));
     const maxBacklog = Math.max(0, ...samples.map((s) => s.backlog));
     for (const s of skews) {
-      console.log(`[trainsync] t=${(s.t / 1000).toFixed(1)}s model=${s.model} bar=${s.bar} shown=${s.shown}` +
-        ` skew=${s.skew} backlog=${s.backlog}`);
+      console.log(
+        `[trainsync] t=${(s.t / 1000).toFixed(1)}s model=${s.model} bar=${s.bar} shown=${s.shown}` +
+          ` skew=${s.skew} backlog=${s.backlog}`,
+      );
     }
-    console.log(`[trainsync] SUMMARY maxSkew=${maxSkew} maxBacklog=${maxBacklog} samples=${skews.length}`);
+    console.log(
+      `[trainsync] SUMMARY maxSkew=${maxSkew} maxBacklog=${maxBacklog} samples=${skews.length}`,
+    );
 
     // Settle: after the cell finishes, the document must converge on the model.
-    await waitFor(async () => {
-      const d = (await vscode.commands.executeCommand("tithon._liveDiag")) as LiveDiag | null;
-      const e = d?.execs.find((x) => x.cell === LOOP_CELL);
-      return d?.backlog === 0 && stepOf(renderedStdout(loop())) === stepOf(e?.stream);
-    }, 120000, "document to converge on the model after the run");
+    await waitFor(
+      async () => {
+        const d = (await vscode.commands.executeCommand("tithon._liveDiag")) as LiveDiag | null;
+        const e = d?.execs.find((x) => x.cell === LOOP_CELL);
+        return d?.backlog === 0 && stepOf(renderedStdout(loop())) === stepOf(e?.stream);
+      },
+      120000,
+      "document to converge on the model after the run",
+    );
 
     const finalOutputs = loop().outputs.flatMap((o) => o.items.map((it) => it.mime));
     console.log(`[trainsync] final mimes = ${JSON.stringify(finalOutputs)}`);
@@ -149,11 +186,16 @@ describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", f
     // so these byte counts are what crosses the extension-host -> UI boundary on
     // each of the ~60 plot frames, and each widget view is re-instantiated.
     const bytes = loop().outputs.map((o) =>
-      o.items.map((it) => `${it.mime}:${it.data.length}`).join(","));
+      o.items.map((it) => `${it.mime}:${it.data.length}`).join(","),
+    );
     console.log(`[trainsync] final output bytes = ${JSON.stringify(bytes)}`);
     const endDiag = (await vscode.commands.executeCommand("tithon._liveDiag")) as LiveDiag | null;
-    console.log(`[trainsync] model at end = ${JSON.stringify(endDiag?.execs.find((x) => x.cell === LOOP_CELL))}`);
-    const renderLog = (await vscode.commands.executeCommand("tithon._widgetRenderLog")) as Array<{ mode?: string }>;
+    console.log(
+      `[trainsync] model at end = ${JSON.stringify(endDiag?.execs.find((x) => x.cell === LOOP_CELL))}`,
+    );
+    const renderLog = (await vscode.commands.executeCommand("tithon._widgetRenderLog")) as Array<{
+      mode?: string;
+    }>;
     const updates = (await vscode.commands.executeCommand("tithon._widgetUpdateCount")) as number;
     console.log(`[trainsync] widget renders=${renderLog.length} liveUpdatesApplied=${updates}`);
 
@@ -161,24 +203,36 @@ describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", f
     // behind the bars. The skew is measured in STEPS, so it is independent of how
     // fast this host runs the fixture.
     assert.ok(skews.length >= 5, `too few samples to judge (${skews.length})`);
-    assert.ok(maxSkew <= Number(process.env.TITHON_MAX_SKEW ?? "2"),
-      `rendered output trailed the model by ${maxSkew} steps (backlog ${maxBacklog})`);
+    assert.ok(
+      maxSkew <= Number(process.env.TITHON_MAX_SKEW ?? "2"),
+      `rendered output trailed the model by ${maxSkew} steps (backlog ${maxBacklog})`,
+    );
     // The plot's clear_output repaints the cell on EVERY frame. A repaint that
     // rewrites the widget outputs tears each bar's view down and rebuilds it from
     // the mirror — three html-manager rebuilds per frame, which is what makes the
     // output path fall behind the widget path on a slower client. The bars must
     // render a handful of times, not once per frame.
-    assert.ok(renderLog.length >= 3, `the bars never rendered (${renderLog.length}) — assertion would be vacuous`);
-    assert.ok(renderLog.length <= 24,
-      `widget views were re-created ${renderLog.length} times for ~${samples.length} sampled frames`);
+    assert.ok(
+      renderLog.length >= 3,
+      `the bars never rendered (${renderLog.length}) — assertion would be vacuous`,
+    );
+    assert.ok(
+      renderLog.length <= 24,
+      `widget views were re-created ${renderLog.length} times for ~${samples.length} sampled frames`,
+    );
     // ...and the bars must be ALIVE, not merely painted once: each of these is the
     // renderer's own confirmation that it applied a comm delta to a live model. A
     // repaint that stops rewriting the widget outputs is only correct while this
     // channel works, so the two assertions have to be made together.
-    assert.ok(updates >= 20, `the renderer applied only ${updates} live widget updates — the bars are frozen`);
+    assert.ok(
+      updates >= 20,
+      `the renderer applied only ${updates} live widget updates — the bars are frozen`,
+    );
     // The plot is the output the repaint exists for; a run that renders no image
     // would satisfy every other assertion here without exercising the path.
-    assert.ok(finalOutputs.some((m) => m.startsWith("image/")),
-      `the loop cell rendered no image: ${JSON.stringify(finalOutputs)}`);
+    assert.ok(
+      finalOutputs.some((m) => m.startsWith("image/")),
+      `the loop cell rendered no image: ${JSON.stringify(finalOutputs)}`,
+    );
   });
 });

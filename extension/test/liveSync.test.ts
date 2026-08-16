@@ -58,7 +58,11 @@ class TestSink implements CellSink {
     this.rawStdout.set(idx, "");
   }
   repaint(idx: number, items: OutputItem[]): void {
-    this.ops.push({ op: "repaint", idx, text: items.map((i) => textOf(i) ?? i.output_type).join(",") });
+    this.ops.push({
+      op: "repaint",
+      idx,
+      text: items.map((i) => textOf(i) ?? i.output_type).join(","),
+    });
     this.rawStdout.set(idx, "");
   }
   status(idx: number, status: string): void {
@@ -86,7 +90,12 @@ function queued(execId: string, code: string): LiveEvent {
   return { seq: 1, exec_id: execId, kind: "queued", payload: { code } };
 }
 function stream(execId: string, text: string, name = "stdout"): LiveEvent {
-  return { seq: 2, exec_id: execId, kind: "output", payload: { msg_type: "stream", content: { name, text } } };
+  return {
+    seq: 2,
+    exec_id: execId,
+    kind: "output",
+    payload: { msg_type: "stream", content: { name, text } },
+  };
 }
 function output(execId: string, msg_type: string, content: any): LiveEvent {
   return { seq: 2, exec_id: execId, kind: "output", payload: { msg_type, content } };
@@ -138,7 +147,9 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     live.onEvent(queued("e1", src(0)));
 
     live.onEvent(stream("e1", "A"));
-    live.onEvent(output("e1", "execute_result", { data: { "text/plain": "R" }, execution_count: 1 }));
+    live.onEvent(
+      output("e1", "execute_result", { data: { "text/plain": "R" }, execution_count: 1 }),
+    );
     live.onEvent(stream("e1", "B"));
     sched.tick();
 
@@ -173,7 +184,10 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     live.onEvent(stream("e1", "new"));
     sched.tick();
 
-    const window2 = sink.ops.slice(1).filter((o) => o.idx === 0).map((o) => o.op);
+    const window2 = sink.ops
+      .slice(1)
+      .filter((o) => o.idx === 0)
+      .map((o) => o.op);
     expect(window2).toEqual(["clear", "appendStream"]);
     expect(sink.visibleStdout(0)).toBe("new");
   });
@@ -202,7 +216,9 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     // now INSERTED(0) FIRST(1) SECOND(2). Seeding by the old indices must follow
     // the cell_hash to the shifted cells, not misattribute by one.
     const ran = parse(["# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n")).cells;
-    const after = parse(["# %% i", "ins = 0", "# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n")).cells;
+    const after = parse(
+      ["# %% i", "ins = 0", "# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n"),
+    ).cells;
     const sched = new ManualScheduler();
     const sink = new TestSink();
     const live = new LiveOutputSync(after, sink, sched);
@@ -271,7 +287,10 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     const live = new LiveOutputSync(dupCells, sink, sched);
 
     const qIdx = (execId: string, code: string, index: number): LiveEvent => ({
-      seq: 1, exec_id: execId, kind: "queued", payload: { code, origin: { index } },
+      seq: 1,
+      exec_id: execId,
+      kind: "queued",
+      payload: { code, origin: { index } },
     });
     live.onEvent(qIdx("e0", cellSource(dupCells[0]), 0));
     live.onEvent(qIdx("e1", cellSource(dupCells[1]), 1));
@@ -314,7 +333,10 @@ describe("LiveOutputSync — update_display_data in-place (Fix E coalescing)", (
   const disp = (execId: string, v: string): LiveEvent =>
     output(execId, "display_data", { data: { "text/plain": v }, transient: { display_id: "d" } });
   const upd = (execId: string, v: string): LiveEvent =>
-    output(execId, "update_display_data", { data: { "text/plain": v }, transient: { display_id: "d" } });
+    output(execId, "update_display_data", {
+      data: { "text/plain": v },
+      transient: { display_id: "d" },
+    });
 
   it("routes update_display_data to updateDisplay, never appendOutput (no stacking)", () => {
     const sched = new ManualScheduler();
@@ -432,15 +454,18 @@ describe("LiveOutputSync — dispose() (RISKS #15: pending flush after teardown)
   });
 });
 
-
 describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => {
   /** The reported shape, driven through the real client fold. */
   function harness(foldBacked = true) {
     const sink = new TestSink();
     const fold = new ExecutionFold();
     const sched = new ManualScheduler();
-    const live = new LiveOutputSync(cells, sink, sched,
-      foldBacked ? () => fold.outputs() : undefined);
+    const live = new LiveOutputSync(
+      cells,
+      sink,
+      sched,
+      foldBacked ? () => fold.outputs() : undefined,
+    );
     live.seed([{ execId: "e1", cellHash: computeCellHash(src(0)), index: 0 }]);
     const feed = (ev: LiveEvent) => {
       // Mirrors SessionClient.handle(): fold FIRST, then notify the live sink.
@@ -451,8 +476,14 @@ describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => 
     return { sink, sched, live, feed, fold };
   }
   const widgetEv = (commId: string, msgId: string): LiveEvent => ({
-    seq: 3, exec_id: "e1", kind: "widget",
-    payload: { msg_type: "comm_msg", comm_id: commId, data: { method: "update", state: { msg_id: msgId } } },
+    seq: 3,
+    exec_id: "e1",
+    kind: "widget",
+    payload: {
+      msg_type: "comm_msg",
+      comm_id: commId,
+      data: { method: "update", state: { msg_id: msgId } },
+    },
   });
 
   it("emits repaint (not a blind clear) and the sibling output survives", () => {

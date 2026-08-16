@@ -6,6 +6,7 @@ execution to ``orphaned`` (no ``done`` will ever come). A ``running`` exec's
 shows the REAL time it ran before being cut off — not a live spinner, and NOT
 wall-clock-since-then (the "26667s" bug). A ``queued`` exec keeps a NULL finish.
 """
+
 import time
 
 from test_clear import make_session
@@ -26,8 +27,7 @@ def test_orphan_running_freezes_finished_at_at_last_activity(tmp_path):
     s.journal.append_message("e1", "stream", {"name": "stdout", "text": "0\n"})
     time.sleep(0.02)
     s.journal.append_message("e1", "stream", {"name": "stdout", "text": "1\n"})
-    last_ts = s.journal.db.execute(
-        "SELECT MAX(ts) FROM messages WHERE exec_id='e1'").fetchone()[0]
+    last_ts = s.journal.db.execute("SELECT MAX(ts) FROM messages WHERE exec_id='e1'").fetchone()[0]
 
     n = s.journal.orphan_inflight()
     before_now = time.time()

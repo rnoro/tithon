@@ -11,6 +11,7 @@ display state" a live frontend would show:
 
 Pure logic, no I/O — unit-tested independently of the daemon.
 """
+
 from __future__ import annotations
 
 import re
@@ -205,13 +206,14 @@ class ExecutionFold:
             # live plot would fold to one line PER FRAME (measured: 118 items for
             # 118 steps) rather than the single updating line the user wrote.
             # An item in the SAME area still breaks the run, matching Jupyter.
-            if (last is not None and last["output_type"] == "stream"
-                    and last["name"] == name):
+            if last is not None and last["output_type"] == "stream" and last["name"] == name:
                 last["_buf"].write(text)
             else:
                 buf = StreamBuf()
                 buf.write(text)
-                self._items.append(self._own({"output_type": "stream", "name": name, "_buf": buf}, owner))
+                self._items.append(
+                    self._own({"output_type": "stream", "name": name, "_buf": buf}, owner)
+                )
         elif msg_type == "display_data":
             item = {
                 "output_type": "display_data",

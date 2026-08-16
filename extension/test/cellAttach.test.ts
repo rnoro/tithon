@@ -103,8 +103,20 @@ describe("output -> cell attachment", () => {
     const rc = docCellsFromParsed(parse(ran).cells);
     const cells = docCellsFromParsed(parse(after).cells);
     const execs: JournalExecution[] = [
-      { execId: "e1", cellHash: rc[0].cellHash, index: 0, range: { start: 0, end: 1 }, outputs: ["FIRST"] },
-      { execId: "e2", cellHash: rc[1].cellHash, index: 1, range: { start: 2, end: 3 }, outputs: ["SECOND"] },
+      {
+        execId: "e1",
+        cellHash: rc[0].cellHash,
+        index: 0,
+        range: { start: 0, end: 1 },
+        outputs: ["FIRST"],
+      },
+      {
+        execId: "e2",
+        cellHash: rc[1].cellHash,
+        index: 1,
+        range: { start: 2, end: 3 },
+        outputs: ["SECOND"],
+      },
     ];
     const att = attachOutputs(execs, cells);
     expect(att.has(0)).toBe(false); // INSERTED cell stays empty (not FIRST)
@@ -118,7 +130,13 @@ describe("output -> cell attachment", () => {
     // output attaches to that same cell but flagged stale (not a fresh ✓ run).
     const after = docCellsFromParsed(parse(["# %% a", 'print("BETA")', ""].join("\n")).cells);
     const execs: JournalExecution[] = [
-      { execId: "e1", cellHash: computeCellHash('print("ALPHA")\n'), index: 0, range: { start: 0, end: 1 }, outputs: ["ALPHA"] },
+      {
+        execId: "e1",
+        cellHash: computeCellHash('print("ALPHA")\n'),
+        index: 0,
+        range: { start: 0, end: 1 },
+        outputs: ["ALPHA"],
+      },
     ];
     const att = attachOutputs(execs, after);
     expect(att.get(0)?.outputs).toEqual(["ALPHA"]);

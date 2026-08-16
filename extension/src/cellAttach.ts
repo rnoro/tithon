@@ -85,8 +85,7 @@ export function docCellsFromParsed(cells: Cell[]): DocCell[] {
   let line = 0;
   for (let index = 0; index < cells.length; index++) {
     const cell = cells[index];
-    const span =
-      (cell.hasMarker ? 1 : 0) + cell.body.length;
+    const span = (cell.hasMarker ? 1 : 0) + cell.body.length;
     const start = line;
     const end = Math.max(start, line + span - 1);
     out.push({ index, cellHash: computeCellHash(cellSource(cell)), range: { start, end } });
@@ -146,7 +145,9 @@ export function attachOutputs(
     if (!matches || matches.length === 0) return undefined;
     return matches
       .slice()
-      .sort((a, b) => proximity(a.range, range) - proximity(b.range, range) || a.index - b.index)[0];
+      .sort(
+        (a, b) => proximity(a.range, range) - proximity(b.range, range) || a.index - b.index,
+      )[0];
   };
 
   for (const ex of executions) {

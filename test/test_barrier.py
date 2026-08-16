@@ -16,6 +16,7 @@ the messaging spec publishes after the execution's associated iopub output.
 
 v49.sh proves the end-to-end ordering against a real daemon + real kernel.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -60,6 +61,7 @@ def seeded_exec(s: Session, exec_id="e1", msg_id="m1") -> None:
 
 
 # -- T7: the shell router ----------------------------------------------------
+
 
 def test_reply_is_routed_to_its_waiter(tmp_path):
     s = make_session(tmp_path)
@@ -156,6 +158,7 @@ def test_await_reply_survives_channel_teardown(tmp_path):
 
 # -- T1: the completion barrier ----------------------------------------------
 
+
 def test_idle_status_releases_the_barrier(tmp_path):
     s = make_session(tmp_path)
     seeded_exec(s)
@@ -248,6 +251,7 @@ def test_barrier_timeout_is_a_fallback_not_the_mechanism(tmp_path):
 
 # -- cleanup ------------------------------------------------------------------
 
+
 def test_completed_execution_leaves_no_routing_state(tmp_path):
     """`_msgid_to_exec` was never popped, leaking one entry per cell forever. It can
     only be dropped once the barrier has passed: any earlier and trailing iopub
@@ -286,11 +290,13 @@ def test_late_output_still_folds_before_the_barrier_passes(tmp_path):
     s._idle_events["e1"] = ev
 
     # reply already arrived; trailing stream lands only now
-    s._handle_iopub({
-        "header": {"msg_type": "stream"},
-        "parent_header": {"msg_id": "m1"},
-        "content": {"name": "stdout", "text": "trailing\n"},
-    })
+    s._handle_iopub(
+        {
+            "header": {"msg_type": "stream"},
+            "parent_header": {"msg_id": "m1"},
+            "content": {"name": "stdout", "text": "trailing\n"},
+        }
+    )
     s._handle_iopub(iopub_status("m1", "idle"))
 
     folded = json.dumps(s._folds["e1"].outputs())

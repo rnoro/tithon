@@ -1,4 +1,5 @@
 """Print the max event seq seen in an attach NDJSON capture (fallback: argv[2])."""
+
 import json
 import sys
 

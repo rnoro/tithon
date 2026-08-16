@@ -16,6 +16,7 @@ expects, so a fresh client attach restores them via html-manager's
 ``put_buffers``. Re-attach cost is the size of the final state, not the number
 of updates — tqdm.notebook can update 50k times and the snapshot is one bar.
 """
+
 from __future__ import annotations
 
 import base64

@@ -35,9 +35,24 @@ describe("destructive-action confirmation", () => {
   });
 
   it.each([
-    ["dismissed (Escape / Cancel)", () => { state.answer = undefined; }],
-    ["some other button", () => { state.answer = "Later"; }],
-    ["a host that refuses to show the dialog", () => { state.rejectDialog = true; }],
+    [
+      "dismissed (Escape / Cancel)",
+      () => {
+        state.answer = undefined;
+      },
+    ],
+    [
+      "some other button",
+      () => {
+        state.answer = "Later";
+      },
+    ],
+    [
+      "a host that refuses to show the dialog",
+      () => {
+        state.rejectDialog = true;
+      },
+    ],
   ])("fails safe when the answer is %s", async (_label, arrange) => {
     arrange();
     expect(await confirmDestructive(ASK)).toBe(false);

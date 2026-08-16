@@ -60,9 +60,7 @@ import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
-  return vscode.workspace.notebookDocuments.find(
-    (n) => n.uri.fsPath === fileUri.fsPath,
-  );
+  return vscode.workspace.notebookDocuments.find((n) => n.uri.fsPath === fileUri.fsPath);
 }
 
 /** Whether a tithon-py tab exists; a notebook document is insufficient (I4). */
@@ -148,9 +146,11 @@ function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
   const next = prev.catch(() => {}).then(op);
   toggleQueues.set(uriStr, next);
   // Drop the entry once this op is the tail, so the map can't grow unbounded.
-  void next.catch(() => {}).finally(() => {
-    if (toggleQueues.get(uriStr) === next) toggleQueues.delete(uriStr);
-  });
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (toggleQueues.get(uriStr) === next) toggleQueues.delete(uriStr);
+    });
   return next;
 }
 
@@ -159,11 +159,7 @@ function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
 async function closeStaleTextTabs(uriStr: string): Promise<void> {
   const stale = vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
-    .filter(
-      (t) =>
-        t.input instanceof vscode.TabInputText &&
-        t.input.uri.toString() === uriStr,
-    );
+    .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uriStr);
   if (stale.length) {
     try {
       await vscode.window.tabGroups.close(stale, true);
@@ -513,8 +509,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the
     // notebook/toolbar button; normalize its action context via resolveNotebookUri.
     vscode.commands.registerCommand("tithon.openAsText", async (arg?: unknown) => {
-      const uri =
-        resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
+      const uri = resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
       if (!uri) {
         notifyWarn("Tithon: no notebook to open as text");
         return;
@@ -579,7 +574,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           `Tithon: ${path.basename(uri.fsPath)} now opens in the Text Editor in this workspace`,
         );
       } catch (err) {
-        vscode.window.showErrorMessage(`Tithon: could not save the editor association — ${String(err)}`);
+        vscode.window.showErrorMessage(
+          `Tithon: could not save the editor association — ${String(err)}`,
+        );
       }
     }),
     // Make this ONE file open as the Cell View from now on, in this workspace.
@@ -605,7 +602,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           return true;
         });
       } catch (err) {
-        vscode.window.showErrorMessage(`Tithon: could not save the editor association — ${String(err)}`);
+        vscode.window.showErrorMessage(
+          `Tithon: could not save the editor association — ${String(err)}`,
+        );
         return;
       }
       await syncDiffAssociation(pattern, true);
@@ -614,9 +613,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (!hasCellViewTab(uri)) {
         await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
       }
-      notifyInfo(
-        `Tithon: ${path.basename(uri.fsPath)} now opens as a Notebook in this workspace`,
-      );
+      notifyInfo(`Tithon: ${path.basename(uri.fsPath)} now opens as a Notebook in this workspace`);
     }),
     // The inverse. Removes only its own key; every other association — including
     // ones the user or VSCode's own "Configure default editor" wrote — is left
@@ -639,12 +636,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         if (changed) {
           notifyInfo(`Tithon: ${path.basename(uri.fsPath)} opens as text again`);
         } else {
-          notifyWarn(
-            `Tithon: ${path.basename(uri.fsPath)} was not pinned to the Notebook view`,
-          );
+          notifyWarn(`Tithon: ${path.basename(uri.fsPath)} was not pinned to the Notebook view`);
         }
       } catch (err) {
-        vscode.window.showErrorMessage(`Tithon: could not update the editor association — ${String(err)}`);
+        vscode.window.showErrorMessage(
+          `Tithon: could not update the editor association — ${String(err)}`,
+        );
       }
     }),
     // Palette/keybinding entry to the same interrupt the cell ⏹ uses. It reports

@@ -1,4 +1,5 @@
 """Tithon CLI: ``tithon daemon | run | attach | status``."""
+
 from __future__ import annotations
 
 import argparse
@@ -124,8 +125,9 @@ def cmd_run(args) -> int:
 
 async def _attach(args) -> int:
     async with await _connect() as ws:
-        await ws.send(json.dumps(
-            {"op": "attach", "last_seen_seq": args.since, "session": args.session}))
+        await ws.send(
+            json.dumps({"op": "attach", "last_seen_seq": args.since, "session": args.session})
+        )
         async for raw in ws:
             text = raw if isinstance(raw, str) else raw.decode()
             print(text, flush=True)
@@ -251,9 +253,14 @@ def main(argv=None) -> None:
     sp.add_argument("--session", required=True, help="session id (file uri) to terminate")
     sp.set_defaults(fn=cmd_kill)
 
-    sp = sub.add_parser("shutdown", help="stop the daemon (kernels stay detached unless --kill-kernels)")
-    sp.add_argument("--kill-kernels", action="store_true",
-                    help="also kill kernels (fresh start, e.g. interpreter switch)")
+    sp = sub.add_parser(
+        "shutdown", help="stop the daemon (kernels stay detached unless --kill-kernels)"
+    )
+    sp.add_argument(
+        "--kill-kernels",
+        action="store_true",
+        help="also kill kernels (fresh start, e.g. interpreter switch)",
+    )
     sp.set_defaults(fn=cmd_shutdown)
 
     args = p.parse_args(argv)

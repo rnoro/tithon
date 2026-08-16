@@ -46,10 +46,7 @@ export const window = {
   },
   /** Both roles of the real API: a notification with no options object, or —
    *  when an options object is passed — a dialog. */
-  showWarningMessage(
-    message: string,
-    ...rest: unknown[]
-  ): Promise<string | undefined> {
+  showWarningMessage(message: string, ...rest: unknown[]): Promise<string | undefined> {
     if (rest.length > 0 && typeof rest[0] === "object" && rest[0] !== null) {
       state.modalCalls.push({
         message,

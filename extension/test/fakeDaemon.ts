@@ -21,13 +21,20 @@ export interface FakeDaemon {
 }
 
 export function tmpSock(): string {
-  return path.join(os.tmpdir(), `tithon-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`);
+  return path.join(
+    os.tmpdir(),
+    `tithon-test-${process.pid}-${Math.random().toString(36).slice(2)}.sock`,
+  );
 }
 
 /** Bare unix-socket ws server; `onConnection` gets full control of each socket. */
 export async function fakeDaemonRaw(onConnection: (ws: WS) => void): Promise<FakeDaemon> {
   const sock = tmpSock();
-  try { fs.unlinkSync(sock); } catch { /* fresh */ }
+  try {
+    fs.unlinkSync(sock);
+  } catch {
+    /* fresh */
+  }
   const server = http.createServer();
   const wss = new WebSocketServer({ server });
   wss.on("connection", onConnection);
@@ -38,7 +45,11 @@ export async function fakeDaemonRaw(onConnection: (ws: WS) => void): Promise<Fak
       new Promise<void>((res) => {
         wss.close();
         server.close(() => {
-          try { fs.unlinkSync(sock); } catch { /* gone */ }
+          try {
+            fs.unlinkSync(sock);
+          } catch {
+            /* gone */
+          }
           res();
         });
       }),

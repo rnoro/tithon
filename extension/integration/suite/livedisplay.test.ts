@@ -61,7 +61,10 @@ describe("Tithon in-place update_display_data inside a real VSCode host (v33)", 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // selectKernel auto-starts live sync (ensureLive); attach is snapshot+delta
     // from seq 0, so the whole stream is captured without a manual start.
@@ -84,10 +87,14 @@ describe("Tithon in-place update_display_data inside a real VSCode host (v33)", 
     // In place => stays 1; the pre-fix append => grows toward FRAMES.
     let maxOutputs = 0;
     const cell = () => nb.cellAt(cellIdx);
-    await waitFor(() => {
-      maxOutputs = Math.max(maxOutputs, cell().outputs.length);
-      return plainText(cell()).includes(`frame${FRAMES - 1}`);
-    }, 30000, "loop to reach the final frame");
+    await waitFor(
+      () => {
+        maxOutputs = Math.max(maxOutputs, cell().outputs.length);
+        return plainText(cell()).includes(`frame${FRAMES - 1}`);
+      },
+      30000,
+      "loop to reach the final frame",
+    );
 
     // settle one render tick past the last update
     await new Promise((r) => setTimeout(r, 300));

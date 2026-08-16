@@ -2,6 +2,7 @@
 via `event_from_message` — ADR-083's single builder) must carry binary
 buffers when the underlying comm message had them, so a widget with
 partly-binary state (e.g. `Image`) does not go stale between reconnects."""
+
 import asyncio
 import base64
 import json
@@ -44,10 +45,19 @@ def test_live_broadcast_and_replay_carry_identical_buffers(tmp_path):
     s._subs.add(sub)
 
     payload = b"\x89PNG-fake-bytes"
-    s._handle_comm("e1", "comm_open", {
-        "comm_id": "img1", "target_name": "jupyter.widget",
-        "data": {"state": {"_model_name": "ImageModel", "format": "png"}, "buffer_paths": [["value"]]},
-    }, [payload])
+    s._handle_comm(
+        "e1",
+        "comm_open",
+        {
+            "comm_id": "img1",
+            "target_name": "jupyter.widget",
+            "data": {
+                "state": {"_model_name": "ImageModel", "format": "png"},
+                "buffer_paths": [["value"]],
+            },
+        },
+        [payload],
+    )
 
     live = sub.queue.get_nowait()
     assert live["kind"] == "widget"
@@ -67,16 +77,31 @@ def test_buffer_bearing_comm_msg_also_carries_buffers_live_and_replayed(tmp_path
     sub = Subscriber(asyncio.Queue(maxsize=100))
     s._subs.add(sub)
 
-    s._handle_comm("e1", "comm_open", {
-        "comm_id": "img1", "target_name": "jupyter.widget",
-        "data": {"state": {"_model_name": "ImageModel", "format": "png"}, "buffer_paths": [["value"]]},
-    }, [b"first-frame"])
+    s._handle_comm(
+        "e1",
+        "comm_open",
+        {
+            "comm_id": "img1",
+            "target_name": "jupyter.widget",
+            "data": {
+                "state": {"_model_name": "ImageModel", "format": "png"},
+                "buffer_paths": [["value"]],
+            },
+        },
+        [b"first-frame"],
+    )
     sub.queue.get_nowait()  # drain the comm_open broadcast
 
     new_frame = b"second-frame-updated-pixels"
-    s._handle_comm("e1", "comm_msg", {
-        "comm_id": "img1", "data": {"method": "update", "buffer_paths": [["value"]]},
-    }, [new_frame])
+    s._handle_comm(
+        "e1",
+        "comm_msg",
+        {
+            "comm_id": "img1",
+            "data": {"method": "update", "buffer_paths": [["value"]]},
+        },
+        [new_frame],
+    )
 
     live = sub.queue.get_nowait()
     assert live["payload"]["msg_type"] == "comm_msg"

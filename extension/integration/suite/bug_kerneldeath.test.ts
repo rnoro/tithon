@@ -42,7 +42,10 @@ describe("BUG: a kernel that dies mid-execution errors the cell (no perpetual sp
     const nb = await vscode.workspace.openNotebookDocument(uri);
     const edr = await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     edr.selections = [new vscode.NotebookRange(0, 1)];
     await vscode.commands.executeCommand("notebook.cell.execute", {
@@ -52,7 +55,9 @@ describe("BUG: a kernel that dies mid-execution errors the cell (no perpetual sp
 
     // The cell must reach a terminal state quickly — NOT spin forever.
     await waitFor(
-      () => /KernelDied/.test(cellText(nb.cellAt(0))) || nb.cellAt(0).executionSummary?.success === false,
+      () =>
+        /KernelDied/.test(cellText(nb.cellAt(0))) ||
+        nb.cellAt(0).executionSummary?.success === false,
       30000,
       "cell 0 errors with KernelDied (not a perpetual spinner)",
     );
@@ -60,8 +65,12 @@ describe("BUG: a kernel that dies mid-execution errors the cell (no perpetual sp
 
     const t0 = cellText(nb.cellAt(0));
     const success = nb.cellAt(0).executionSummary?.success;
-    console.log(`[KERNELDEATH] cell0 text=${JSON.stringify(t0.trim().slice(0, 80))} success=${success}`);
-    console.log(`[KERNELDEATH] FINDING: showsKernelDied=${/KernelDied/.test(t0)} success=${success} -> ${/KernelDied/.test(t0) && success !== true ? "FIXED (errored, no wedge)" : "BUG (wedged / wrong)"}`);
+    console.log(
+      `[KERNELDEATH] cell0 text=${JSON.stringify(t0.trim().slice(0, 80))} success=${success}`,
+    );
+    console.log(
+      `[KERNELDEATH] FINDING: showsKernelDied=${/KernelDied/.test(t0)} success=${success} -> ${/KernelDied/.test(t0) && success !== true ? "FIXED (errored, no wedge)" : "BUG (wedged / wrong)"}`,
+    );
 
     assert.ok(/KernelDied/.test(t0), "cell should show a KernelDied error");
     assert.notStrictEqual(success, true, "a dead-kernel cell must not report success");

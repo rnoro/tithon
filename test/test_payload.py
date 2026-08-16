@@ -12,6 +12,7 @@ needs cell structure, which belongs to the client, so it must not cross into the
 daemon. These tests pin that boundary too. v47.sh proves the end-to-end path on a
 real kernel.
 """
+
 from __future__ import annotations
 
 import asyncio

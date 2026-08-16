@@ -94,7 +94,8 @@ describe.skipIf(!live)("output restore over a real daemon (v7)", () => {
       expect(reconnect.executions().length).toBe(codeCells.length);
 
       const att = reconnect.restoreInto(cells);
-      const idx = (k: string) => cells.indexOf(cells.find((c) => c.body.some((l) => l.text.includes(k)))!);
+      const idx = (k: string) =>
+        cells.indexOf(cells.find((c) => c.body.some((l) => l.text.includes(k)))!);
 
       const loopCell = idx("print(i)");
       const valueCell = idx("41 + 1");

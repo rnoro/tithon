@@ -32,8 +32,13 @@ async function drive(frames: unknown[]): Promise<SessionClient> {
 describe("SessionClient — kernel_generation stays current across a restart", () => {
   it("a restarted event updates generation to its own seq", async () => {
     const c = await drive([
-      { op: "event", seq: 7, exec_id: null, kind: "kernel",
-        payload: { status: "restarted", pid: 4242, deliberate: true } },
+      {
+        op: "event",
+        seq: 7,
+        exec_id: null,
+        kind: "kernel",
+        payload: { status: "restarted", pid: 4242, deliberate: true },
+      },
     ]);
     expect(c.kernelInfo()?.generation).toBe(7);
     expect(c.kernelInfo()?.pid).toBe(4242);
@@ -41,8 +46,13 @@ describe("SessionClient — kernel_generation stays current across a restart", (
 
   it("a replaced event (host reboot) also updates generation", async () => {
     const c = await drive([
-      { op: "event", seq: 3, exec_id: null, kind: "kernel",
-        payload: { status: "replaced", pid: 111 } },
+      {
+        op: "event",
+        seq: 3,
+        exec_id: null,
+        kind: "kernel",
+        payload: { status: "replaced", pid: 111 },
+      },
     ]);
     expect(c.kernelInfo()?.generation).toBe(3);
   });
@@ -52,12 +62,21 @@ describe("SessionClient — kernel_generation stays current across a restart", (
     // a death, then ANOTHER client restarted the kernel to generation 12 —
     // this client must pick up 12, not stay pinned at 5.
     const c = await drive([
-      { op: "event", seq: 5, exec_id: null, kind: "kernel",
-        payload: { status: "restarted", pid: 100, deliberate: true } },
-      { op: "event", seq: 9, exec_id: null, kind: "kernel",
-        payload: { status: "dead" } },
-      { op: "event", seq: 12, exec_id: null, kind: "kernel",
-        payload: { status: "restarted", pid: 200, deliberate: true } },
+      {
+        op: "event",
+        seq: 5,
+        exec_id: null,
+        kind: "kernel",
+        payload: { status: "restarted", pid: 100, deliberate: true },
+      },
+      { op: "event", seq: 9, exec_id: null, kind: "kernel", payload: { status: "dead" } },
+      {
+        op: "event",
+        seq: 12,
+        exec_id: null,
+        kind: "kernel",
+        payload: { status: "restarted", pid: 200, deliberate: true },
+      },
     ]);
     expect(c.kernelInfo()?.generation).toBe(12);
     expect(c.kernelInfo()?.pid).toBe(200);
@@ -65,10 +84,14 @@ describe("SessionClient — kernel_generation stays current across a restart", (
 
   it("a dead event alone does not touch generation", async () => {
     const c = await drive([
-      { op: "event", seq: 5, exec_id: null, kind: "kernel",
-        payload: { status: "restarted", pid: 100, deliberate: true } },
-      { op: "event", seq: 9, exec_id: null, kind: "kernel",
-        payload: { status: "dead" } },
+      {
+        op: "event",
+        seq: 5,
+        exec_id: null,
+        kind: "kernel",
+        payload: { status: "restarted", pid: 100, deliberate: true },
+      },
+      { op: "event", seq: 9, exec_id: null, kind: "kernel", payload: { status: "dead" } },
     ]);
     expect(c.kernelInfo()?.generation).toBe(5);
     expect(c.kernelInfo()?.status).toBe("dead");

@@ -34,7 +34,11 @@ function plainText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
@@ -68,7 +72,10 @@ describe("Tithon clear leaves no stuck spinner, no save storm (v37)", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // Drive one cell that prints, from a separate client (runs on the daemon).
     const text = readFileSync(fixture, "utf8");
@@ -95,7 +102,11 @@ describe("Tithon clear leaves no stuck spinner, no save storm (v37)", () => {
 
     // (A) transientOutputs: streaming output must not have dirtied the notebook
     //     (pre-fix the notebook stayed dirty -> autosave fired every ~1s).
-    assert.strictEqual(nb.isDirty, false, "notebook must not be dirty after live output (transientOutputs)");
+    assert.strictEqual(
+      nb.isDirty,
+      false,
+      "notebook must not be dirty after live output (transientOutputs)",
+    );
 
     // The user clears all cell outputs (native VSCode command).
     await vscode.commands.executeCommand("notebook.clearAllCellsOutputs");
@@ -103,13 +114,17 @@ describe("Tithon clear leaves no stuck spinner, no save storm (v37)", () => {
     // Wait until the daemon has durably tombstoned the clear (a fresh attach folds
     // to empty) — by then the live client has also received the `clear_output`
     // echo, which is exactly when the pre-fix bug would have spun up a phantom.
-    await waitFor(async () => {
-      const probe = new SessionClient(undefined, uri.toString());
-      await probe.attach(0);
-      const empty = probe.outputsOf(execId).length === 0;
-      probe.close();
-      return empty;
-    }, 30000, "daemon to tombstone the clear");
+    await waitFor(
+      async () => {
+        const probe = new SessionClient(undefined, uri.toString());
+        await probe.attach(0);
+        const empty = probe.outputsOf(execId).length === 0;
+        probe.close();
+        return empty;
+      },
+      30000,
+      "daemon to tombstone the clear",
+    );
 
     // Settle past the live echo so any (buggy) resurrected execution would show.
     await new Promise((r) => setTimeout(r, 1000));
@@ -124,6 +139,10 @@ describe("Tithon clear leaves no stuck spinner, no save storm (v37)", () => {
 
     // The output is actually gone, and the notebook is still clean.
     assert.strictEqual(cell().outputs.length, 0, "cleared cell should have no outputs");
-    assert.strictEqual(nb.isDirty, false, "notebook must stay non-dirty after clear (transientOutputs)");
+    assert.strictEqual(
+      nb.isDirty,
+      false,
+      "notebook must stay non-dirty after clear (transientOutputs)",
+    );
   });
 });

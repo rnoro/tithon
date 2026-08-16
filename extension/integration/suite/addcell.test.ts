@@ -64,7 +64,10 @@ describe("Tithon streams output for a cell added after live started (v14)", () =
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // Run the first cell — this starts live sync (index has only cell 0).
     await runCell(uri, 0);

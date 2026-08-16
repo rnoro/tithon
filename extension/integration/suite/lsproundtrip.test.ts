@@ -51,9 +51,7 @@ const textTabsFor = (uri: vscode.Uri): vscode.Tab[] =>
   vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
     .filter(
-      (t) =>
-        t.input instanceof vscode.TabInputText &&
-        t.input.uri.toString() === uri.toString(),
+      (t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString(),
     );
 
 const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
@@ -68,8 +66,7 @@ function positionOf(doc: vscode.TextDocument, needle: string): vscode.Position {
 }
 
 type DefResult = vscode.Location | vscode.LocationLink;
-const defUri = (d: DefResult): vscode.Uri =>
-  "targetUri" in d ? d.targetUri : d.uri;
+const defUri = (d: DefResult): vscode.Uri => ("targetUri" in d ? d.targetUri : d.uri);
 
 /** Drive go-to-definition from the first cell's `my_helper(` use site and report
  * whether ANY result lands in helper.py. Retries: ty answers asynchronously. */
@@ -83,12 +80,19 @@ async function gotoResolvesHelper(
   const cell0 = nb.cellAt(0).document;
   const pos = positionOf(cell0, "my_helper(");
   let defs: DefResult[] = [];
-  await waitFor(async () => {
-    defs = (await vscode.commands.executeCommand<DefResult[]>(
-      "vscode.executeDefinitionProvider", cell0.uri, pos,
-    )) ?? [];
-    return defs.some((d) => defUri(d).fsPath === helperUri.fsPath);
-  }, ms, label);
+  await waitFor(
+    async () => {
+      defs =
+        (await vscode.commands.executeCommand<DefResult[]>(
+          "vscode.executeDefinitionProvider",
+          cell0.uri,
+          pos,
+        )) ?? [];
+      return defs.some((d) => defUri(d).fsPath === helperUri.fsPath);
+    },
+    ms,
+    label,
+  );
   // eslint-disable-next-line no-console
   console.log(`v42: ${label} -> ${JSON.stringify(defs.map((d) => defUri(d).fsPath))}`);
 }
@@ -118,20 +122,30 @@ describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", 
     await waitFor(() => textTabsFor(uri).length > 0, 15000, "text editor opened");
     await waitFor(() => !notebookFor(uri), 15000, "notebook document closed on switch to text");
     // eslint-disable-next-line no-console
-    console.log(`v42: after openAsText: textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`);
+    console.log(
+      `v42: after openAsText: textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`,
+    );
 
     // --- TRANSITION: Text Editor -> Cell View ----------------------------------
     await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View reopened (2)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 1, 15000, "notebook cells (2)");
-    await waitFor(() => textTabsFor(uri).length === 0, 15000,
-      "no text editor coexists after returning to the Cell View");
+    await waitFor(
+      () => textTabsFor(uri).length === 0,
+      15000,
+      "no text editor coexists after returning to the Cell View",
+    );
     // eslint-disable-next-line no-console
-    console.log(`v42: after openAsNotebook(2): textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`);
+    console.log(
+      `v42: after openAsNotebook(2): textTabs=${textTabsFor(uri).length} notebook=${!!notebookFor(uri)}`,
+    );
 
     // Drive the live-sync notebookDocument/didChange stream the user saw flood ty:
     // select the kernel and run the cell so output writes mutate the notebook.
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await vscode.commands.executeCommand("notebook.cell.execute", {
       ranges: [new vscode.NotebookRange(0, 1)],
       document: uri,
@@ -140,7 +154,11 @@ describe("go-to-definition survives a Cell View <-> Text round trip (v42, ty)", 
     await new Promise((r) => setTimeout(r, 2000));
 
     // --- PHASE 2 (the regression): go-to-def must STILL resolve -----------------
-    await gotoResolvesHelper(uri, helperUri, 40000,
-      "phase2 go-to-def into helper.py after round trip");
+    await gotoResolvesHelper(
+      uri,
+      helperUri,
+      40000,
+      "phase2 go-to-def into helper.py after round trip",
+    );
   });
 });

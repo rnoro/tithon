@@ -46,9 +46,7 @@ const textTabsFor = (uri: vscode.Uri): vscode.Tab[] =>
   vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
     .filter(
-      (t) =>
-        t.input instanceof vscode.TabInputText &&
-        t.input.uri.toString() === uri.toString(),
+      (t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString(),
     );
 
 const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
@@ -72,7 +70,10 @@ function cellIndexWith(nb: vscode.NotebookDocument, needle: string): number {
 
 async function runAllCode(nb: vscode.NotebookDocument, uri: vscode.Uri): Promise<void> {
   await vscode.window.showNotebookDocument(nb);
-  await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+  await vscode.commands.executeCommand("notebook.selectKernel", {
+    id: "tithon",
+    extension: ext().id,
+  });
   await vscode.commands.executeCommand("notebook.cell.execute", {
     ranges: [new vscode.NotebookRange(0, nb.cellCount)],
     document: uri,
@@ -92,10 +93,16 @@ async function stableInlayHints(
     const range = new vscode.Range(0, 0, doc.lineCount, 0);
     const hints =
       (await vscode.commands.executeCommand<vscode.InlayHint[]>(
-        "vscode.executeInlayHintProvider", doc.uri, range,
+        "vscode.executeInlayHintProvider",
+        doc.uri,
+        range,
       )) ?? [];
     return hints
-      .map((h) => ({ line: h.position.line, char: h.position.character, label: hintLabel(h).trim() }))
+      .map((h) => ({
+        line: h.position.line,
+        char: h.position.character,
+        label: hintLabel(h).trim(),
+      }))
       .sort((a, b) => a.line - b.line || a.char - b.char || a.label.localeCompare(b.label));
   };
   let prev: Hint[] = [];
@@ -110,8 +117,7 @@ async function stableInlayHints(
 }
 
 type DefResult = vscode.Location | vscode.LocationLink;
-const defUri = (d: DefResult): vscode.Uri =>
-  "targetUri" in d ? d.targetUri : d.uri;
+const defUri = (d: DefResult): vscode.Uri => ("targetUri" in d ? d.targetUri : d.uri);
 
 describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty)", () => {
   it("inlay hints and go-to-def are identical after openAsText then openAsNotebook", async () => {
@@ -128,14 +134,22 @@ describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty
     await waitFor(() => !!notebookFor(uri), 15000, "Cell View opened (1)");
     await waitFor(() => notebookFor(uri)!.cellCount >= 2, 15000, "notebook cells (1)");
     // eslint-disable-next-line no-console
-    console.log(`v43: cells = ${notebookFor(uri)!.getCells().map((c) => (c.kind === vscode.NotebookCellKind.Markup ? "md" : "code")).join(",")}`);
+    console.log(
+      `v43: cells = ${notebookFor(uri)!
+        .getCells()
+        .map((c) => (c.kind === vscode.NotebookCellKind.Markup ? "md" : "code"))
+        .join(",")}`,
+    );
     await runAllCode(notebookFor(uri)!, uri);
     const cellIdx = cellIndexWith(notebookFor(uri)!, "val_loss");
 
     const fresh = await stableInlayHints(notebookFor(uri)!, cellIdx, 45000, "fresh inlay hints");
     // eslint-disable-next-line no-console
     console.log(`v43: fresh hints (${fresh.length}) = ${JSON.stringify(fresh)}`);
-    assert.ok(fresh.length > 0, "ty must produce inlay hints on the fresh Cell View (else vacuous)");
+    assert.ok(
+      fresh.length > 0,
+      "ty must produce inlay hints on the fresh Cell View (else vacuous)",
+    );
 
     // --- ROUND TRIP: Cell View -> Text -> Cell View (no edit, no running cell) --
     await vscode.commands.executeCommand("tithon.openAsText", uri);
@@ -165,36 +179,61 @@ describe("ty per-cell analysis survives a Cell View <-> Text round trip (v43, ty
       // Exercise the cell-editor virtualization/recycling: scroll to the bottom,
       // then back up to the observed cell, so pooled cell widgets are reused (the
       // condition under which stale inlay-hint decorations get repainted).
-      editor.revealRange(new vscode.NotebookRange(nb.cellCount - 1, nb.cellCount), vscode.NotebookEditorRevealType.AtTop);
+      editor.revealRange(
+        new vscode.NotebookRange(nb.cellCount - 1, nb.cellCount),
+        vscode.NotebookEditorRevealType.AtTop,
+      );
       await new Promise((r) => setTimeout(r, 1200));
       editor.revealRange(new vscode.NotebookRange(0, 1), vscode.NotebookEditorRevealType.AtTop);
       await new Promise((r) => setTimeout(r, 1200));
-      editor.revealRange(new vscode.NotebookRange(afterIdx, afterIdx + 1), vscode.NotebookEditorRevealType.AtTop);
+      editor.revealRange(
+        new vscode.NotebookRange(afterIdx, afterIdx + 1),
+        vscode.NotebookEditorRevealType.AtTop,
+      );
       // eslint-disable-next-line no-console
-      console.log(`v43: HOLD ${holdMs}ms showing reopened cell ${afterIdx} (rerun=${process.env.TITHON_NO_RERUN !== "1"})`);
+      console.log(
+        `v43: HOLD ${holdMs}ms showing reopened cell ${afterIdx} (rerun=${process.env.TITHON_NO_RERUN !== "1"})`,
+      );
       await new Promise((r) => setTimeout(r, holdMs));
       return;
     }
 
-    const after = await stableInlayHints(notebookFor(uri)!, afterIdx, 45000, "after-round-trip inlay hints");
+    const after = await stableInlayHints(
+      notebookFor(uri)!,
+      afterIdx,
+      45000,
+      "after-round-trip inlay hints",
+    );
     // eslint-disable-next-line no-console
     console.log(`v43: after hints (${after.length}) = ${JSON.stringify(after)}`);
-    assert.deepStrictEqual(after, fresh,
-      "ty inlay hints (labels + positions) RETURNED must be identical after the round trip");
+    assert.deepStrictEqual(
+      after,
+      fresh,
+      "ty inlay hints (labels + positions) RETURNED must be identical after the round trip",
+    );
 
     const useDoc = notebookFor(uri)!.cellAt(afterIdx).document;
     const callIdx = useDoc.getText().indexOf("scale(");
     assert.ok(callIdx >= 0, "use site 'scale(' present");
     const pos = useDoc.positionAt(callIdx);
     let defs: DefResult[] = [];
-    await waitFor(async () => {
-      defs = (await vscode.commands.executeCommand<DefResult[]>(
-        "vscode.executeDefinitionProvider", useDoc.uri, pos,
-      )) ?? [];
-      return defs.length > 0;
-    }, 40000, "go-to-def resolves after round trip");
+    await waitFor(
+      async () => {
+        defs =
+          (await vscode.commands.executeCommand<DefResult[]>(
+            "vscode.executeDefinitionProvider",
+            useDoc.uri,
+            pos,
+          )) ?? [];
+        return defs.length > 0;
+      },
+      40000,
+      "go-to-def resolves after round trip",
+    );
     // eslint-disable-next-line no-console
-    console.log(`v43: scale go-to-def -> ${JSON.stringify(defs.map((d) => `${defUri(d).scheme}#${defUri(d).fragment}`))}`);
+    console.log(
+      `v43: scale go-to-def -> ${JSON.stringify(defs.map((d) => `${defUri(d).scheme}#${defUri(d).fragment}`))}`,
+    );
     assert.ok(defs.length > 0, "go-to-def must resolve after the round trip");
   });
 });

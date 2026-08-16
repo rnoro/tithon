@@ -20,7 +20,11 @@ function outputMimes(cell: vscode.NotebookCell): string[] {
   return mimes;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
@@ -30,13 +34,18 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
 
 async function renderLog(): Promise<Array<{ model_id?: string; mode?: string }>> {
-  return (await vscode.commands.executeCommand("tithon._widgetRenderLog")) as Array<{ mode?: string }>;
+  return (await vscode.commands.executeCommand("tithon._widgetRenderLog")) as Array<{
+    mode?: string;
+  }>;
 }
 
 describe("Tithon ipywidget renderer in a real VSCode host (v29)", () => {
@@ -46,7 +55,10 @@ describe("Tithon ipywidget renderer in a real VSCode host (v29)", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     // Run the tqdm.notebook cell so the daemon mirror captures the widget state.
     await vscode.commands.executeCommand("notebook.execute");
@@ -55,17 +67,25 @@ describe("Tithon ipywidget renderer in a real VSCode host (v29)", () => {
     // Reconnect (fresh attach -> snapshot carries the mirror) so the widget output
     // is emitted with TITHON_WIDGET_MIME and routed to the html-manager renderer.
     await vscode.commands.executeCommand("tithon._restore");
-    await waitFor(() => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME), 20000,
-      "widget mime output to be emitted");
+    await waitFor(
+      () => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME),
+      20000,
+      "widget mime output to be emitted",
+    );
     console.log(`[v29] cell output mimes: ${outputMimes(nb.cellAt(0)).join(", ")}`);
 
     // The renderer ran in the webview and reported HTML (real widget, not fallback).
-    await waitFor(async () => (await renderLog()).some((r) => r.mode === "html"), 25000,
-      "widget renderer to paint html");
+    await waitFor(
+      async () => (await renderLog()).some((r) => r.mode === "html"),
+      25000,
+      "widget renderer to paint html",
+    );
     const log = await renderLog();
     console.log(`[v29] widget renders: ${JSON.stringify(log)}`);
-    assert.ok(log.some((r) => r.mode === "html"),
-      `expected an html render, got: ${JSON.stringify(log)}`);
+    assert.ok(
+      log.some((r) => r.mode === "html"),
+      `expected an html render, got: ${JSON.stringify(log)}`,
+    );
     assert.ok(!log.length || log.every((r) => r.mode !== undefined), "render outcomes recorded");
 
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");

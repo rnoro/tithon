@@ -1,5 +1,6 @@
 """v1 checker: reconstruct client-received text from 3 attach captures and
 compare sequence integrity (MSG 0..59, no gap/dup) against the journal."""
+
 import json
 import re
 import sqlite3
@@ -55,4 +56,6 @@ if jnums != list(range(60)):
 if client_text != journal_text:
     fail("client-reconstructed text differs from journal text")
 
-print(f"seq 0..59 intact across 3 attach/detach cycles ({len(rows)} journal stream msgs, client==journal)")
+print(
+    f"seq 0..59 intact across 3 attach/detach cycles ({len(rows)} journal stream msgs, client==journal)"
+)

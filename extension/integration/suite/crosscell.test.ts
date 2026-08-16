@@ -36,7 +36,11 @@ function plainText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
@@ -70,7 +74,10 @@ describe("Tithon cross-cell update_display inside a real VSCode host (v56)", () 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 2, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     const cells = parse(readFileSync(fixture, "utf8")).cells;
     const code = cells.map((c) => cellSource(c));
@@ -101,10 +108,14 @@ describe("Tithon cross-cell update_display inside a real VSCode host (v56)", () 
     // sink replaces each tracked handle with its own await, so a predicate of
     // "shows v1 anywhere" passes mid-fan-out and the assertions below would read
     // a half-applied cell. If an output genuinely never updates, this times out.
-    await waitFor(() => {
-      const t = plainText(cellA());
-      return !t.includes("v0") && t.split("v1").length - 1 === 2;
-    }, 30000, "cell A to receive the update on EVERY output under the display_id");
+    await waitFor(
+      () => {
+        const t = plainText(cellA());
+        return !t.includes("v0") && t.split("v1").length - 1 === 2;
+      },
+      30000,
+      "cell A to receive the update on EVERY output under the display_id",
+    );
 
     // In place: same output count, old value gone, and B did not grow a copy.
     const aText = plainText(cellA());
@@ -113,7 +124,10 @@ describe("Tithon cross-cell update_display inside a real VSCode host (v56)", () 
       outputsAfterA,
       `cell A must be edited in place, not grown; outputs ${outputsAfterA} -> ${cellA().outputs.length}`,
     );
-    assert.ok(!aText.includes("v0"), `stale value must be replaced; cell A shows ${JSON.stringify(aText)}`);
+    assert.ok(
+      !aText.includes("v0"),
+      `stale value must be replaced; cell A shows ${JSON.stringify(aText)}`,
+    );
     // The fixture creates TWO outputs under one display_id, and both folds update
     // EVERY item carrying it — so a sink tracking a single handle would leave one
     // stale live and only agree with the daemon after a reconnect.
@@ -130,12 +144,24 @@ describe("Tithon cross-cell update_display inside a real VSCode host (v56)", () 
     // Settle past the bounded edit, then check no proxy execution was left open.
     await new Promise((r) => setTimeout(r, 1000));
     const active = await activeExecCells();
-    assert.deepStrictEqual(active, [], `no cell may be left executing; active=${JSON.stringify(active)}`);
+    assert.deepStrictEqual(
+      active,
+      [],
+      `no cell may be left executing; active=${JSON.stringify(active)}`,
+    );
 
     // The real phantom probe: a cell holding a stranded (bounded) execution
     // cannot start another one, so this re-run would never render.
     await run(0);
-    await waitFor(() => plainText(cellA()).includes("v0"), 30000, "cell A to re-run after the bounded edit");
-    await waitFor(async () => !(await activeExecCells()).includes(0), 30000, "cell A re-run to finish");
+    await waitFor(
+      () => plainText(cellA()).includes("v0"),
+      30000,
+      "cell A to re-run after the bounded edit",
+    );
+    await waitFor(
+      async () => !(await activeExecCells()).includes(0),
+      30000,
+      "cell A re-run to finish",
+    );
   });
 });

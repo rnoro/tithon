@@ -19,7 +19,11 @@ function outputMimes(cell: vscode.NotebookCell): string[] {
   return mimes;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
@@ -29,7 +33,10 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -46,25 +53,41 @@ describe("Tithon live ipywidget animation in a real VSCode host (v30)", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     // Live run (the loop sleeps so comm updates flow over time). No restore.
     await vscode.commands.executeCommand("notebook.execute");
 
     // The widget is emitted WITH state DURING the live run (mirror built from comm
     // events), so it renders as a real widget — not the 0% text fallback.
-    await waitFor(() => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME), 30000,
-      "live widget mime to be emitted (mirror built from comm events)");
+    await waitFor(
+      () => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME),
+      30000,
+      "live widget mime to be emitted (mirror built from comm events)",
+    );
     console.log(`[v30] live cell mimes: ${outputMimes(nb.cellAt(0)).join(", ")}`);
-    await waitFor(async () => (await renderLog()).some((r) => r.mode === "html"), 25000,
-      "widget renderer to paint html live");
+    await waitFor(
+      async () => (await renderLog()).some((r) => r.mode === "html"),
+      25000,
+      "widget renderer to paint html live",
+    );
 
     // Live animation: comm-state deltas pushed to the renderer were applied.
-    await waitFor(async () => (await updateCount()) > 0, 30000, "live widget updates to be applied");
+    await waitFor(
+      async () => (await updateCount()) > 0,
+      30000,
+      "live widget updates to be applied",
+    );
     const updates = await updateCount();
     console.log(`[v30] live widget updates applied: ${updates}`);
     assert.ok(updates > 0, "expected live comm updates to animate the widget");
-    assert.ok((await renderLog()).some((r) => r.mode === "html"), "widget rendered html (not fallback)");
+    assert.ok(
+      (await renderLog()).some((r) => r.mode === "html"),
+      "widget rendered html (not fallback)",
+    );
 
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
     if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));

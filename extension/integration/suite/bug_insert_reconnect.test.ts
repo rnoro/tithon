@@ -20,17 +20,24 @@ import { computeCellHash } from "../../src/cellAttach";
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items)
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+  for (const o of cell.outputs)
+    for (const it of o.items)
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
   return s.trim();
 }
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) { if (Date.now() > deadline) throw new Error(`timed out: ${label}`); await new Promise((r) => setTimeout(r, 50)); }
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -49,12 +56,28 @@ describe("REGRESSION H4: a top insert + reopen keeps output on the right cells",
     const secondSrc = cellSource(two[1]);
     const driver = new SessionClient(undefined, uri.toString());
     await driver.attach(0);
-    const e1 = await driver.execute(firstSrc, { uri: uri.toString(), range: { start: 0, end: 2 }, cell_hash: computeCellHash(firstSrc), index: 0 });
-    const e2 = await driver.execute(secondSrc, { uri: uri.toString(), range: { start: 3, end: 4 }, cell_hash: computeCellHash(secondSrc), index: 1 });
-    await waitFor(() => {
-      const m = new Map(driver.executions().map((e) => [e.execId, e.status]));
-      return ["done", "error"].includes(m.get(e1) ?? "") && ["done", "error"].includes(m.get(e2) ?? "");
-    }, 30000, "driver execs done");
+    const e1 = await driver.execute(firstSrc, {
+      uri: uri.toString(),
+      range: { start: 0, end: 2 },
+      cell_hash: computeCellHash(firstSrc),
+      index: 0,
+    });
+    const e2 = await driver.execute(secondSrc, {
+      uri: uri.toString(),
+      range: { start: 3, end: 4 },
+      cell_hash: computeCellHash(secondSrc),
+      index: 1,
+    });
+    await waitFor(
+      () => {
+        const m = new Map(driver.executions().map((e) => [e.execId, e.status]));
+        return (
+          ["done", "error"].includes(m.get(e1) ?? "") && ["done", "error"].includes(m.get(e2) ?? "")
+        );
+      },
+      30000,
+      "driver execs done",
+    );
     driver.close();
 
     // 2) The user inserts a cell at the top and saves -> the file now has 3 cells.
@@ -64,7 +87,10 @@ describe("REGRESSION H4: a top insert + reopen keeps output on the right cells",
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 3, 15000, "3 cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await new Promise((r) => setTimeout(r, 4000));
 
     const trace = await vscode.commands.executeCommand("tithon._seedTrace");
@@ -72,10 +98,17 @@ describe("REGRESSION H4: a top insert + reopen keeps output on the right cells",
     const c1 = cellText(nb.cellAt(1)); // FIRST
     const c2 = cellText(nb.cellAt(2)); // SECOND
     console.log(`[H4] SEED TRACE: ${JSON.stringify(trace)}`);
-    console.log(`[H4] after reopen: cell0(INSERTED)=${JSON.stringify(c0)} cell1(FIRST)=${JSON.stringify(c1)} cell2(SECOND)=${JSON.stringify(c2)}`);
+    console.log(
+      `[H4] after reopen: cell0(INSERTED)=${JSON.stringify(c0)} cell1(FIRST)=${JSON.stringify(c1)} cell2(SECOND)=${JSON.stringify(c2)}`,
+    );
     const correct = c0 === "" && c1.includes("FIRST") && c2.includes("SECOND");
     const misattributed = c0.includes("FIRST") || c1.includes("SECOND");
-    console.log(`[H4] FINDING: ${correct ? "CORRECT (output followed content/hash — ADR-047)" : misattributed ? "MISATTRIBUTED (index-first shift by one) — REGRESSION" : "OTHER"}`);
-    assert.ok(correct, `output must follow content after a top insert: cell0(INSERTED)=${JSON.stringify(c0)} cell1(FIRST)=${JSON.stringify(c1)} cell2(SECOND)=${JSON.stringify(c2)}`);
+    console.log(
+      `[H4] FINDING: ${correct ? "CORRECT (output followed content/hash — ADR-047)" : misattributed ? "MISATTRIBUTED (index-first shift by one) — REGRESSION" : "OTHER"}`,
+    );
+    assert.ok(
+      correct,
+      `output must follow content after a top insert: cell0(INSERTED)=${JSON.stringify(c0)} cell1(FIRST)=${JSON.stringify(c1)} cell2(SECOND)=${JSON.stringify(c2)}`,
+    );
   });
 });

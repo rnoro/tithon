@@ -23,8 +23,10 @@ import { requireLiveDaemon } from "./liveDaemon";
 
 const { sock: SOCK, live } = requireLiveDaemon("v27 rich outputs");
 
-const MPL = "%matplotlib inline\nimport matplotlib.pyplot as plt\nplt.plot([0,1,2],[0,1,4])\nplt.show()";
-const TQDM = "from tqdm import tqdm\nimport sys\nfor i in tqdm(range(20), file=sys.stderr):\n    pass";
+const MPL =
+  "%matplotlib inline\nimport matplotlib.pyplot as plt\nplt.plot([0,1,2],[0,1,4])\nplt.show()";
+const TQDM =
+  "from tqdm import tqdm\nimport sys\nfor i in tqdm(range(20), file=sys.stderr):\n    pass";
 const TQDM_NB = "from tqdm.notebook import tqdm as tnb\nfor i in tnb(range(5)):\n    pass";
 
 function terminal(status: string): boolean {
@@ -46,7 +48,11 @@ describe.skipIf(!live)("rich outputs over a real daemon (v27)", () => {
   beforeAll(async () => {
     driver = new SessionClient(SOCK, "file:///w/rich.py");
     await driver.attach(0);
-    for (const [key, code] of [["mpl", MPL], ["tqdm", TQDM], ["nb", TQDM_NB]] as const) {
+    for (const [key, code] of [
+      ["mpl", MPL],
+      ["tqdm", TQDM],
+      ["nb", TQDM_NB],
+    ] as const) {
       ids[key] = await driver.execute(code, {
         uri: "file:///w/rich.py",
         range: { start: 0, end: 0 },

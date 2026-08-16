@@ -63,14 +63,20 @@ async function resolvePython(cfg: vscode.WorkspaceConfiguration): Promise<string
           const resolved = await api.environments.resolveEnvironment(envPath);
           const exe = resolved?.executable?.uri?.fsPath ?? resolved?.path;
           if (exe) return exe;
-        } catch { /* fall through to the raw path */ }
+        } catch {
+          /* fall through to the raw path */
+        }
         return envPath.path;
       }
       const det = api?.settings?.getExecutionDetails?.();
       if (det?.execCommand?.length) return det.execCommand.join(" ");
     }
-  } catch { /* Python extension absent or API shape changed */ }
-  const def = (vscode.workspace.getConfiguration("python").get<string>("defaultInterpreterPath", "") || "").trim();
+  } catch {
+    /* Python extension absent or API shape changed */
+  }
+  const def = (
+    vscode.workspace.getConfiguration("python").get<string>("defaultInterpreterPath", "") || ""
+  ).trim();
   if (def && def !== "python") return def;
   return undefined;
 }
@@ -98,7 +104,10 @@ export async function ensureDaemon(sockPath: string): Promise<void> {
   if (!cfg.get<boolean>("autoStartDaemon", true)) {
     throw new Error(`Tithon daemon is not running at ${sockPath} (tithon.autoStartDaemon is off).`);
   }
-  if (!inFlight) inFlight = startAny(sockPath, cfg).finally(() => { inFlight = null; });
+  if (!inFlight)
+    inFlight = startAny(sockPath, cfg).finally(() => {
+      inFlight = null;
+    });
   await inFlight;
 }
 
@@ -122,8 +131,9 @@ async function startAny(sockPath: string, cfg: vscode.WorkspaceConfiguration): P
   const tail = readTail(logPath);
   throw new Error(
     `Could not start the Tithon daemon. Tried: ${tried.join(", ")}.\n` +
-    `Set "tithon.daemonCommand" to your tithon path (e.g. /path/to/venv/bin/tithon ` +
-    `or "<python> -m tithon").` + (tail ? `\nLast daemon output:\n${tail}` : ""),
+      `Set "tithon.daemonCommand" to your tithon path (e.g. /path/to/venv/bin/tithon ` +
+      `or "<python> -m tithon").` +
+      (tail ? `\nLast daemon output:\n${tail}` : ""),
   );
 }
 
@@ -145,15 +155,19 @@ function tryStart(
     }
     const child = spawn(cmdline, {
       cwd,
-      shell: true,        // resolve `tithon` / `python` via PATH, allow `-m` forms
-      detached: true,     // outlive this extension host (survives reconnects)
+      shell: true, // resolve `tithon` / `python` via PATH, allow `-m` forms
+      detached: true, // outlive this extension host (survives reconnects)
       stdio: ["ignore", out, out],
       env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
     });
     child.unref();
     const dead = { yes: false };
-    child.once("error", () => { dead.yes = true; });
-    child.once("exit", () => { dead.yes = true; }); // shell exits 127 if not found
+    child.once("error", () => {
+      dead.yes = true;
+    });
+    child.once("exit", () => {
+      dead.yes = true;
+    }); // shell exits 127 if not found
 
     const deadline = Date.now() + 8000;
     (async () => {
@@ -184,7 +198,11 @@ export async function waitForDaemonStop(sockPath: string, timeoutMs = 15000): Pr
   }
 }
 
-export interface PyEnv { path: string; version?: string; label?: string }
+export interface PyEnv {
+  path: string;
+  version?: string;
+  label?: string;
+}
 
 /** Discovered Python interpreters from the Python extension (for the picker). */
 export async function listPythonEnvironments(): Promise<PyEnv[]> {
@@ -198,8 +216,11 @@ export async function listPythonEnvironments(): Promise<PyEnv[]> {
     for (const e of known) {
       const path: string | undefined = e?.executable?.uri?.fsPath ?? e?.path;
       if (!path) continue;
-      const v = e?.version ? `${e.version.major}.${e.version.minor}.${e.version.micro ?? ""}` : undefined;
-      const label: string | undefined = e?.environment?.name || e?.environment?.folderUri?.fsPath || undefined;
+      const v = e?.version
+        ? `${e.version.major}.${e.version.minor}.${e.version.micro ?? ""}`
+        : undefined;
+      const label: string | undefined =
+        e?.environment?.name || e?.environment?.folderUri?.fsPath || undefined;
       out.push({ path, version: v, label });
     }
   } catch {

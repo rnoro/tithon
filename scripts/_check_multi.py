@@ -109,14 +109,18 @@ def check_comm_shape(evs: list[dict], who: str) -> int:
     """
     comm = comm_events(evs)
     if not comm:
-        die(f"{who}: no comm/widget events at all — the widget fixture did not run "
-            f"(ipywidgets missing, or the cell failed), so nothing here was verified")
+        die(
+            f"{who}: no comm/widget events at all — the widget fixture did not run "
+            f"(ipywidgets missing, or the cell failed), so nothing here was verified"
+        )
     for e in comm:
         if e.get("kind") != "widget":
-            die(f"{who}: comm frame seq {e.get('seq')} arrived as kind={e.get('kind')!r}, "
+            die(
+                f"{who}: comm frame seq {e.get('seq')} arrived as kind={e.get('kind')!r}, "
                 f"expected 'widget' — live broadcast and replay disagree on the wire "
                 f"shape, and a client only mirrors widgets from kind=='widget': "
-                f"{json.dumps(e)[:220]}")
+                f"{json.dumps(e)[:220]}"
+            )
     return len(comm)
 
 
@@ -144,8 +148,12 @@ def main() -> int:
     ap.add_argument("--marker-a", required=True)
     ap.add_argument("--marker-b", required=True)
     ap.add_argument("--marker-late", required=True)
-    ap.add_argument("--widget-value", type=int, required=True,
-                    help="value the late cell sets on the widget; must survive replay")
+    ap.add_argument(
+        "--widget-value",
+        type=int,
+        required=True,
+        help="value the late cell sets on the widget; must survive replay",
+    )
     args = ap.parse_args()
 
     fa, fb, fr = load(args.a), load(args.b), load(args.replay)
@@ -161,7 +169,7 @@ def main() -> int:
 
     ca, cb = sync_seq(fa, "client A"), sync_seq(fb, "client B")
     cut = max(ca, cb)
-    end = ea[-1]["seq"]          # A stopped on its last `done`
+    end = ea[-1]["seq"]  # A stopped on its last `done`
     if end <= cut:
         die(f"client A received nothing after the attach cutoff (sync={ca}/{cb}, last={end})")
 
@@ -171,15 +179,21 @@ def main() -> int:
     if len(wa) != len(wb):
         sa = [e["seq"] for e in wa]
         sb = [e["seq"] for e in wb]
-        die(f"clients disagree on the event set in ({cut},{end}]: "
+        die(
+            f"clients disagree on the event set in ({cut},{end}]: "
             f"A has {len(wa)} {sa}, B has {len(wb)} {sb}; "
-            f"A-only={sorted(set(sa) - set(sb))} B-only={sorted(set(sb) - set(sa))}")
+            f"A-only={sorted(set(sa) - set(sb))} B-only={sorted(set(sb) - set(sa))}"
+        )
     for x, y in zip(wa, wb):
         if x != y:
-            die(f"clients disagree on event seq {x.get('seq')}/{y.get('seq')}: "
-                f"A={json.dumps(x)[:200]} B={json.dumps(y)[:200]}")
-    print(f"v50: clients agree on {len(wa)} events in seq ({cut},{end}] "
-          f"(identical seq/kind/payload/order)")
+            die(
+                f"clients disagree on event seq {x.get('seq')}/{y.get('seq')}: "
+                f"A={json.dumps(x)[:200]} B={json.dumps(y)[:200]}"
+            )
+    print(
+        f"v50: clients agree on {len(wa)} events in seq ({cut},{end}] "
+        f"(identical seq/kind/payload/order)"
+    )
 
     # -- C. cross-client delivery ---------------------------------------------
     # Each marker is printed by a cell submitted over the OTHER client's socket
@@ -187,14 +201,20 @@ def main() -> int:
     for who, evs in (("A", wa), ("B", wb)):
         for marker in (args.marker_a, args.marker_b):
             if not has_marker(evs, marker):
-                die(f"client {who} never received {marker} — "
-                    f"a run submitted on one connection did not reach the other client")
+                die(
+                    f"client {who} never received {marker} — "
+                    f"a run submitted on one connection did not reach the other client"
+                )
     # ...and they are two DISTINCT executions, not one echoed twice.
-    ids = {e["exec_id"] for e in wa if has_marker([e], args.marker_a) or has_marker([e], args.marker_b)}
+    ids = {
+        e["exec_id"] for e in wa if has_marker([e], args.marker_a) or has_marker([e], args.marker_b)
+    }
     if len(ids) != 2:
         die(f"expected the two markers to belong to 2 distinct executions, got {sorted(ids)}")
-    print(f"v50: both clients received both submissions ({args.marker_a}, {args.marker_b}) "
-          f"across executions {sorted(ids)}")
+    print(
+        f"v50: both clients received both submissions ({args.marker_a}, {args.marker_b}) "
+        f"across executions {sorted(ids)}"
+    )
 
     # ...including the widget's comm traffic, in the one wire shape a client mirrors.
     n_comm = check_comm_shape(wa, "client A (shared window)")
@@ -205,8 +225,10 @@ def main() -> int:
     if has_marker(ea, args.marker_late):
         die(f"client A received {args.marker_late}, which ran after it disconnected")
     if not has_marker(eb, args.marker_late):
-        die(f"the surviving client B never received {args.marker_late} — "
-            f"a client disconnecting broke the remaining client's stream")
+        die(
+            f"the surviving client B never received {args.marker_late} — "
+            f"a client disconnecting broke the remaining client's stream"
+        )
     print(f"v50: after A disconnected, B still received {args.marker_late}")
 
     # -- E. delta replay == live stream ---------------------------------------
@@ -228,29 +250,43 @@ def main() -> int:
     kinds = {(e["payload"] or {}).get("msg_type") for e in comm_events(rr)}
     for want in ("comm_open", "comm_msg"):
         if want not in kinds:
-            die(f"replay from seq {args.since} carries no {want} (saw {sorted(kinds)}) — "
-                f"the widget fixture did not put both comm shapes after K")
+            die(
+                f"replay from seq {args.since} carries no {want} (saw {sorted(kinds)}) — "
+                f"the widget fixture did not put both comm shapes after K"
+            )
     # ...and the replayed frames must fold to the same widget state a live client
     # folded, not merely be structurally equal.
     live_models, replay_models = comm_state(rb), comm_state(rr)
     if live_models != replay_models:
-        die(f"widget state folded from the replay differs from the live fold: "
-            f"live={json.dumps(live_models)[:200]} replay={json.dumps(replay_models)[:200]}")
+        die(
+            f"widget state folded from the replay differs from the live fold: "
+            f"live={json.dumps(live_models)[:200]} replay={json.dumps(replay_models)[:200]}"
+        )
     if not any(m.get("value") == args.widget_value for m in replay_models.values()):
-        die(f"no replayed widget reached value {args.widget_value}; folded state was "
-            f"{json.dumps(replay_models)[:200]}")
-    print(f"v50: replayed comm folds to the same widget state as live "
-          f"({len(replay_models)} model(s), value {args.widget_value} present)")
+        die(
+            f"no replayed widget reached value {args.widget_value}; folded state was "
+            f"{json.dumps(replay_models)[:200]}"
+        )
+    print(
+        f"v50: replayed comm folds to the same widget state as live "
+        f"({len(replay_models)} model(s), value {args.widget_value} present)"
+    )
     if len(rb) != len(rr):
-        die(f"replay from seq {args.since} disagrees with the live stream: "
+        die(
+            f"replay from seq {args.since} disagrees with the live stream: "
             f"live {len(rb)} events {[e['seq'] for e in rb]}, "
-            f"replay {len(rr)} events {[e['seq'] for e in rr]}")
+            f"replay {len(rr)} events {[e['seq'] for e in rr]}"
+        )
     for x, y in zip(rb, rr):
         if x != y:
-            die(f"replay differs from live at seq {x.get('seq')}: "
-                f"live={json.dumps(x)[:200]} replay={json.dumps(y)[:200]}")
-    print(f"v50: delta replay from seq {args.since} reproduces the live stream "
-          f"exactly ({len(rr)} events)")
+            die(
+                f"replay differs from live at seq {x.get('seq')}: "
+                f"live={json.dumps(x)[:200]} replay={json.dumps(y)[:200]}"
+            )
+    print(
+        f"v50: delta replay from seq {args.since} reproduces the live stream "
+        f"exactly ({len(rr)} events)"
+    )
 
     # The replay window contains the post-disconnect widget update, so it pins the
     # shape a RESUMING client is handed — the path where the live frame is rebuilt

@@ -141,8 +141,8 @@ export class SessionClient {
   /** id -> resolved bytes (null = fetched but not found). Dedupes refetches and,
    *  being byte-budgeted LRU, bounds memory when a live plot yields a new image
    *  every step (each a distinct sha → otherwise cached forever). */
-  private readonly artifactCache = new ArtifactCache<ArtifactBytes | null>(
-    (v) => (v ? v.bytes.length : 0),
+  private readonly artifactCache = new ArtifactCache<ArtifactBytes | null>((v) =>
+    v ? v.bytes.length : 0,
   );
   /** One reused connection for ALL artifact fetches (no socket-per-image churn,
    *  which melted the tunnel for a per-step matplotlib plot). Requests are
@@ -246,19 +246,31 @@ export class SessionClient {
         this.pendingArtifacts.clear();
         for (const p of pending) p.reject();
       };
-      ws.once("open", () => { this.artifactWs = ws; resolve(ws); });
+      ws.once("open", () => {
+        this.artifactWs = ws;
+        resolve(ws);
+      });
       ws.on("message", (raw: WebSocket.RawData) => {
         let m: any;
-        try { m = JSON.parse(raw.toString()); } catch { return; }
+        try {
+          m = JSON.parse(raw.toString());
+        } catch {
+          return;
+        }
         if (m.op !== "artifact") return;
         const p = this.pendingArtifacts.get(m.req_id);
         if (!p) return;
         this.pendingArtifacts.delete(m.req_id);
-        p.resolve(m.found && typeof m.data_b64 === "string"
-          ? { mime: m.mime, bytes: new Uint8Array(Buffer.from(m.data_b64, "base64")) }
-          : null);
+        p.resolve(
+          m.found && typeof m.data_b64 === "string"
+            ? { mime: m.mime, bytes: new Uint8Array(Buffer.from(m.data_b64, "base64")) }
+            : null,
+        );
       });
-      ws.once("error", (err) => { reject(err); drop(); });
+      ws.once("error", (err) => {
+        reject(err);
+        drop();
+      });
       ws.once("close", drop);
     });
     return this.artifactWsReady;
@@ -267,18 +279,26 @@ export class SessionClient {
   getArtifact(id: string): Promise<ArtifactBytes | null> {
     const cached = this.artifactCache.get(id);
     if (cached !== undefined) return Promise.resolve(cached);
-    return this.artifactChannel().then(
-      (ws) => new Promise<ArtifactBytes | null>((resolve, reject) => {
-        const reqId = ++this.artifactReqSeq;
-        this.pendingArtifacts.set(reqId, { resolve, reject });
-        ws.send(JSON.stringify(
-          { op: "get_artifact", artifact_id: id, session: this.session, req_id: reqId }));
-      }).then((v) => {
-        // A daemon reply (bytes, or null = genuinely not found / GC'd) is cached.
-        this.artifactCache.set(id, v);
-        return v;
-      }),
-    ).catch(() => null); // channel open/drop failure: return null, do NOT cache (retry later)
+    return this.artifactChannel()
+      .then((ws) =>
+        new Promise<ArtifactBytes | null>((resolve, reject) => {
+          const reqId = ++this.artifactReqSeq;
+          this.pendingArtifacts.set(reqId, { resolve, reject });
+          ws.send(
+            JSON.stringify({
+              op: "get_artifact",
+              artifact_id: id,
+              session: this.session,
+              req_id: reqId,
+            }),
+          );
+        }).then((v) => {
+          // A daemon reply (bytes, or null = genuinely not found / GC'd) is cached.
+          this.artifactCache.set(id, v);
+          return v;
+        }),
+      )
+      .catch(() => null); // channel open/drop failure: return null, do NOT cache (retry later)
   }
 
   /** Prefetch many artifacts (e.g. all images in a snapshot) before rendering. */
@@ -317,8 +337,14 @@ export class SessionClient {
       this.ws = ws;
       let synced = false;
       ws.once("open", () => {
-        ws.send(JSON.stringify(
-          { op: "attach", last_seen_seq: lastSeenSeq, session: this.session, workdir: this.workdir }));
+        ws.send(
+          JSON.stringify({
+            op: "attach",
+            last_seen_seq: lastSeenSeq,
+            session: this.session,
+            workdir: this.workdir,
+          }),
+        );
       });
       ws.on("message", (raw: WebSocket.RawData) => {
         let m: any;
@@ -412,7 +438,12 @@ export class SessionClient {
     }
   }
 
-  private applyEvent(ev: { seq: number; exec_id: string | null; kind: string; payload: any }): void {
+  private applyEvent(ev: {
+    seq: number;
+    exec_id: string | null;
+    kind: string;
+    payload: any;
+  }): void {
     // Stdin bridge: track the pending input()/getpass() prompt (these carry an
     // exec_id but need no ExecState — they gate a separate UI affordance).
     if (ev.kind === "input_request") {
@@ -468,7 +499,8 @@ export class SessionClient {
       // the daemon's `_handle_comm` feeding `_folds[exec_id]`; an event with no
       // exec_id has no fold to claim against, exactly as on the daemon side.
       // The widget payload's `{comm_id, data}` shape is what the fold reads.
-      if (ev.exec_id) this.ensureExec(ev.exec_id, ev.seq).fold.apply(ev.payload?.msg_type, ev.payload);
+      if (ev.exec_id)
+        this.ensureExec(ev.exec_id, ev.seq).fold.apply(ev.payload?.msg_type, ev.payload);
       return;
     }
     if (!ev.exec_id) return;
@@ -503,7 +535,9 @@ export class SessionClient {
    * model is present by the time it's shown. Mirrors the daemon's WidgetMirror.
    */
   private applyWidgetEvent(
-    payload: { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] } | undefined,
+    payload:
+      | { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] }
+      | undefined,
   ): void {
     const commId = payload?.comm_id;
     if (!commId) return;
@@ -593,8 +627,15 @@ export class SessionClient {
         }
       };
       ws.once("open", () =>
-        ws.send(JSON.stringify(
-          { op: "attach", last_seen_seq: -1, session: this.session, workdir: this.workdir })));
+        ws.send(
+          JSON.stringify({
+            op: "attach",
+            last_seen_seq: -1,
+            session: this.session,
+            workdir: this.workdir,
+          }),
+        ),
+      );
       ws.on("message", onMsg);
       ws.once("error", reject);
     });

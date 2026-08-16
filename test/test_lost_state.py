@@ -10,6 +10,7 @@ a wrong warning in production:
 * letting a non-generation event (``interrupted``) shadow the provenance record
   loses the deliberate/involuntary distinction entirely.
 """
+
 from test_clear import make_session
 
 
@@ -26,7 +27,9 @@ def test_never_started_cell_is_not_an_execution(tmp_path):
     assert s.journal.has_started_since(0) is False
     s.journal.orphan_inflight()
     assert _status(s, "e1") == "orphaned"
-    assert s.journal.has_started_since(0) is False, "a cell that never ran was counted as lost state"
+    assert s.journal.has_started_since(0) is False, (
+        "a cell that never ran was counted as lost state"
+    )
 
 
 def test_started_cell_counts_and_the_window_is_anchored(tmp_path):
@@ -36,8 +39,9 @@ def test_started_cell_counts_and_the_window_is_anchored(tmp_path):
     s.journal.mark_started("e1")
     s.journal.append_message("e1", "tithon.started", {"ts": 0.0})
     assert s.journal.has_started_since(0) is True
-    reset = s.journal.append_message(None, "tithon.kernel",
-                                     {"status": "restarted", "deliberate": True})
+    reset = s.journal.append_message(
+        None, "tithon.kernel", {"status": "restarted", "deliberate": True}
+    )
     # Nothing has run since the deliberate reset -> the user lost nothing new.
     assert s.journal.has_started_since(reset) is False
     s.journal.insert_execution("e2", 2, "y = 2")
@@ -56,8 +60,9 @@ def test_interrupt_does_not_shadow_the_generation_record(tmp_path):
     replacement reads as pardoned).
     """
     s = make_session(tmp_path)
-    seq = s.journal.append_message(None, "tithon.kernel",
-                                   {"status": "restarted", "deliberate": True})
+    seq = s.journal.append_message(
+        None, "tithon.kernel", {"status": "restarted", "deliberate": True}
+    )
     for _ in range(3):
         s.journal.append_message(None, "tithon.kernel", {"status": "interrupted"})
     last = s.journal.last_kernel_event()

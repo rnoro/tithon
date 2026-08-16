@@ -41,7 +41,9 @@ function plainText(cell: vscode.NotebookCell): string {
 }
 
 async function waitFor(
-  pred: () => boolean | Promise<boolean>, ms: number, label: string,
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
 ): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
@@ -60,7 +62,11 @@ function findTithonExtension(): vscode.Extension<unknown> {
   return ext;
 }
 
-interface SeedEntry { execId: string; mappedCell: number | undefined; status: string }
+interface SeedEntry {
+  execId: string;
+  mappedCell: number | undefined;
+  status: string;
+}
 
 describe("Tithon does not re-seed a session the user closed (v63)", () => {
   it("withholds the seed on open, then restores it on request", async () => {
@@ -91,19 +97,24 @@ describe("Tithon does not re-seed a session the user closed (v63)", () => {
       cell_hash: computeCellHash(srcCode),
       index: cellIdx,
     });
-    await waitFor(async () => {
-      const probe = new SessionClient(undefined, uri.toString(), workdir);
-      await probe.attach(0);
-      const done = probe.executions().some((e) => e.status === "done");
-      probe.close();
-      return done;
-    }, 60000, "the driven execution to finish");
+    await waitFor(
+      async () => {
+        const probe = new SessionClient(undefined, uri.toString(), workdir);
+        await probe.attach(0);
+        const done = probe.executions().some((e) => e.status === "done");
+        probe.close();
+        return done;
+      },
+      60000,
+      "the driven execution to finish",
+    );
     driver.close();
 
     // 2. The user is finished and terminates the kernel themselves.
     const daemon = new DaemonClient();
     assert.strictEqual(
-      await daemon.killKernel(uri.toString()), true,
+      await daemon.killKernel(uri.toString()),
+      true,
       "kill_kernel must report it terminated a live kernel",
     );
 
@@ -114,27 +125,33 @@ describe("Tithon does not re-seed a session the user closed (v63)", () => {
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     assert.strictEqual(nb.cellAt(cellIdx).outputs.length, 0, "a reopened cell starts empty");
     await vscode.commands.executeCommand("notebook.selectKernel", {
-      id: "tithon", extension: ext.id,
+      id: "tithon",
+      extension: ext.id,
     });
     // Long enough for the attach, the snapshot and the seed that must not happen.
     await new Promise((r) => setTimeout(r, 6000));
 
     // The extension saw the history and mapped it to this cell...
     const trace = (await vscode.commands.executeCommand("tithon._seedTrace")) as SeedEntry[];
-    assert.ok(trace?.length >= 1, `extension must still see the history; trace=${JSON.stringify(trace)}`);
+    assert.ok(
+      trace?.length >= 1,
+      `extension must still see the history; trace=${JSON.stringify(trace)}`,
+    );
     const mine = trace.find((t) => t.mappedCell === cellIdx);
     assert.ok(mine, `history must map to cell ${cellIdx}; trace=${JSON.stringify(trace)}`);
     assert.strictEqual(mine!.status, "done", "the withheld execution is a finished one");
     // ...and deliberately put nothing in it. THIS is the seed skip.
     assert.strictEqual(
-      nb.cellAt(cellIdx).outputs.length, 0,
+      nb.cellAt(cellIdx).outputs.length,
+      0,
       `a closed session must not re-seed; cell shows ${JSON.stringify(plainText(nb.cellAt(cellIdx)))}`,
     );
 
     // 4. Withheld, not deleted: asking brings it back.
     await vscode.commands.executeCommand("tithon.restoreOutputs");
     await waitFor(
-      () => plainText(nb.cellAt(cellIdx)).includes("CLOSEDRUN"), 30000,
+      () => plainText(nb.cellAt(cellIdx)).includes("CLOSEDRUN"),
+      30000,
       "the restore command to put the withheld output back",
     );
 

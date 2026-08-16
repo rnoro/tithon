@@ -9,6 +9,7 @@ Verifies end-to-end against a REAL kernel that:
 
 Run:  .venv/bin/python scripts/_check_input_bridge.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -74,7 +75,8 @@ async def main() -> int:
         assert s._pending_input is None, "no prompt should be pending for allow_stdin=False"
         err = "".join(
             (o.get("ename", "") + o.get("evalue", ""))
-            for o in _outputs(s, e3) if o.get("output_type") == "error"
+            for o in _outputs(s, e3)
+            if o.get("output_type") == "error"
         )
         assert "stdin" in err.lower() or "StdinNotImplemented" in err, err
         print(f"[no-stdin] errored fast: {err.strip()[:80]!r}")

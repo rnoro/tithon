@@ -69,9 +69,14 @@ describe("SessionClient — closed_by_user", () => {
       ws.on("message", (raw) => {
         const m = JSON.parse(raw.toString());
         if (m.op === "attach") {
-          ws.send(JSON.stringify({
-            op: "snapshot", max_seq: 1, executions: [EXEC], closed_by_user: closed,
-          }));
+          ws.send(
+            JSON.stringify({
+              op: "snapshot",
+              max_seq: 1,
+              executions: [EXEC],
+              closed_by_user: closed,
+            }),
+          );
           ws.send(JSON.stringify({ op: "sync", seq: 1 }));
         }
       });

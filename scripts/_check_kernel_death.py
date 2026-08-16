@@ -14,6 +14,7 @@ Verifies end-to-end against a REAL kernel that:
 
 Run:  .venv/bin/python scripts/_check_kernel_death.py
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,7 +40,8 @@ def _outputs(s: Session, exec_id: str):
 def _error_text(s: Session, exec_id: str) -> str:
     return "".join(
         (o.get("ename", "") + o.get("evalue", ""))
-        for o in _outputs(s, exec_id) if o.get("output_type") == "error"
+        for o in _outputs(s, exec_id)
+        if o.get("output_type") == "error"
     )
 
 
@@ -57,6 +59,7 @@ async def check_startup_failure() -> None:
     Simulated by spawning then immediately killing the kernel before it is ready.
     """
     import time
+
     tmp = Path(tempfile.mkdtemp(prefix="tithon-startfail-"))
     work = tmp / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -91,8 +94,11 @@ async def main() -> int:
     try:
         # (1) a cell that kills the kernel must reach terminal error, not wedge.
         e1 = s.submit('import os; print("about to die", flush=True); os._exit(0)\n')
-        await _wait(lambda: _status(s, e1) in ("done", "error"), timeout=15,
-                    label="killing cell reaches terminal status (no wedge)")
+        await _wait(
+            lambda: _status(s, e1) in ("done", "error"),
+            timeout=15,
+            label="killing cell reaches terminal status (no wedge)",
+        )
         assert _status(s, e1) == "error", f"expected error, got {_status(s, e1)!r}"
         err = _error_text(s, e1)
         assert "KernelDied" in err, f"expected KernelDied, got {err!r}"
@@ -101,8 +107,11 @@ async def main() -> int:
 
         # (2) a cell after the death also fails fast (does not execute into the void).
         e2 = s.submit('print("should not run")\n')
-        await _wait(lambda: _status(s, e2) in ("done", "error"), timeout=10,
-                    label="post-death cell fails fast")
+        await _wait(
+            lambda: _status(s, e2) in ("done", "error"),
+            timeout=10,
+            label="post-death cell fails fast",
+        )
         assert _status(s, e2) == "error", f"post-death cell should error, got {_status(s, e2)!r}"
         assert "KernelDied" in _error_text(s, e2)
         print("[death] post-death cell failed fast (no wedge)")
@@ -118,7 +127,9 @@ async def main() -> int:
         assert "ALIVE_AGAIN 42" in text, f"expected output after restart, got {text!r}"
         print(f"[restart] fresh kernel runs: {text.strip()!r}")
 
-        print("PASS: startup-failure fast-fail + kernel death errors the cell (no wedge) + restart recovers")
+        print(
+            "PASS: startup-failure fast-fail + kernel death errors the cell (no wedge) + restart recovers"
+        )
         return 0
     finally:
         await s.stop(kill_kernel=True)

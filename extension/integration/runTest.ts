@@ -41,9 +41,7 @@ async function main(): Promise<void> {
   // Python language servers (ruff/ty) live, so it passes TITHON_LSP_EXT_DIR — a
   // curated extensions dir — and we drop --disable-extensions for that run.
   const lspExtDir = process.env.TITHON_LSP_EXT_DIR;
-  const extArgs = lspExtDir
-    ? [`--extensions-dir=${lspExtDir}`]
-    : ["--disable-extensions"];
+  const extArgs = lspExtDir ? [`--extensions-dir=${lspExtDir}`] : ["--disable-extensions"];
 
   // Default "stable" matches @vscode/test-electron's own default (latest stable),
   // so the existing bundles are unchanged; the insiders bundle overrides it.

@@ -57,7 +57,10 @@ describe("Tithon live output sync inside a real VSCode host (v10)", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // selectKernel auto-starts live sync (ensureLive). Attach is snapshot+delta
     // from seq 0, so the driver's output below is mirrored even if it lands
@@ -66,7 +69,9 @@ describe("Tithon live output sync inside a real VSCode host (v10)", () => {
     // Drive the long cell from a separate client (the "kernel" runs on the daemon).
     const text = readFileSync(fixture, "utf8");
     const cells = parse(text).cells;
-    const loopIdx = cells.findIndex((c) => c.kind === "code" && c.body.some((l) => l.text.includes("range(20)")));
+    const loopIdx = cells.findIndex(
+      (c) => c.kind === "code" && c.body.some((l) => l.text.includes("range(20)")),
+    );
     assert.ok(loopIdx >= 0, "fixture must have the loop cell");
     const src = cellSource(cells[loopIdx]);
 
@@ -83,10 +88,14 @@ describe("Tithon live output sync inside a real VSCode host (v10)", () => {
       const t = stdoutText(nb.cellAt(loopIdx));
       return t ? t.split("\n").filter((x) => x.length > 0).length : 0;
     };
-    await waitFor(() => {
-      seen.add(lineCount());
-      return stdoutText(nb.cellAt(loopIdx)).includes("19");
-    }, 30000, "loop to finish streaming");
+    await waitFor(
+      () => {
+        seen.add(lineCount());
+        return stdoutText(nb.cellAt(loopIdx)).includes("19");
+      },
+      30000,
+      "loop to finish streaming",
+    );
 
     const finalText = stdoutText(nb.cellAt(loopIdx));
     // final correctness: all 20 lines present

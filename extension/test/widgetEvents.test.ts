@@ -32,7 +32,10 @@ const COMM = "c-1";
 
 function commOpen(seq: number, execId: string | null) {
   return {
-    op: "event", seq, exec_id: execId, kind: "widget",
+    op: "event",
+    seq,
+    exec_id: execId,
+    kind: "widget",
     payload: {
       msg_type: "comm_open",
       comm_id: COMM,
@@ -52,7 +55,10 @@ function commOpen(seq: number, execId: string | null) {
 
 function commUpdate(seq: number, execId: string | null, value: number) {
   return {
-    op: "event", seq, exec_id: execId, kind: "widget",
+    op: "event",
+    seq,
+    exec_id: execId,
+    kind: "widget",
     payload: {
       msg_type: "comm_msg",
       comm_id: COMM,
@@ -95,7 +101,10 @@ describe("SessionClient — widget comm events reach the mirror", () => {
 
   it("applies a widget event whose open ALSO has no exec_id", async () => {
     const c = await drive([commOpen(1, null), commUpdate(2, null, 4)]);
-    expect(c.widgets()?.state?.[COMM], "the model was created without an execution row").toBeTruthy();
+    expect(
+      c.widgets()?.state?.[COMM],
+      "the model was created without an execution row",
+    ).toBeTruthy();
     expect(valueOf(c)).toBe(4);
   });
 
@@ -108,10 +117,16 @@ describe("SessionClient — widget comm events reach the mirror", () => {
     const c = await drive([
       commOpen(1, "e1"),
       {
-        op: "event", seq: 2, exec_id: "e1", kind: "output",
+        op: "event",
+        seq: 2,
+        exec_id: "e1",
+        kind: "output",
         payload: {
           msg_type: "comm_msg",
-          content: { comm_id: COMM, data: { method: "update", state: { value: 9 }, buffer_paths: [] } },
+          content: {
+            comm_id: COMM,
+            data: { method: "update", state: { value: 9 }, buffer_paths: [] },
+          },
         },
       },
     ]);

@@ -71,10 +71,14 @@ describe("SessionClient — disconnect surfacing for reconnect", () => {
   });
 
   it("attach rejects with the daemon's message on an error op (ADR-060)", async () => {
-    const d = await fakeErrorDaemon("kernel process exited during startup — is ipykernel installed?");
+    const d = await fakeErrorDaemon(
+      "kernel process exited during startup — is ipykernel installed?",
+    );
     const c = new SessionClient(d.sock, "s");
     let msg = "";
-    await c.attach(0).catch((e: Error) => { msg = e.message; });
+    await c.attach(0).catch((e: Error) => {
+      msg = e.message;
+    });
     expect(msg).toContain("ipykernel");
     c.close();
     await d.close();

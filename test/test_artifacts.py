@@ -3,6 +3,7 @@ references (SPEC.md, ADR-008). Pins the matplotlib path: a display_data
 ``image/png`` is decoded to a file + sha-deduped, the journal keeps only a
 ``$tithon_artifact`` ref, and the bytes are recoverable by artifact id (what
 ``Session.read_artifact`` / the ``get_artifact`` op serve to a client)."""
+
 import base64
 
 from tithon.artifacts import ArtifactStore
@@ -22,8 +23,12 @@ def _store(tmp_path):
 
 def test_image_extracted_to_file_and_ref(tmp_path):
     j, store = _store(tmp_path)
-    content = {"data": {"image/png": base64.b64encode(PNG).decode(),
-                        "text/plain": "<Figure size 640x480 with 1 Axes>"}}
+    content = {
+        "data": {
+            "image/png": base64.b64encode(PNG).decode(),
+            "text/plain": "<Figure size 640x480 with 1 Axes>",
+        }
+    }
     refs = store.extract("e1", content)
 
     assert len(refs) == 1
@@ -59,8 +64,10 @@ def test_identical_image_is_deduped(tmp_path):
     [id2] = store.extract("e2", c2)
     # Same sha -> same artifact id and the same on-disk file (no duplicate write).
     assert id1 == id2
-    assert (c1["data"]["image/png"]["$tithon_artifact"]["rel_path"]
-            == c2["data"]["image/png"]["$tithon_artifact"]["rel_path"])
+    assert (
+        c1["data"]["image/png"]["$tithon_artifact"]["rel_path"]
+        == c2["data"]["image/png"]["$tithon_artifact"]["rel_path"]
+    )
     pngs = list((tmp_path / ".tithon" / "outputs").glob("*.png"))
     assert len(pngs) == 1
 
@@ -105,8 +112,12 @@ def test_sweep_keeps_only_referenced(tmp_path):
 
 def test_non_image_data_untouched(tmp_path):
     j, store = _store(tmp_path)
-    content = {"data": {"text/plain": "hello",
-                        "application/vnd.jupyter.widget-view+json": {"model_id": "abc"}}}
+    content = {
+        "data": {
+            "text/plain": "hello",
+            "application/vnd.jupyter.widget-view+json": {"model_id": "abc"},
+        }
+    }
     refs = store.extract("e1", content)
     assert refs == []
     assert content["data"]["text/plain"] == "hello"

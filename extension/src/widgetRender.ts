@@ -58,10 +58,7 @@ export function createManager(): HTMLManager {
 }
 
 /** Find the first model id in the snapshot whose model_name matches. */
-export function findModelId(
-  snapshot: WidgetStateSnapshot,
-  modelName: string,
-): string | undefined {
+export function findModelId(snapshot: WidgetStateSnapshot, modelName: string): string | undefined {
   for (const [id, entry] of Object.entries(snapshot.state)) {
     if (entry.model_name === modelName) return id;
   }

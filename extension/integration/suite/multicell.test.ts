@@ -54,7 +54,9 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     const docCells = docCellsFromParsed(parsed);
     console.log("\n[v12] FILE has", parsed.length, "parsed cells");
     docCells.forEach((dc) => {
-      console.log(`[v12]  file cell #${dc.index} hash=${dc.cellHash.slice(0, 12)} src=${JSON.stringify(cellSource(parsed[dc.index]))}`);
+      console.log(
+        `[v12]  file cell #${dc.index} hash=${dc.cellHash.slice(0, 12)} src=${JSON.stringify(cellSource(parsed[dc.index]))}`,
+      );
     });
 
     const nb = await vscode.workspace.openNotebookDocument(uri);
@@ -63,19 +65,28 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     console.log("[v12] NOTEBOOK has", nb.cellCount, "cells");
     for (let i = 0; i < nb.cellCount; i++) {
       const t = nb.cellAt(i).document.getText();
-      console.log(`[v12]  nb cell #${i} hash=${computeCellHash(t).slice(0, 12)} text=${JSON.stringify(t)}`);
+      console.log(
+        `[v12]  nb cell #${i} hash=${computeCellHash(t).slice(0, 12)} text=${JSON.stringify(t)}`,
+      );
     }
 
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
     // Run ALL cells via the native command — no manual live step.
     await vscode.commands.executeCommand("notebook.execute");
 
     // Let outputs settle.
-    await waitFor(() => {
-      let withOutput = 0;
-      for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) withOutput++;
-      return withOutput >= nb.cellCount;
-    }, 20000, "all cells to show output");
+    await waitFor(
+      () => {
+        let withOutput = 0;
+        for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) withOutput++;
+        return withOutput >= nb.cellCount;
+      },
+      20000,
+      "all cells to show output",
+    );
 
     console.log("[v12] RESULT per-cell output:");
     for (let i = 0; i < nb.cellCount; i++) {
@@ -85,7 +96,10 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     // Each cell prints CELL<index>; assert it lands on the right cell.
     for (let i = 0; i < nb.cellCount; i++) {
       const t = cellText(nb.cellAt(i));
-      assert.ok(t.includes(`CELL${i}`), `cell #${i} should contain CELL${i} but had ${JSON.stringify(t)}`);
+      assert.ok(
+        t.includes(`CELL${i}`),
+        `cell #${i} should contain CELL${i} but had ${JSON.stringify(t)}`,
+      );
     }
   });
 });

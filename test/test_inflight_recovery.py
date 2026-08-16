@@ -1,4 +1,5 @@
 """Durable routing and conservative terminal state for daemon-crash recovery."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,22 +18,17 @@ def test_prepare_reattach_keeps_only_accepted_running_execution(tmp_path):
     s = make_session(tmp_path)
     s.journal.insert_execution("accepted", 1, "work()", allow_stdin=True)
     s.journal.mark_started("accepted", "msg-accepted")
-    s.journal.append_message(
-        "accepted", "status", {"execution_state": "busy"}
-    )
+    s.journal.append_message("accepted", "status", {"execution_state": "busy"})
     s.journal.insert_execution("sent-only", 2, "maybe()")
     s.journal.mark_started("sent-only", "msg-sent")
     s.journal.insert_execution("queued", 3, "later()")
 
-    assert s.journal.prepare_reattach() == [
-        ("accepted", "msg-accepted", True)
-    ]
+    assert s.journal.prepare_reattach() == [("accepted", "msg-accepted", True)]
     assert _status(s, "accepted") == "running"
     assert _status(s, "sent-only") == "orphaned"
     assert _status(s, "queued") == "orphaned"
     done = s.journal.db.execute(
-        "SELECT exec_id, content_json FROM messages WHERE msg_type='tithon.done'"
-        " ORDER BY msg_seq"
+        "SELECT exec_id, content_json FROM messages WHERE msg_type='tithon.done' ORDER BY msg_seq"
     ).fetchall()
     assert [row[0] for row in done] == ["sent-only", "queued"]
     assert all(json.loads(row[1])["status"] == "orphaned" for row in done)
@@ -118,16 +114,20 @@ def test_control_probe_status_is_null_exec_and_never_folds(tmp_path):
     async def main():
         idle = asyncio.Event()
         s._control_fences["probe"] = {"busy": False, "idle": idle}
-        s._handle_iopub({
-            "header": {"msg_type": "status"},
-            "parent_header": {"msg_id": "probe"},
-            "content": {"execution_state": "busy"},
-        })
-        s._handle_iopub({
-            "header": {"msg_type": "status"},
-            "parent_header": {"msg_id": "probe"},
-            "content": {"execution_state": "idle"},
-        })
+        s._handle_iopub(
+            {
+                "header": {"msg_type": "status"},
+                "parent_header": {"msg_id": "probe"},
+                "content": {"execution_state": "busy"},
+            }
+        )
+        s._handle_iopub(
+            {
+                "header": {"msg_type": "status"},
+                "parent_header": {"msg_id": "probe"},
+                "content": {"execution_state": "idle"},
+            }
+        )
         assert idle.is_set()
 
     asyncio.run(main())
@@ -141,7 +141,7 @@ def test_exec_worker_waits_for_recovery_gate_before_dequeue(tmp_path):
 
     async def main():
         s._recovery_gate = asyncio.Event()
-        s._queue.put_nowait(([('e1', 'pass')], False, False))
+        s._queue.put_nowait(([("e1", "pass")], False, False))
         called = asyncio.Event()
 
         async def fake_run(*_args):

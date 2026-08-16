@@ -11,6 +11,7 @@ The two exec-id columns must stay distinct: ``messages.exec_id`` is the TRUE
 EMITTER (``orphan_inflight`` freezes an execution's duration at its last row's
 ``ts``), ``messages.target_exec`` is the routing target.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -78,8 +79,8 @@ def test_cross_cell_update_lands_in_the_creating_execution(tmp_path):
     feed(s, "a", "display_data", display("v0", "d"))
     feed(s, "b", "update_display_data", display("v1", "d"))
 
-    assert texts(fold_a) == ["v1"]   # A's one output, updated in place
-    assert texts(fold_b) == []       # B gains nothing — it only emitted the update
+    assert texts(fold_a) == ["v1"]  # A's one output, updated in place
+    assert texts(fold_b) == []  # B gains nothing — it only emitted the update
 
 
 def test_update_is_journaled_under_the_emitter_with_a_routing_target(tmp_path):
@@ -120,9 +121,7 @@ def test_live_broadcast_and_delta_replay_agree_on_the_owner(tmp_path):
     updates = [e for e in live if e["payload"].get("msg_type") == "update_display_data"]
     assert [e["exec_id"] for e in updates] == ["a"]
 
-    replay = [
-        (exec_id, msg_type) for _seq, exec_id, msg_type, _c in s.journal.messages_after(0)
-    ]
+    replay = [(exec_id, msg_type) for _seq, exec_id, msg_type, _c in s.journal.messages_after(0)]
     assert replay == [("a", "display_data"), ("a", "update_display_data")]
 
 
@@ -142,16 +141,14 @@ def test_replay_pins_the_owner_a_later_recreation_would_have_stolen(tmp_path):
 
     feed(s, "a", "display_data", display("v0", "d"))
     feed(s, "b", "update_display_data", display("v1", "d"))
-    feed(s, "c", "display_data", display("w0", "d"))     # steals ownership of "d"
+    feed(s, "c", "display_data", display("w0", "d"))  # steals ownership of "d"
     feed(s, "b", "update_display_data", display("w1", "d"))
 
     assert s._display_registry["d"] == "c"
-    replay = [
-        (exec_id, msg_type) for _seq, exec_id, msg_type, _c in s.journal.messages_after(0)
-    ]
+    replay = [(exec_id, msg_type) for _seq, exec_id, msg_type, _c in s.journal.messages_after(0)]
     assert replay == [
         ("a", "display_data"),
-        ("a", "update_display_data"),   # resolved when it happened, not now
+        ("a", "update_display_data"),  # resolved when it happened, not now
         ("c", "display_data"),
         ("c", "update_display_data"),
     ]

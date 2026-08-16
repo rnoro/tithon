@@ -46,7 +46,9 @@ describe("PROBE: markdown cell save round-trip", () => {
 
     await vscode.workspace.save(nb.uri);
     const after = readFileSync(uri.fsPath).toString("latin1");
-    console.log(`[MDSAVE] control byte-exact=${after === original}; before=${JSON.stringify(original)} after=${JSON.stringify(after)}`);
+    console.log(
+      `[MDSAVE] control byte-exact=${after === original}; before=${JSON.stringify(original)} after=${JSON.stringify(after)}`,
+    );
     assert.strictEqual(after, original, "unedited markdown save must be byte-exact");
   });
 

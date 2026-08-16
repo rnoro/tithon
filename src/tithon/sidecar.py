@@ -18,6 +18,7 @@ The journal stays the source of truth for the machine that ran the cells; the
 sidecar is a projection of it, imported only where there is no local history to
 project (see ``import_into``).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -175,6 +176,7 @@ def _importable(doc: dict) -> list[dict]:
     narrowed to numbers or None — SQLite would happily store a string in a REAL
     column, and the client multiplies those timings to render a duration.
     """
+
     def number(value, cast):
         try:
             return None if value is None or isinstance(value, bool) else cast(value)
@@ -246,8 +248,11 @@ def import_into(journal: Journal, workdir: Path, doc: dict) -> int:
             except OSError:
                 continue
             journal.register_artifact(
-                ref["artifact_id"], ref.get("sha256") or ref["artifact_id"],
-                ref.get("mime") or "image/png", rel_path, size,
+                ref["artifact_id"],
+                ref.get("sha256") or ref["artifact_id"],
+                ref.get("mime") or "image/png",
+                rel_path,
+                size,
             )
         count += 1
     return count

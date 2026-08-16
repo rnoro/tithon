@@ -6,6 +6,7 @@ projects the folds onto ``<project>/.tithon/cells/<relpath>.json`` so that cloni
 the project restores the outputs, with images left as files in
 ``.tithon/outputs/`` rather than embedded.
 """
+
 import base64
 import json
 import shutil
@@ -33,8 +34,13 @@ def make_session(tmp_path, project: str = "projA", name: str = "train.py") -> Se
 
 def seed_exec(s: Session, exec_id: str = "e1", status: str = "done") -> ExecutionFold:
     """One finished execution with a stream + an image, via the daemon's own path."""
-    s.journal.insert_execution(exec_id, 1, "print('x'); display(fig)", cell_hash="h1",
-                               origin={"uri": s.session_id, "range": None, "index": 0})
+    s.journal.insert_execution(
+        exec_id,
+        1,
+        "print('x'); display(fig)",
+        cell_hash="h1",
+        origin={"uri": s.session_id, "range": None, "index": 0},
+    )
     fold = ExecutionFold()
     fold.apply("stream", {"name": "stdout", "text": "hello\n"})
     s.journal.append_message(exec_id, "stream", {"name": "stdout", "text": "hello\n"})
@@ -49,6 +55,7 @@ def seed_exec(s: Session, exec_id: str = "e1", status: str = "done") -> Executio
 
 
 # -- path derivation --------------------------------------------------------
+
 
 def test_sidecar_path_mirrors_the_source_tree(tmp_path):
     root = tmp_path / "proj"
@@ -67,6 +74,7 @@ def test_sessions_with_nothing_to_share_have_no_sidecar(tmp_path):
 
 
 # -- publishing -------------------------------------------------------------
+
 
 def test_publish_writes_refs_not_base64(tmp_path):
     s = make_session(tmp_path)
@@ -126,12 +134,14 @@ def test_clear_reaches_the_shared_snapshot(tmp_path):
 
 # -- cloning ----------------------------------------------------------------
 
+
 def clone(tmp_path, s: Session) -> Session:
     """Copy the project the way `git clone` would: the tracked `.tithon/` travels,
     the machine-local journal (in TITHON_HOME) does not."""
     shutil.copytree(tmp_path / "projA", tmp_path / "projB")
-    dst = Session(f"file://{tmp_path / 'projB'}/train.py", tmp_path / "sess-projB",
-                  tmp_path / "projB")
+    dst = Session(
+        f"file://{tmp_path / 'projB'}/train.py", tmp_path / "sess-projB", tmp_path / "projB"
+    )
     dst._import_sidecar()
     dst._rebuild_folds()
     return dst
@@ -148,7 +158,7 @@ def test_clone_restores_outputs_and_keeps_the_image(tmp_path):
     execs = dst._execution_snapshots()
     assert [e["exec_id"] for e in execs] == ["e1"]
     assert execs[0]["status"] == "done"
-    assert execs[0]["cell_hash"] == "h1"          # so output->cell mapping works
+    assert execs[0]["cell_hash"] == "h1"  # so output->cell mapping works
     assert execs[0]["origin"]["index"] == 0
     kinds = [o["output_type"] for o in execs[0]["outputs"]]
     assert kinds == ["stream", "display_data"]
@@ -192,8 +202,8 @@ def test_local_runs_are_never_overwritten_by_a_pull(tmp_path):
     seed_exec(src)
     src._publish_sidecar()
     dst = clone(tmp_path, src)
-    seed_exec(dst, "e2")            # the reader runs a cell of their own
-    dst.journal.set_meta("sidecar_sha", "stale")   # as if a newer sidecar arrived
+    seed_exec(dst, "e2")  # the reader runs a cell of their own
+    dst.journal.set_meta("sidecar_sha", "stale")  # as if a newer sidecar arrived
 
     dst._import_sidecar()
 
@@ -210,9 +220,9 @@ def test_a_newer_sidecar_replaces_imported_rows(tmp_path):
     dst = clone(tmp_path, src)
     assert dst.journal.count_executions() == 1
 
-    seed_exec(src, "e2")            # the author runs another cell and pushes
+    seed_exec(src, "e2")  # the author runs another cell and pushes
     src._publish_sidecar()
-    shutil.copyfile(src.sidecar_path, dst.sidecar_path)   # git pull
+    shutil.copyfile(src.sidecar_path, dst.sidecar_path)  # git pull
     dst._import_sidecar()
     dst._rebuild_folds()
 
@@ -227,7 +237,7 @@ def test_reimport_is_skipped_when_the_file_has_not_changed(tmp_path):
     dst = clone(tmp_path, src)
     before = dst.journal.get_meta("sidecar_sha")
 
-    dst._import_sidecar()   # a second start with the same file on disk
+    dst._import_sidecar()  # a second start with the same file on disk
 
     assert before is not None
     assert dst.journal.get_meta("sidecar_sha") == before
@@ -288,8 +298,10 @@ def test_publishing_records_its_own_bytes(tmp_path):
 
 # -- robustness -------------------------------------------------------------
 
-@pytest.mark.parametrize("body", ["", "not json", '{"version": 999, "executions": []}',
-                                  '{"version": 1}', '[]'])
+
+@pytest.mark.parametrize(
+    "body", ["", "not json", '{"version": 999, "executions": []}', '{"version": 1}', "[]"]
+)
 def test_unusable_sidecars_are_ignored_not_fatal(tmp_path, body):
     """A sidecar is an optimization over an empty notebook, never a reason to
     fail an open — including one written by a future client."""
@@ -298,7 +310,7 @@ def test_unusable_sidecars_are_ignored_not_fatal(tmp_path, body):
     s.sidecar_path.write_text(body)
 
     assert sidecar.read(s.sidecar_path) is None
-    s._import_sidecar()     # must not raise
+    s._import_sidecar()  # must not raise
     assert s.journal.count_executions() == 0
 
 
@@ -313,8 +325,9 @@ def test_missing_image_degrades_instead_of_failing(tmp_path):
     for png in (tmp_path / "projB" / ".tithon" / "outputs").iterdir():
         png.unlink()
 
-    dst = Session(f"file://{tmp_path / 'projB'}/train.py", tmp_path / "sess-projB",
-                  tmp_path / "projB")
+    dst = Session(
+        f"file://{tmp_path / 'projB'}/train.py", tmp_path / "sess-projB", tmp_path / "projB"
+    )
     dst._import_sidecar()
     dst._rebuild_folds()
 
@@ -329,28 +342,44 @@ def test_import_renumbers_ids_so_the_next_local_run_cannot_collide(tmp_path):
     `_exec_counter` at 1 and make the reader's next execution collide on the
     primary key."""
     s = make_session(tmp_path)
-    doc = {"version": sidecar.SIDECAR_VERSION, "session": s.session_id, "executions": [
-        {"exec_id": "e2", "seq": 1, "code": "a", "status": "done", "outputs": []},
-        {"exec_id": "e9", "seq": 7, "code": "b", "status": "error", "outputs": []},
-    ]}
+    doc = {
+        "version": sidecar.SIDECAR_VERSION,
+        "session": s.session_id,
+        "executions": [
+            {"exec_id": "e2", "seq": 1, "code": "a", "status": "done", "outputs": []},
+            {"exec_id": "e9", "seq": 7, "code": "b", "status": "error", "outputs": []},
+        ],
+    }
 
     assert sidecar.import_into(s.journal, s.artifacts.workdir, doc) == 2
 
     rows = s.journal.executions()
-    assert [r[0] for r in rows] == ["e1", "e2"]        # renumbered in seq order
+    assert [r[0] for r in rows] == ["e1", "e2"]  # renumbered in seq order
     assert [r[1] for r in rows] == [1, 2]
-    assert [r[2] for r in rows] == ["a", "b"]          # order preserved
-    assert s.journal.max_exec_seq() == 2               # what seeds _exec_counter
+    assert [r[2] for r in rows] == ["a", "b"]  # order preserved
+    assert s.journal.max_exec_seq() == 2  # what seeds _exec_counter
 
 
 def test_import_narrows_timings_to_numbers(tmp_path):
     """SQLite stores whatever it is given in a REAL column, and the client
     multiplies these to render a cell's duration."""
     s = make_session(tmp_path)
-    doc = {"version": sidecar.SIDECAR_VERSION, "session": s.session_id, "executions": [
-        {"exec_id": "e1", "seq": 1, "code": "a", "status": "done", "outputs": [],
-         "started_at": "yesterday", "finished_at": True, "execution_count": "many"},
-    ]}
+    doc = {
+        "version": sidecar.SIDECAR_VERSION,
+        "session": s.session_id,
+        "executions": [
+            {
+                "exec_id": "e1",
+                "seq": 1,
+                "code": "a",
+                "status": "done",
+                "outputs": [],
+                "started_at": "yesterday",
+                "finished_at": True,
+                "execution_count": "many",
+            },
+        ],
+    }
 
     sidecar.import_into(s.journal, s.artifacts.workdir, doc)
 
@@ -359,14 +388,17 @@ def test_import_narrows_timings_to_numbers(tmp_path):
     assert ex["execution_count"] is None
 
 
-@pytest.mark.parametrize("bad", [
-    {"exec_id": "e1", "seq": 1, "status": "running", "outputs": []},   # not terminal
-    {"exec_id": "e1", "seq": 1, "status": "queued", "outputs": []},
-    {"exec_id": "e1", "seq": 1, "status": "skipped", "outputs": []},
-    {"exec_id": "e1", "seq": 1, "status": "done", "outputs": "nope"},  # wrong shape
-    {"exec_id": "e1", "seq": "x", "status": "done", "outputs": []},    # unorderable
-    "not even a row",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"exec_id": "e1", "seq": 1, "status": "running", "outputs": []},  # not terminal
+        {"exec_id": "e1", "seq": 1, "status": "queued", "outputs": []},
+        {"exec_id": "e1", "seq": 1, "status": "skipped", "outputs": []},
+        {"exec_id": "e1", "seq": 1, "status": "done", "outputs": "nope"},  # wrong shape
+        {"exec_id": "e1", "seq": "x", "status": "done", "outputs": []},  # unorderable
+        "not even a row",
+    ],
+)
 def test_unshareable_rows_are_dropped_not_coerced(tmp_path, bad):
     s = make_session(tmp_path)
     doc = {"version": sidecar.SIDECAR_VERSION, "session": s.session_id, "executions": [bad]}
@@ -401,7 +433,7 @@ def test_import_rebinds_executions_to_the_readers_own_file(tmp_path):
 
     origin = dst._execution_snapshots()[0]["origin"]
     assert origin["uri"] == dst.session_id != src.session_id
-    assert origin["index"] == 0                 # position still carried
+    assert origin["index"] == 0  # position still carried
 
 
 def test_the_shared_file_carries_no_continuation_state(tmp_path):
@@ -429,7 +461,7 @@ def test_a_failed_publish_does_not_reclaim_the_images_it_still_names(tmp_path, m
 
     assert s.clear_outputs(["e1"]) == 1
 
-    assert png.exists()                                   # not reclaimed
+    assert png.exists()  # not reclaimed
     assert s.journal.find_artifact(aid) is not None
     # ...and the stale shared file still names it, so it stays renderable.
     doc = json.loads(s.sidecar_path.read_text())
@@ -447,7 +479,7 @@ def test_publish_survives_an_unwritable_project(tmp_path, monkeypatch):
         raise OSError(30, "Read-only file system")
 
     monkeypatch.setattr(sidecar, "write", boom)
-    s._publish_sidecar()          # must not raise
+    s._publish_sidecar()  # must not raise
 
     assert not s.sidecar_path.exists()
     # No sha recorded, so a later writable publish is not mistaken for done.
@@ -456,11 +488,25 @@ def test_publish_survives_an_unwritable_project(tmp_path, monkeypatch):
 
 # -- fold hydration ---------------------------------------------------------
 
+
 def test_hydrate_round_trips_outputs_and_artifact_ids(tmp_path):
     fold = ExecutionFold()
     fold.apply("stream", {"name": "stdout", "text": "a\nb"})
-    fold.apply("display_data", {"data": {"image/png": {"$tithon_artifact": {
-        "artifact_id": "sha1", "mime": "image/png", "rel_path": "p.png", "sha256": "sha1"}}}})
+    fold.apply(
+        "display_data",
+        {
+            "data": {
+                "image/png": {
+                    "$tithon_artifact": {
+                        "artifact_id": "sha1",
+                        "mime": "image/png",
+                        "rel_path": "p.png",
+                        "sha256": "sha1",
+                    }
+                }
+            }
+        },
+    )
 
     again = ExecutionFold.hydrate(fold.outputs(), fold.fold_state())
 
@@ -476,16 +522,23 @@ def test_hydrate_preserves_widget_area_ownership(tmp_path):
     the import calls hydrate WITHOUT it, which is sound only because an imported
     execution is terminal and never folds again."""
     fold = ExecutionFold()
-    fold.apply("comm_open", {"comm_id": "w1", "target_name": "jupyter.widget",
-                             "data": {"state": {}}})
+    fold.apply(
+        "comm_open", {"comm_id": "w1", "target_name": "jupyter.widget", "data": {"state": {}}}
+    )
     fold.apply("stream", {"name": "stdout", "text": "cell-level\n"})
-    state = {"owners": [None, "w1"], "claims": [], "pending_clear": False,
-             "pending_owner_clear": []}
-    outputs = [{"output_type": "stream", "name": "stdout", "text": "cell-level\n"},
-               {"output_type": "display_data", "data": {}, "metadata": {}}]
+    state = {
+        "owners": [None, "w1"],
+        "claims": [],
+        "pending_clear": False,
+        "pending_owner_clear": [],
+    }
+    outputs = [
+        {"output_type": "stream", "name": "stdout", "text": "cell-level\n"},
+        {"output_type": "display_data", "data": {}, "metadata": {}},
+    ]
 
     again = ExecutionFold.hydrate(outputs, state)
-    again.apply("clear_output", {"wait": False})   # arrives under no claim -> cell scope
+    again.apply("clear_output", {"wait": False})  # arrives under no claim -> cell scope
 
     assert again.outputs() == []
     scoped = ExecutionFold.hydrate(outputs, state)

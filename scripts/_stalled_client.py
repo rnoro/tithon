@@ -6,6 +6,7 @@ clients and stay responsive — and bound its own memory (the undelivered data
 sits in the OS socket buffer, not daemon memory; the per-subscriber queue and
 write buffer are capped, see daemon backpressure + test_backpressure.py).
 """
+
 import asyncio
 import json
 import sys

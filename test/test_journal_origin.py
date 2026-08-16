@@ -5,6 +5,7 @@ journal's cell_hash; these tests pin that the journal actually stores and
 returns origin {uri, range} and cell_hash, and that an old journal missing the
 column is migrated additively.
 """
+
 import hashlib
 import sqlite3
 
@@ -16,14 +17,28 @@ def test_insert_and_read_origin_and_cell_hash(tmp_path):
     code = "x = 1\nprint(x)\n"
     chash = hashlib.sha256(code.encode("utf-8")).hexdigest()
     j.insert_execution(
-        "e1", 1, code,
+        "e1",
+        1,
+        code,
         origin={"uri": "file:///w/a.py", "range": {"start": 4, "end": 6}, "index": 2},
         cell_hash=chash,
     )
     rows = j.executions()
     assert len(rows) == 1
-    (exec_id, seq, c, status, ec, folded, uri, cell_range, cell_hash, cell_index,
-     started_at, finished_at) = rows[0]
+    (
+        exec_id,
+        seq,
+        c,
+        status,
+        ec,
+        folded,
+        uri,
+        cell_range,
+        cell_hash,
+        cell_index,
+        started_at,
+        finished_at,
+    ) = rows[0]
     assert exec_id == "e1" and c == code and status == "queued"
     assert uri == "file:///w/a.py"
     assert cell_range == '{"start": 4, "end": 6}'
@@ -34,8 +49,9 @@ def test_insert_and_read_origin_and_cell_hash(tmp_path):
 def test_origin_optional(tmp_path):
     j = Journal(tmp_path / "journal.db")
     j.insert_execution("e1", 1, "y = 2\n")  # no origin / cell_hash (e.g. legacy path)
-    (_eid, _seq, _c, _st, _ec, _f, uri, cell_range, cell_hash, cell_index,
-     _sa, _fa) = j.executions()[0]
+    (_eid, _seq, _c, _st, _ec, _f, uri, cell_range, cell_hash, cell_index, _sa, _fa) = (
+        j.executions()[0]
+    )
     assert uri is None and cell_range is None and cell_hash is None and cell_index is None
 
 

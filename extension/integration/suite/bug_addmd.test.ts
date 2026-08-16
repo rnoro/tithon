@@ -65,8 +65,14 @@ describe("PROBE: a newly added markdown cell saves as commented jupytext", () =>
 
     const cells = parse(onDisk).cells;
     const mdCell = cells[cells.length - 1];
-    console.log(`[ADDMD] FINDING: lastCellKind=${mdCell.kind} commented=${onDisk.includes("# Hello")} -> ${mdCell.kind === "markdown" && onDisk.includes("# Hello") ? "OK (jupytext-standard)" : "BUG"}`);
+    console.log(
+      `[ADDMD] FINDING: lastCellKind=${mdCell.kind} commented=${onDisk.includes("# Hello")} -> ${mdCell.kind === "markdown" && onDisk.includes("# Hello") ? "OK (jupytext-standard)" : "BUG"}`,
+    );
     assert.strictEqual(mdCell.kind, "markdown", "reparses to a markdown cell");
-    assert.strictEqual(uncommentMarkdown(cellSource(mdCell)), "Hello **world**\n\nsecond line\n", "display text round-trips");
+    assert.strictEqual(
+      uncommentMarkdown(cellSource(mdCell)),
+      "Hello **world**\n\nsecond line\n",
+      "display text round-trips",
+    );
   });
 });

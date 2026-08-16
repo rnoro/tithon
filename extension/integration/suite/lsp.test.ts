@@ -55,9 +55,7 @@ const textTabsFor = (uri: vscode.Uri): vscode.Tab[] =>
   vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
     .filter(
-      (t) =>
-        t.input instanceof vscode.TabInputText &&
-        t.input.uri.toString() === uri.toString(),
+      (t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString(),
     );
 
 const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
@@ -79,8 +77,7 @@ function positionOf(doc: vscode.TextDocument, needle: string): vscode.Position {
 }
 
 type DefResult = vscode.Location | vscode.LocationLink;
-const defUri = (d: DefResult): vscode.Uri =>
-  "targetUri" in d ? d.targetUri : d.uri;
+const defUri = (d: DefResult): vscode.Uri => ("targetUri" in d ? d.targetUri : d.uri);
 
 describe("Tithon Cell View keeps ruff/ty LSP alive in cells (v32)", () => {
   it("single representation, ruff lints the cell, go-to-def opens text", async () => {
@@ -94,7 +91,9 @@ describe("Tithon Cell View keeps ruff/ty LSP alive in cells (v32)", () => {
     const ty = vscode.extensions.getExtension("astral-sh.ty");
     assert.ok(ruff, "ruff extension must be installed in the test host");
     // eslint-disable-next-line no-console
-    console.log(`v32: lsp ext present ruff=${!!ruff}(active=${ruff?.isActive}) ty=${!!ty}(active=${ty?.isActive})`);
+    console.log(
+      `v32: lsp ext present ruff=${!!ruff}(active=${ruff?.isActive}) ty=${!!ty}(active=${ty?.isActive})`,
+    );
     // Activation event is onLanguage:python; under the test host it does not
     // always fire on its own, so activate explicitly and let the servers start.
     await ruff?.activate();
@@ -118,13 +117,19 @@ describe("Tithon Cell View keeps ruff/ty LSP alive in cells (v32)", () => {
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
 
     // (A) single representation: no plain-text editor for this URI may coexist.
-    await waitFor(() => textTabsFor(uri).length === 0, 15000,
-      "all coexisting text editors closed once Cell View is open");
+    await waitFor(
+      () => textTabsFor(uri).length === 0,
+      15000,
+      "all coexisting text editors closed once Cell View is open",
+    );
     // eslint-disable-next-line no-console
     console.log(`v32: text tabs after Cell View = ${textTabsFor(uri).length}`);
 
     // Drive the activity that triggered the user's didChange storm.
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await vscode.commands.executeCommand("notebook.cell.execute", {
       ranges: [new vscode.NotebookRange(0, 1)],
       document: uri,
@@ -135,31 +140,48 @@ describe("Tithon Cell View keeps ruff/ty LSP alive in cells (v32)", () => {
     // (B) ruff must publish its F401 (unused `import os`) on the cell.
     // eslint-disable-next-line no-console
     console.log(`v32: cell0 uri = ${cell0.uri.toString()}`);
-    await waitFor(() => ruffDiagnostics(cell0.uri).length > 0, 40000,
-      "ruff published a diagnostic on the cell (LSP alive in Cell View)");
+    await waitFor(
+      () => ruffDiagnostics(cell0.uri).length > 0,
+      40000,
+      "ruff published a diagnostic on the cell (LSP alive in Cell View)",
+    );
     const diags = ruffDiagnostics(cell0.uri);
     // eslint-disable-next-line no-console
-    console.log(`v32: ruff diagnostics on cell0 = ${JSON.stringify(diags.map((d) => `${d.code}:${d.message}`))}`);
+    console.log(
+      `v32: ruff diagnostics on cell0 = ${JSON.stringify(diags.map((d) => `${d.code}:${d.message}`))}`,
+    );
     assert.ok(diags.length > 0, "ruff diagnostic present on the cell");
 
     // (C) go-to-definition FROM the cell resolves into helper.py.
     const pos = positionOf(cell0, "my_helper(");
     let defs: DefResult[] = [];
-    await waitFor(async () => {
-      defs = (await vscode.commands.executeCommand<DefResult[]>(
-        "vscode.executeDefinitionProvider", cell0.uri, pos,
-      )) ?? [];
-      return defs.some((d) => defUri(d).fsPath === helperUri.fsPath);
-    }, 40000, "go-to-definition resolved into helper.py from a cell");
+    await waitFor(
+      async () => {
+        defs =
+          (await vscode.commands.executeCommand<DefResult[]>(
+            "vscode.executeDefinitionProvider",
+            cell0.uri,
+            pos,
+          )) ?? [];
+        return defs.some((d) => defUri(d).fsPath === helperUri.fsPath);
+      },
+      40000,
+      "go-to-definition resolved into helper.py from a cell",
+    );
     // eslint-disable-next-line no-console
     console.log(`v32: definitions = ${JSON.stringify(defs.map((d) => defUri(d).fsPath))}`);
-    assert.ok(defs.some((d) => defUri(d).fsPath === helperUri.fsPath),
-      "definition points into helper.py");
+    assert.ok(
+      defs.some((d) => defUri(d).fsPath === helperUri.fsPath),
+      "definition points into helper.py",
+    );
 
     // (D) opening that target opens helper.py as a TEXT editor (not a notebook).
     await vscode.commands.executeCommand("vscode.open", helperUri);
-    await waitFor(() => textTabsFor(helperUri).length > 0, 15000,
-      "helper.py opened as a text editor via go-to-definition");
+    await waitFor(
+      () => textTabsFor(helperUri).length > 0,
+      15000,
+      "helper.py opened as a text editor via go-to-definition",
+    );
     assert.ok(!notebookFor(helperUri), "go-to target must NOT open as a tithon-py notebook");
     // eslint-disable-next-line no-console
     console.log(`v32: helper.py text tabs = ${textTabsFor(helperUri).length}`);

@@ -6,6 +6,7 @@ kernel — batch submission (journal + queued broadcast + single queue item) and
 the terminal "skipped" transition. End-to-end stop-on-error (the worker running a
 real kernel) is covered by the real-kernel check + the bug_runall_error probe.
 """
+
 from __future__ import annotations
 
 import json
@@ -53,7 +54,7 @@ def test_submit_single_is_a_one_cell_batch_without_stop_on_error(tmp_path):
     s = make_session(tmp_path)
     e = s.submit("x = 1\n", origin={"index": 0})
     batch, stop_on_error, allow_stdin = s._queue.get_nowait()
-    assert stop_on_error is False          # nothing to stop in a 1-cell run
+    assert stop_on_error is False  # nothing to stop in a 1-cell run
     assert allow_stdin is False
     assert [eid for eid, _ in batch] == [e]
 
@@ -61,8 +62,7 @@ def test_submit_single_is_a_one_cell_batch_without_stop_on_error(tmp_path):
 def test_mark_skipped_is_terminal_and_broadcasts(tmp_path):
     s = make_session(tmp_path)
     ids = s.submit_batch(
-        [{"code": "ok\n", "origin": {"index": 0}},
-         {"code": "rest\n", "origin": {"index": 1}}],
+        [{"code": "ok\n", "origin": {"index": 0}}, {"code": "rest\n", "origin": {"index": 1}}],
         stop_on_error=True,
     )
     # Capture broadcasts on the live fold/journal path.
@@ -84,9 +84,7 @@ def test_mark_skipped_is_terminal_and_broadcasts(tmp_path):
 
 def test_orphan_inflight_leaves_skipped_untouched(tmp_path):
     s = make_session(tmp_path)
-    ids = s.submit_batch(
-        [{"code": "ok\n"}, {"code": "rest\n"}], stop_on_error=True
-    )
+    ids = s.submit_batch([{"code": "ok\n"}, {"code": "rest\n"}], stop_on_error=True)
     s._mark_skipped(ids[1])
     s.journal.orphan_inflight()  # a restart must NOT re-animate a skipped cell
     assert _status(s, ids[1]) == "skipped"

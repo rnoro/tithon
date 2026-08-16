@@ -228,9 +228,16 @@ export function widgetPayload(
 // `children` array this function walks — an interactive widget captured inside
 // an Output widget would slip past this guard undetected.
 const DISPLAY_ONLY_MODELS = new Set([
-  "HTMLModel", "HTMLMathModel", "LabelModel", "ImageModel",
-  "IntProgressModel", "FloatProgressModel",
-  "BoxModel", "HBoxModel", "VBoxModel", "GridBoxModel",
+  "HTMLModel",
+  "HTMLMathModel",
+  "LabelModel",
+  "ImageModel",
+  "IntProgressModel",
+  "FloatProgressModel",
+  "BoxModel",
+  "HBoxModel",
+  "VBoxModel",
+  "GridBoxModel",
 ]);
 
 /**
@@ -310,7 +317,11 @@ export function widgetFallbackText(
     const name = String(s._model_name ?? "");
     if (name.includes("Progress") && typeof s.value === "number") {
       if (!progress) progress = { value: s.value, max: typeof s.max === "number" ? s.max : 0 };
-    } else if ((name === "HTMLModel" || name === "LabelModel") && typeof s.value === "string" && s.value) {
+    } else if (
+      (name === "HTMLModel" || name === "LabelModel") &&
+      typeof s.value === "string" &&
+      s.value
+    ) {
       labels.push(unescapeHtml(s.value).trim());
     }
     const ch = s.children;

@@ -53,11 +53,13 @@ function ext(): vscode.Extension<unknown> {
 function assertGateArmedByDefault(): void {
   const cfg = vscode.workspace.getConfiguration("tithon");
   assert.strictEqual(
-    cfg.inspect<boolean>("confirmDestructiveActions")?.defaultValue, true,
+    cfg.inspect<boolean>("confirmDestructiveActions")?.defaultValue,
+    true,
     "package.json must default tithon.confirmDestructiveActions to true",
   );
   assert.strictEqual(
-    cfg.get<boolean>("confirmDestructiveActions"), true,
+    cfg.get<boolean>("confirmDestructiveActions"),
+    true,
     "the effective value must be true in this host",
   );
 }
@@ -73,23 +75,31 @@ async function assertModalsUnanswerable(): Promise<void> {
   let refused = "";
   try {
     await vscode.window.showWarningMessage("tithon-probe", { modal: true }, "Yes");
-    assert.fail("a modal dialog was answerable in the test host — this suite cannot prove anything");
+    assert.fail(
+      "a modal dialog was answerable in the test host — this suite cannot prove anything",
+    );
   } catch (err) {
     refused = String(err);
   }
-  assert.ok(/refused to show dialog/i.test(refused),
-    `expected the test host to refuse modal dialogs, got: ${refused}`);
+  assert.ok(
+    /refused to show dialog/i.test(refused),
+    `expected the test host to refuse modal dialogs, got: ${refused}`,
+  );
 
   // The same call WITHOUT `modal` is routed to the notification service instead
   // and is not refused — so the rejection above is evidence of modality, not of
   // a host that blocks messages wholesale. Never awaited to completion: a
   // button-less notification only settles when someone dismisses it.
   let notifyRejected: string | undefined;
-  void Promise.resolve(vscode.window.showWarningMessage("tithon-probe")).then(
-    undefined, (e) => { notifyRejected = String(e); });
+  void Promise.resolve(vscode.window.showWarningMessage("tithon-probe")).then(undefined, (e) => {
+    notifyRejected = String(e);
+  });
   await new Promise((r) => setTimeout(r, 1000));
-  assert.strictEqual(notifyRejected, undefined,
-    `a non-modal message was refused too, so the refusal proves nothing: ${notifyRejected}`);
+  assert.strictEqual(
+    notifyRejected,
+    undefined,
+    `a non-modal message was refused too, so the refusal proves nothing: ${notifyRejected}`,
+  );
 }
 
 const TARGET = process.env.TITHON_CONFIRM_TARGET ?? "kernel";
@@ -106,14 +116,16 @@ describe("Tithon destructive-action confirmation (v65)", () => {
       await vscode.window.showNotebookDocument(nb);
       await waitFor(() => nb.cellCount >= 1, 15000, "cells");
       await vscode.commands.executeCommand("notebook.selectKernel", {
-        id: "tithon", extension: ext().id,
+        id: "tithon",
+        extension: ext().id,
       });
 
       // Run cell 0 so there is a real kernel with a real namespace to lose.
       const ed = vscode.window.activeNotebookEditor;
       if (ed) ed.selections = [new vscode.NotebookRange(0, 1)];
       await vscode.commands.executeCommand("notebook.cell.execute", {
-        ranges: [new vscode.NotebookRange(0, 1)], document: uri,
+        ranges: [new vscode.NotebookRange(0, 1)],
+        document: uri,
       });
       await waitFor(() => cellText(nb.cellAt(0)).includes("SET 42"), 30000, "set v");
 
@@ -132,14 +144,18 @@ describe("Tithon destructive-action confirmation (v65)", () => {
       // Same pid = the same Python process = the namespace the dialog promised
       // to protect is still loaded. A restart would have replaced it.
       const after = await pidOf();
-      assert.strictEqual(after, before,
-        `kernel restarted without a confirmation (${before} -> ${after})`);
+      assert.strictEqual(
+        after,
+        before,
+        `kernel restarted without a confirmation (${before} -> ${after})`,
+      );
 
       // ...and the file's live view still works, so declining did not leave the
       // session half-torn-down.
       if (ed) ed.selections = [new vscode.NotebookRange(0, 1)];
       await vscode.commands.executeCommand("notebook.cell.execute", {
-        ranges: [new vscode.NotebookRange(0, 1)], document: uri,
+        ranges: [new vscode.NotebookRange(0, 1)],
+        document: uri,
       });
       await waitFor(() => cellText(nb.cellAt(0)).includes("SET 42"), 30000, "cell still runs");
       assert.strictEqual(await pidOf(), before, "kernel changed on the follow-up run");

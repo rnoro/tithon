@@ -47,7 +47,7 @@ describe("BUG: inserting a cell above a marker-less header must not merge cells"
     // Insert a new code cell at the very top.
     const newCell = new vscode.NotebookCellData(
       vscode.NotebookCellKind.Code,
-      'INSERTED = 1',
+      "INSERTED = 1",
       "python",
     );
     const we = new vscode.WorkspaceEdit();
@@ -59,7 +59,9 @@ describe("BUG: inserting a cell above a marker-less header must not merge cells"
     const onDisk = readFileSync(uri.fsPath).toString("latin1");
     const reparsed = parse(onDisk).cells;
     console.log(`[INSERTHEADER] disk=${JSON.stringify(onDisk)}`);
-    console.log(`[INSERTHEADER] FINDING: cellsOnDisk=${reparsed.length} (want 3) -> ${reparsed.length === 3 ? "FIXED (no merge)" : "BUG (cells merged)"}`);
+    console.log(
+      `[INSERTHEADER] FINDING: cellsOnDisk=${reparsed.length} (want 3) -> ${reparsed.length === 3 ? "FIXED (no merge)" : "BUG (cells merged)"}`,
+    );
 
     assert.strictEqual(reparsed.length, 3, "all three cells must survive (no merge)");
     assert.ok(onDisk.includes("INSERTED = 1"), "inserted cell present");

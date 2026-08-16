@@ -51,7 +51,11 @@ function plainText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
@@ -94,7 +98,10 @@ describe("Tithon: dispose() cancels an in-flight flush window (v51, RISKS #15)",
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     const driver = new SessionClient(undefined, uri.toString());
     const execId = await driver.execute(srcCode, {
@@ -126,7 +133,10 @@ describe("Tithon: dispose() cancels an in-flight flush window (v51, RISKS #15)",
       }
       await new Promise((r) => setTimeout(r, 3));
     }
-    assert.ok(caughtPending, "never observed a pending flush window while the loop streamed output");
+    assert.ok(
+      caughtPending,
+      "never observed a pending flush window while the loop streamed output",
+    );
 
     // Mid-run teardown with a flush in flight — the exact scenario a real
     // close/deselect/restart produces. Exercises the SAME dispose() closure
@@ -147,13 +157,17 @@ describe("Tithon: dispose() cancels an in-flight flush window (v51, RISKS #15)",
     );
 
     // Let the kernel-side loop actually finish so cleanup below is clean.
-    await waitFor(async () => {
-      const probe = new SessionClient(undefined, uri.toString());
-      await probe.attach(0);
-      const st = probe.executions().find((e) => e.execId === execId)?.status;
-      probe.close();
-      return st === "done";
-    }, 30000, "driven execution to finish on the daemon");
+    await waitFor(
+      async () => {
+        const probe = new SessionClient(undefined, uri.toString());
+        await probe.attach(0);
+        const st = probe.executions().find((e) => e.execId === execId)?.status;
+        probe.close();
+        return st === "done";
+      },
+      30000,
+      "driven execution to finish on the daemon",
+    );
 
     driver.close();
   });

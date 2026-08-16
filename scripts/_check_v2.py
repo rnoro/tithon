@@ -1,5 +1,6 @@
 """v2 checker: snapshot < 2s, folded output is a single final progress line,
 journal preserves >= 1000 raw stream messages."""
+
 import json
 import sqlite3
 import sys

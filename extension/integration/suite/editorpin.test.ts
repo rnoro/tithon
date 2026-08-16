@@ -35,7 +35,11 @@ function ext(): vscode.Extension<unknown> {
   return e;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
@@ -51,9 +55,8 @@ async function chooseAlwaysOpenWith(
   const done = vscode.commands.executeCommand("tithon.alwaysOpenWith", arg);
   await waitFor(
     async () =>
-      (await vscode.commands.executeCommand<{ pickerOpen: boolean }>(
-        "tithon._alwaysOpenWithState",
-      )).pickerOpen,
+      (await vscode.commands.executeCommand<{ pickerOpen: boolean }>("tithon._alwaysOpenWithState"))
+        .pickerOpen,
     5000,
     "Always Open With Quick Pick opened",
   );
@@ -173,10 +176,7 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
       "resourceScheme == file && resourceExtname == .py",
       "Explorer must offer the chooser only for local .py files",
     );
-    for (const legacy of [
-      "tithon.alwaysOpenAsNotebook",
-      "tithon.forgetAlwaysOpenAsNotebook",
-    ]) {
+    for (const legacy of ["tithon.alwaysOpenAsNotebook", "tithon.forgetAlwaysOpenAsNotebook"]) {
       assert.strictEqual(
         menus.commandPalette.find((m) => m.command === legacy)?.when,
         "false",
@@ -236,9 +236,9 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
 
   it("cancelling the chooser changes neither settings nor representation", async () => {
     const beforeAssoc = workspaceAssoc();
-    const beforeDiff =
-      vscode.workspace.getConfiguration().inspect<Record<string, string>>(DIFF_ASSOC)
-        ?.workspaceValue;
+    const beforeDiff = vscode.workspace
+      .getConfiguration()
+      .inspect<Record<string, string>>(DIFF_ASSOC)?.workspaceValue;
 
     await chooseAlwaysOpenWith(target, "cancel");
 
@@ -266,7 +266,11 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
     });
     try {
       await vscode.commands.executeCommand("vscode.open", target);
-      await waitFor(() => notebookTabsFor(target).length === 1, 20000, "opened directly as a notebook");
+      await waitFor(
+        () => notebookTabsFor(target).length === 1,
+        20000,
+        "opened directly as a notebook",
+      );
       // Give a converter the time it would have needed to act, then check.
       await new Promise((r) => setTimeout(r, 1500));
       assert.strictEqual(
@@ -341,11 +345,13 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
   });
 
   it("the notebook-toolbar chooser pins Text even over a broad Notebook association", async () => {
-    await vscode.workspace.getConfiguration().update(
-      ASSOC,
-      { ...workspaceAssoc(), "*.py": "tithon-py" },
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await vscode.workspace
+      .getConfiguration()
+      .update(
+        ASSOC,
+        { ...workspaceAssoc(), "*.py": "tithon-py" },
+        vscode.ConfigurationTarget.Workspace,
+      );
 
     // The real notebook toolbar sends this action-context object, not a Uri.
     await chooseAlwaysOpenWith({ notebookEditor: { notebookUri: target } }, "text");
@@ -378,7 +384,11 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
       20000,
       "chooser switched the Cell View to text",
     );
-    assert.strictEqual(notebookTabsFor(target).length, 0, "Cell View stayed open after Text choice");
+    assert.strictEqual(
+      notebookTabsFor(target).length,
+      0,
+      "Cell View stayed open after Text choice",
+    );
 
     await closeEverything(target);
     await vscode.commands.executeCommand("vscode.open", target);
@@ -387,15 +397,17 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
       20000,
       "specifically pinned file opens as text despite broad Notebook association",
     );
-    assert.strictEqual(notebookTabsFor(target).length, 0, "specific Text choice lost to broad Notebook");
+    assert.strictEqual(
+      notebookTabsFor(target).length,
+      0,
+      "specific Text choice lost to broad Notebook",
+    );
 
     const withoutBroad = { ...workspaceAssoc() };
     delete withoutBroad["*.py"];
-    await vscode.workspace.getConfiguration().update(
-      ASSOC,
-      withoutBroad,
-      vscode.ConfigurationTarget.Workspace,
-    );
+    await vscode.workspace
+      .getConfiguration()
+      .update(ASSOC, withoutBroad, vscode.ConfigurationTarget.Workspace);
   });
 
   it("the hidden legacy inverse remains callable for existing integrations", async () => {

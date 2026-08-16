@@ -6,6 +6,7 @@ involuntary — the whole point of Tithon is that output survives them. Killing
 the kernel yourself is not: re-seeding then hands back output that was
 deliberately walked away from, on that open and on every open after it.
 """
+
 import json
 
 from tithon.daemon import Session
@@ -29,7 +30,7 @@ def test_flag_outlives_the_daemon(tmp_path):
     s = make_session(tmp_path)
     s.set_closed_by_user(True)
 
-    reopened = make_session(tmp_path)          # a fresh Session on the same journal
+    reopened = make_session(tmp_path)  # a fresh Session on the same journal
 
     assert reopened.closed_by_user is True
     assert reopened.snapshot()["closed_by_user"] is True
@@ -50,8 +51,9 @@ def test_closing_keeps_the_history(tmp_path):
     them unasked, so a 'restore previous outputs' action can still work."""
     s = make_session(tmp_path)
     s.journal.insert_execution("e1", 1, "print(1)")
-    s.journal.mark_done("e1", "done", 1, json.dumps([
-        {"output_type": "stream", "name": "stdout", "text": "1\n"}]))
+    s.journal.mark_done(
+        "e1", "done", 1, json.dumps([{"output_type": "stream", "name": "stdout", "text": "1\n"}])
+    )
 
     s.set_closed_by_user(True)
 
@@ -79,7 +81,7 @@ def test_a_killed_session_cannot_be_re_armed(tmp_path):
 def test_setting_the_same_value_does_not_rewrite(tmp_path):
     s = make_session(tmp_path)
     s.set_closed_by_user(False)
-    assert s.journal.get_meta("closed_by_user") is None   # no write at all
+    assert s.journal.get_meta("closed_by_user") is None  # no write at all
     s.set_closed_by_user(True)
     s.set_closed_by_user(True)
     assert s.journal.get_meta("closed_by_user") == "1"

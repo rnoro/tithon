@@ -17,9 +17,10 @@ const dec = new TextDecoder();
 
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items) {
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
-  }
+  for (const o of cell.outputs)
+    for (const it of o.items) {
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+    }
   return s;
 }
 
@@ -33,13 +34,20 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
 
 function linesPresent(text: string): number[] {
-  return text.split("\n").map((s) => s.trim()).filter((s) => /^\d+$/.test(s)).map(Number);
+  return text
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => /^\d+$/.test(s))
+    .map(Number);
 }
 
 describe("Tithon mid-run reconnect: restore prior + continue live (v15)", () => {
@@ -49,22 +57,32 @@ describe("Tithon mid-run reconnect: restore prior + continue live (v15)", () => 
 
     // The loop cell source (must match the daemon's cell_hash via getText()).
     const cells = parse(readFileSync(uri.fsPath, "utf8")).cells;
-    const loopIdx = cells.findIndex((c) => c.kind === "code" && c.body.some((l) => l.text.includes("range(30)")));
+    const loopIdx = cells.findIndex(
+      (c) => c.kind === "code" && c.body.some((l) => l.text.includes("range(30)")),
+    );
     assert.ok(loopIdx >= 0, "fixture must have the range(30) loop");
     const src = cellSource(cells[loopIdx]);
 
     // 1) A separate client starts the long loop; the kernel runs independently.
     const driver = new SessionClient(undefined, uri.toString());
-    await driver.execute(src, { uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(src) });
+    await driver.execute(src, {
+      uri: uri.toString(),
+      range: { start: 0, end: 0 },
+      cell_hash: computeCellHash(src),
+    });
 
     // 2) Let it run partway so there is real pre-reconnect output to restore.
     const watcher = new SessionClient(undefined, uri.toString());
     await watcher.attach(0);
-    await waitFor(() => {
-      const ex = watcher.executions().find((e) => e.cellHash === computeCellHash(src));
-      if (!ex) return false;
-      return linesPresent((watcher.outputsOf(ex.execId)[0] as any)?.text ?? "").length >= 5;
-    }, 20000, "at least 5 lines produced before reconnect");
+    await waitFor(
+      () => {
+        const ex = watcher.executions().find((e) => e.cellHash === computeCellHash(src));
+        if (!ex) return false;
+        return linesPresent((watcher.outputsOf(ex.execId)[0] as any)?.text ?? "").length >= 5;
+      },
+      20000,
+      "at least 5 lines produced before reconnect",
+    );
     const preReconnectMax = (() => {
       const ex = watcher.executions().find((e) => e.cellHash === computeCellHash(src))!;
       return Math.max(...linesPresent((watcher.outputsOf(ex.execId)[0] as any)?.text ?? ""));
@@ -76,16 +94,27 @@ describe("Tithon mid-run reconnect: restore prior + continue live (v15)", () => 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     // 4) The cell must end up with the FULL 0..29 — early (restored) + late (live).
-    await waitFor(() => cellText(nb.cellAt(loopIdx)).includes("29"), 30000, "loop to finish in the cell");
+    await waitFor(
+      () => cellText(nb.cellAt(loopIdx)).includes("29"),
+      30000,
+      "loop to finish in the cell",
+    );
 
     const present = new Set(linesPresent(cellText(nb.cellAt(loopIdx))));
     const missing = [];
     for (let i = 0; i <= 29; i++) if (!present.has(i)) missing.push(i);
     console.log(`[v15] final cell lines: ${[...present].sort((a, b) => a - b).join(",")}`);
-    assert.strictEqual(missing.length, 0, `cell missing lines ${missing.join(",")} (prior output not restored?)`);
+    assert.strictEqual(
+      missing.length,
+      0,
+      `cell missing lines ${missing.join(",")} (prior output not restored?)`,
+    );
     // Sanity: we really did reconnect mid-run (some lines predated the reconnect).
     assert.ok(preReconnectMax >= 4, "expected a real mid-run reconnect");
 

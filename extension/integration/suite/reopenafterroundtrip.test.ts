@@ -30,7 +30,11 @@ function ext(): vscode.Extension<unknown> {
   return e;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
@@ -39,16 +43,24 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 }
 
 const textTabsFor = (uri: vscode.Uri): vscode.Tab[] =>
-  vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter(
-    (t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString(),
-  );
+  vscode.window.tabGroups.all
+    .flatMap((g) => g.tabs)
+    .filter(
+      (t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uri.toString(),
+    );
 
 const notebookTabsFor = (uri: vscode.Uri): vscode.Tab[] =>
-  vscode.window.tabGroups.all.flatMap((g) => g.tabs).filter(
-    (t) => t.input instanceof vscode.TabInputNotebook && t.input.uri.toString() === uri.toString(),
-  );
+  vscode.window.tabGroups.all
+    .flatMap((g) => g.tabs)
+    .filter(
+      (t) =>
+        t.input instanceof vscode.TabInputNotebook && t.input.uri.toString() === uri.toString(),
+    );
 
-const anyTabsFor = (uri: vscode.Uri): vscode.Tab[] => [...textTabsFor(uri), ...notebookTabsFor(uri)];
+const anyTabsFor = (uri: vscode.Uri): vscode.Tab[] => [
+  ...textTabsFor(uri),
+  ...notebookTabsFor(uri),
+];
 
 const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
   vscode.workspace.notebookDocuments.find(
@@ -88,7 +100,9 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     // guard will auto-close every reopened text editor).
     const st = await cellViewState();
     // eslint-disable-next-line no-console
-    console.log(`v44: after close: cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`);
+    console.log(
+      `v44: after close: cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`,
+    );
     assert.ok(
       !st.cellViewUris.includes(uri.toString()) || !!notebookFor(uri),
       `URI is stuck in cellViewUris with no live notebook -> the guard will eat reopened text editors (cellViewUris=${JSON.stringify(st.cellViewUris)})`,
@@ -103,9 +117,13 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     await new Promise((r) => setTimeout(r, 2500));
     const tabs = anyTabsFor(uri);
     // eslint-disable-next-line no-console
-    console.log(`v44: after reopen+settle: textTabs=${textTabsFor(uri).length} notebookTabs=${notebookTabsFor(uri).length}`);
-    assert.ok(tabs.length > 0,
-      "the reopened .py was auto-closed (flashes then closes) — a URI stuck in cellViewUris made the guard eat it");
+    console.log(
+      `v44: after reopen+settle: textTabs=${textTabsFor(uri).length} notebookTabs=${notebookTabsFor(uri).length}`,
+    );
+    assert.ok(
+      tabs.length > 0,
+      "the reopened .py was auto-closed (flashes then closes) — a URI stuck in cellViewUris made the guard eat it",
+    );
   });
 
   it("RACE: overlapping toggles must not strand cellViewUris", async () => {
@@ -133,7 +151,9 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
 
     const st = await cellViewState();
     // eslint-disable-next-line no-console
-    console.log(`v44 RACE: after close cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`);
+    console.log(
+      `v44 RACE: after close cellViewUris=${JSON.stringify(st.cellViewUris)} notebookOpen=${!!notebookFor(uri)}`,
+    );
     assert.ok(
       !st.cellViewUris.includes(uri.toString()) || !!notebookFor(uri),
       `RACE stranded the URI in cellViewUris with no live notebook (cellViewUris=${JSON.stringify(st.cellViewUris)})`,
@@ -145,6 +165,9 @@ describe("reopen after a Cell View<->Text round trip (v44)", () => {
     await new Promise((r) => setTimeout(r, 2500));
     // eslint-disable-next-line no-console
     console.log(`v44 RACE: after reopen anyTabs=${anyTabsFor(uri).length}`);
-    assert.ok(anyTabsFor(uri).length > 0, "the .py was auto-closed after the race (stuck cellViewUris)");
+    assert.ok(
+      anyTabsFor(uri).length > 0,
+      "the .py was auto-closed after the race (stuck cellViewUris)",
+    );
   });
 });
