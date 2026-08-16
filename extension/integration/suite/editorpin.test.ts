@@ -120,6 +120,7 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
 
   let targetPattern = "";
   let siblingPattern = "";
+  let unrelatedPattern = "";
   // Registered on 1.133.0, absent on the 1.85.0 engines floor; an unregistered
   // key cannot be written at all (`update` throws), so the extension probes the
   // same way and the suite asserts the matching contract.
@@ -134,6 +135,7 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
     const rel = (u: vscode.Uri) => path.relative(root, u.fsPath).split(path.sep).join("/");
     targetPattern = `**/${rel(target)}`;
     siblingPattern = `**/${rel(sibling)}`;
+    unrelatedPattern = `**/${rel(unrelated)}`;
     diffAssocSupported =
       vscode.workspace.getConfiguration().inspect(DIFF_ASSOC)?.defaultValue !== undefined;
   });
@@ -210,6 +212,39 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
       0,
       "an unassociated .py must not resolve to the Tithon notebook",
     );
+  });
+
+  it("a second invocation cannot steal the first chooser's selection", async () => {
+    const first = vscode.commands.executeCommand("tithon.alwaysOpenWith", unrelated);
+    await waitFor(
+      async () =>
+        (
+          await vscode.commands.executeCommand<{ pickerOpen: boolean }>(
+            "tithon._alwaysOpenWithState",
+          )
+        ).pickerOpen,
+      5000,
+      "first chooser opened",
+    );
+    const second = vscode.commands.executeCommand("tithon.alwaysOpenWith", sibling);
+    await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+    await Promise.all([first, second]);
+
+    assert.strictEqual(
+      workspaceAssoc()[unrelatedPattern],
+      "default",
+      "the first chooser's Text selection must apply to its own Uri",
+    );
+    assert.ok(
+      !(siblingPattern in workspaceAssoc()),
+      "a reentrant chooser must not redirect the selection to its Uri",
+    );
+
+    const cleaned = { ...workspaceAssoc() };
+    delete cleaned[unrelatedPattern];
+    await vscode.workspace
+      .getConfiguration()
+      .update(ASSOC, cleaned, vscode.ConfigurationTarget.Workspace);
   });
 
   it("the Explorer-style chooser pins Notebook and switches the open editor", async () => {

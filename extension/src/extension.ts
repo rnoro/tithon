@@ -138,6 +138,7 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
 /** URIs currently guarded as tithon-py notebooks (I1). */
 const cellViewUris = new Set<string>();
 let alwaysOpenWithPickerOpen = false;
+let alwaysOpenWithActive = false;
 
 /** Execute text<->notebook transitions sequentially per URI (I5). */
 const toggleQueues = new Map<string, Promise<unknown>>();
@@ -526,8 +527,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       });
     }),
     // One durable choice, shaped like VSCode's Open With picker. The public
-    // menus expose only this command; the two legacy commands below stay
-    // registered so existing keybindings and integrations keep working.
+    // menus expose only this command; the compatibility commands below remain
+    // registered for existing keybindings and integrations.
     vscode.commands.registerCommand("tithon.alwaysOpenWith", async (arg?: unknown) => {
       const uri = resolveTargetUri(arg);
       const pattern = uri ? associationPatternFor(uri) : undefined;
@@ -535,12 +536,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         notifyWarn("Tithon: choose a .py file inside the open workspace folder first");
         return;
       }
+      if (alwaysOpenWithActive) return;
+      alwaysOpenWithActive = true;
 
-      type EditorPick = vscode.QuickPickItem & { editorId: "default" | "tithon-py" };
-      let pick: EditorPick | undefined;
-      alwaysOpenWithPickerOpen = true;
       try {
-        pick = await vscode.window.showQuickPick<EditorPick>(
+        type EditorPick = vscode.QuickPickItem & { editorId: "default" | "tithon-py" };
+        const pickPromise = vscode.window.showQuickPick<EditorPick>(
           [
             { label: "$(file-code) Text Editor", editorId: "default" },
             { label: "$(notebook) Notebook", editorId: "tithon-py" },
@@ -550,33 +551,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             placeHolder: `Choose how ${path.basename(uri.fsPath)} opens in this workspace`,
           },
         );
+        alwaysOpenWithPickerOpen = true;
+        let pick: EditorPick | undefined;
+        try {
+          pick = await pickPromise;
+        } finally {
+          alwaysOpenWithPickerOpen = false;
+        }
+        if (!pick) return;
+
+        if (pick.editorId === "tithon-py") {
+          await vscode.commands.executeCommand("tithon.alwaysOpenAsNotebook", uri);
+          return;
+        }
+
+        try {
+          await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+            if (assoc[pattern] === "default") return false;
+            assoc[pattern] = "default";
+            return true;
+          });
+          // The exact `default` entry already makes diffs textual. Do not delete
+          // an existing diff entry: VSCode exposes no provenance that could tell
+          // Tithon's companion apart from the user's same-pattern preference.
+          await vscode.commands.executeCommand("tithon.openAsText", uri);
+          notifyInfo(
+            `Tithon: ${path.basename(uri.fsPath)} now opens in the Text Editor in this workspace`,
+          );
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Tithon: could not save the editor association — ${String(err)}`,
+          );
+        }
       } finally {
-        alwaysOpenWithPickerOpen = false;
-      }
-      if (!pick) return;
-
-      if (pick.editorId === "tithon-py") {
-        await vscode.commands.executeCommand("tithon.alwaysOpenAsNotebook", uri);
-        return;
-      }
-
-      try {
-        await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
-          if (assoc[pattern] === "default") return false;
-          assoc[pattern] = "default";
-          return true;
-        });
-        // The exact `default` entry already makes diffs textual. Do not delete
-        // an existing diff entry: VSCode exposes no provenance that could tell
-        // Tithon's companion apart from the user's same-pattern preference.
-        await vscode.commands.executeCommand("tithon.openAsText", uri);
-        notifyInfo(
-          `Tithon: ${path.basename(uri.fsPath)} now opens in the Text Editor in this workspace`,
-        );
-      } catch (err) {
-        vscode.window.showErrorMessage(
-          `Tithon: could not save the editor association — ${String(err)}`,
-        );
+        alwaysOpenWithActive = false;
       }
     }),
     // Make this ONE file open as the Cell View from now on, in this workspace.

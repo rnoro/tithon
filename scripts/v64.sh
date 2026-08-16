@@ -13,8 +13,9 @@
 #       .py in the same workspace stays text, (6) a diff of two pinned files
 #       stays a TEXT diff, (7) cancel changes nothing, (8) Text Editor is an
 #       explicit durable choice that beats a broad Notebook association, (9) the
-#       hidden legacy inverse remains callable, and (10) Explorer/editor/toolbar
-#       expose one chooser without repeating the Tithon provider name.
+#       hidden legacy inverse remains callable, and (10) the manifest contributes
+#       one chooser to Explorer/editor/toolbar without repeating the provider
+#       name, and (11) reentrant invocation cannot steal the first choice.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v64 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
@@ -91,4 +92,4 @@ assert diff in ({}, {"**/pkg/train.py": "default"}), f"unexpected diff associati
 print("v64: on-disk associations ok:", json.dumps(assoc, sort_keys=True), json.dumps(diff, sort_keys=True))
 PYEOF
 
-echo "RESULT v64 PASS real VSCode host: one Always Open With chooser on Explorer/editor/toolbar; Notebook and Text are durable per-file choices; cancel is inert; labels do not repeat Tithon; diff stays text; legacy commands remain callable; $passed_line"
+echo "RESULT v64 PASS real VSCode host: manifest contributes one Always Open With chooser to Explorer/editor/toolbar; Notebook and Text are durable per-file choices; cancel is inert; labels do not repeat Tithon; diff stays text; legacy commands remain callable; $passed_line"
