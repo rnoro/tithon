@@ -34,7 +34,7 @@ kernel_pids() { # EVERY session's kernel pid, one per line
   # hashed name, so the real-VSCode tests never touch `default` at all. Sweeping
   # only that one left a detached kernel per test alive — a full `make vscode`
   # leaked ~34, and enough of those racing a fresh kernel spawn is what flakes
-  # the isolated tests (AGENTS.md rule 6).
+  # the isolated tests.
   find "${TITHON_HOME:-/nonexistent}/sessions" -name kernel.pid -exec cat {} + 2>/dev/null || true
 }
 

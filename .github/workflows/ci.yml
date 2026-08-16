@@ -1,0 +1,87 @@
+name: ci
+
+# The hermetic verification bundle (`make -C scripts fast`) drives real daemons
+# and detached kernels and is NOT run here — contributors run it locally and
+# paste its summary table into the pull request (see CONTRIBUTING.md).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - run: uv sync
+
+      - name: ruff check
+        if: matrix.python-version == '3.11'
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        if: matrix.python-version == '3.11'
+        run: uv run ruff format --check .
+
+      - name: pytest
+        run: uv run pytest -q
+
+  extension:
+    name: extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - run: npm ci
+
+      - name: biome
+        run: npm run lint
+
+      - name: tsc
+        run: npm run build
+
+      - name: vitest
+        run: npm test
+
+  release-scripts:
+    name: release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # A plain assert script: `node --test` on the directory does not run it.
+      - run: node .github/scripts/format-release-pr-body.test.js

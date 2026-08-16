@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or open-ended discussion
+    url: https://github.com/rnoro/tithon/discussions
+    about: Usage questions, setups that don't fit a bug report, and half-formed ideas.
+  - name: Contributing guide
+    url: https://github.com/rnoro/tithon/blob/main/CONTRIBUTING.md
+    about: Development setup, how changes are verified, and how to propose a design change.

@@ -1,0 +1,100 @@
+name: Bug report
+description: Something behaved differently than you expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The daemon outlives the client, so what the UI
+        showed is rarely enough to locate the fault — the log and the sequence
+        of session events below are what make a bug fixable.
+
+        Please write in English so the history stays searchable for everyone.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: >
+        As a sequence of session events. Whether the client disconnected, and
+        whether the daemon or the host restarted, are usually the decisive
+        details.
+      placeholder: |
+        1. start the daemon
+        2. run a cell that prints for 30s
+        3. close the VSCode window while it runs
+        4. reopen the file after it would have finished
+        5. the output up to the disconnect is missing
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Daemon log
+      description: >
+        From `$TITHON_HOME/daemon.log` (`~/.tithon/daemon.log` by default). The
+        interesting window usually starts at the last `attach` before things
+        went wrong. Feel free to trim anything sensitive.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: status
+    attributes:
+      label: tithon status
+      description: Output of `tithon status`, if the daemon was still up.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Tithon (`pip show tithon`), the VSCode extension, VSCode, and Python.
+      placeholder: "tithon 0.2.3 / extension 0.2.3 / VSCode 1.99.0 / Python 3.12.4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How do you connect to the host?
+      description: Tithon's job is surviving a flaky link, so its shape is diagnostic.
+      options:
+        - Local (same machine)
+        - VSCode Tunnel
+        - Remote-SSH
+        - WSL
+        - Container / devcontainer
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS / host
+      description: "`uname -a`, or the platform if that doesn't apply."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked [docs/known_issue.md](https://github.com/rnoro/tithon/blob/main/docs/known_issue.md) and the open issues.
+          required: true
+        - label: This is a failure I actually observed, not one I expect could happen.
+          required: true

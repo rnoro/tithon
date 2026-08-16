@@ -1,0 +1,60 @@
+name: Feature request / idea
+description: Propose a capability, a change in behavior, or a design change
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome, including ones that change how Tithon works
+        internally — [docs/SPEC.md](https://github.com/rnoro/tithon/blob/main/docs/SPEC.md)
+        describes today's design, it is not a fence around it. Making the case
+        here first is how a change gets agreed before anyone writes code.
+
+        Please write in English so the history stays searchable for everyone.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What you were trying to do, and where Tithon got in the way. Concrete
+        workflows persuade more than abstract capabilities.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like instead
+      description: The behavior you want. A rough sketch is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: design-impact
+    attributes:
+      label: Does this touch the current design?
+      description: >
+        If it changes something Tithon currently relies on — how kernels are
+        spawned, how sessions are scoped, how messages are journaled, how sync
+        or storage works, what the daemon binds to — say which property it
+        would replace and what would protect the same guarantee afterwards.
+        Unsure is a fine answer; say so and we'll work it out.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including workarounds you are using today.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: participation
+    attributes:
+      label: Participation
+      options:
+        - label: I'd be willing to work on this if we agree on the approach.
+          required: false

@@ -216,6 +216,13 @@ its cells. The history is kept — **Tithon: Restore Previous Outputs** brings i
 back. Every involuntary loss (daemon restart, host reboot, dropped tunnel, idle
 GC) still restores automatically.
 
+## Contributing
+
+Bug reports are especially welcome — Tithon's job is surviving disconnects, and
+the ones that matter happen on setups we don't have. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for what makes a report actionable, how to
+set up a development environment, and how to propose a change to the design.
+
 ## License
 
 [MIT](LICENSE).
