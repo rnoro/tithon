@@ -43,7 +43,7 @@ import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
  *     the switch); `openAsText` deletes FIRST (so the guard does not close the
  *     very text editor being opened).
  *
- * I4. The guard keys off a VISIBLE notebook TAB, never a notebook DOCUMENT.
+ * I4. The guard keys off a TAB-BACKED notebook, never a notebook DOCUMENT.
  *     Overlapping fast toggles can strand a tabless "zombie" notebook document
  *     that lingers in `workspace.notebookDocuments` forever; keying off it would
  *     auto-close every reopened text editor and make the .py un-openable.
@@ -55,8 +55,7 @@ import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
  *     `openWith` calls and produce exactly the I4 zombie.
  *
  * These depend on VSCode/LSP internals rather than on our own API surface, so
- * they cannot be held by unit tests alone; SPEC §10 names the real-VSCode
- * checks that guard them, including the run against the next VSCode build.
+ * unit tests alone cannot hold them.
  * ======================================================================== */
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
@@ -66,7 +65,7 @@ function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined 
   );
 }
 
-/** Whether a visible tithon-py tab exists; a notebook document is insufficient (I4). */
+/** Whether a tithon-py tab exists; a notebook document is insufficient (I4). */
 function hasCellViewTab(fileUri: vscode.Uri): boolean {
   const key = fileUri.toString();
   return vscode.window.tabGroups.all
@@ -142,7 +141,7 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
 const cellViewUris = new Set<string>();
 let alwaysOpenWithPickerOpen = false;
 
-/** Serialize text<->notebook transitions per URI so the last toggle wins (I5). */
+/** Execute text<->notebook transitions sequentially per URI (I5). */
 const toggleQueues = new Map<string, Promise<unknown>>();
 function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
   const prev = toggleQueues.get(uriStr) ?? Promise.resolve();
@@ -505,16 +504,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return;
       }
       return queueToggle(uri.toString(), async () => {
-        // Arm before closing; open only after the text document is gone (I2/I3).
+        // Arm before closing; open only after the text document is gone (I2/I3/I5).
         cellViewUris.add(uri.toString());
         await closeTextDocsAndWait(uri.toString());
         await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
       });
     }),
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the
-    // notebook/toolbar button, which forwards a `{ notebookEditor: {...} }`
-    // context object — NOT a Uri (resolveNotebookUri unwraps it; fall back to the
-    // active notebook editor). The transition ordering is governed by I3.
+    // notebook/toolbar button; normalize its action context via resolveNotebookUri.
     vscode.commands.registerCommand("tithon.openAsText", async (arg?: unknown) => {
       const uri =
         resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
@@ -522,6 +519,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         notifyWarn("Tithon: no notebook to open as text");
         return;
       }
+      // Disarm before closing; both directions share the per-URI queue (I3/I5).
       return queueToggle(uri.toString(), async () => {
         try {
           cellViewUris.delete(uri.toString());
