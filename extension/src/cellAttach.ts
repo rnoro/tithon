@@ -10,7 +10,7 @@
  *      until re-run).
  */
 
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import type { Cell } from "./serializer";
 import { cellSource } from "./serializer";
 
@@ -85,8 +85,7 @@ export function docCellsFromParsed(cells: Cell[]): DocCell[] {
   let line = 0;
   for (let index = 0; index < cells.length; index++) {
     const cell = cells[index];
-    const span =
-      (cell.hasMarker ? 1 : 0) + cell.body.length;
+    const span = (cell.hasMarker ? 1 : 0) + cell.body.length;
     const start = line;
     const end = Math.max(start, line + span - 1);
     out.push({ index, cellHash: computeCellHash(cellSource(cell)), range: { start, end } });
@@ -120,9 +119,9 @@ function proximity(a: LineRange, b: LineRange): number {
  *      `stale: true`, so it renders with the §3.2 stale badge instead of
  *      masquerading as a fresh successful run.
  *
- * Index-first alone (the old behavior) misattributed on inserts; pure exact-hash
- * (ADR-019) dropped edited cells and collapsed duplicates. Cross-file collapse
- * is prevented separately by uri-scoping the executions (see
+ * All three tiers are load-bearing: index alone misattributes on inserts, and
+ * exact-hash alone drops edited cells and collapses duplicates. Cross-file
+ * collapse is prevented separately by uri-scoping the executions (see
  * {@link SessionClient.restoreInto}). When several executions resolve to the
  * same cell, the later one (array order) wins.
  */
@@ -146,7 +145,9 @@ export function attachOutputs(
     if (!matches || matches.length === 0) return undefined;
     return matches
       .slice()
-      .sort((a, b) => proximity(a.range, range) - proximity(b.range, range) || a.index - b.index)[0];
+      .sort(
+        (a, b) => proximity(a.range, range) - proximity(b.range, range) || a.index - b.index,
+      )[0];
   };
 
   for (const ex of executions) {

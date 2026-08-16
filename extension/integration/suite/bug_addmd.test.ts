@@ -9,10 +9,10 @@
  * markdown cell, saves, and asserts the on-disk body is `# `-prefixed and that
  * it reparses back to a markdown cell whose display text is the original prose.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource, uncommentMarkdown } from "../../src/serializer";
+import { cellSource, parse, uncommentMarkdown } from "../../src/serializer";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
@@ -65,8 +65,14 @@ describe("PROBE: a newly added markdown cell saves as commented jupytext", () =>
 
     const cells = parse(onDisk).cells;
     const mdCell = cells[cells.length - 1];
-    console.log(`[ADDMD] FINDING: lastCellKind=${mdCell.kind} commented=${onDisk.includes("# Hello")} -> ${mdCell.kind === "markdown" && onDisk.includes("# Hello") ? "OK (jupytext-standard)" : "BUG"}`);
+    console.log(
+      `[ADDMD] FINDING: lastCellKind=${mdCell.kind} commented=${onDisk.includes("# Hello")} -> ${mdCell.kind === "markdown" && onDisk.includes("# Hello") ? "OK (jupytext-standard)" : "BUG"}`,
+    );
     assert.strictEqual(mdCell.kind, "markdown", "reparses to a markdown cell");
-    assert.strictEqual(uncommentMarkdown(cellSource(mdCell)), "Hello **world**\n\nsecond line\n", "display text round-trips");
+    assert.strictEqual(
+      uncommentMarkdown(cellSource(mdCell)),
+      "Hello **world**\n\nsecond line\n",
+      "display text round-trips",
+    );
   });
 });

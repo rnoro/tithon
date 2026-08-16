@@ -15,6 +15,7 @@ configuration. ``test_watchdog_runs_with_the_idle_gc_disabled`` pins that.
 
 v48.sh proves the end-to-end path (real daemon + real SIGKILL + real client).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,14 +47,11 @@ def revive(s: Session) -> None:
 
 
 def kernel_events(s: Session) -> list[dict]:
-    return [
-        json.loads(c)
-        for _seq, _e, t, c in s.journal.messages_after(0)
-        if t == "tithon.kernel"
-    ]
+    return [json.loads(c) for _seq, _e, t, c in s.journal.messages_after(0) if t == "tithon.kernel"]
 
 
 # -- Session.check_kernel_liveness ------------------------------------------
+
 
 def test_live_kernel_journals_nothing(tmp_path):
     s = make_session(tmp_path)
@@ -189,15 +187,16 @@ def test_recovery_after_a_restart_re_arms_the_watchdog(tmp_path):
     kill(s)
     assert s.check_kernel_liveness() is True
 
-    revive(s)              # restart_kernel spawned a fresh one
+    revive(s)  # restart_kernel spawned a fresh one
     s.kernel_status = "idle"
-    kill(s)                # ...and that one dies too
+    kill(s)  # ...and that one dies too
 
     assert s.check_kernel_liveness() is True
     assert len(kernel_events(s)) == 2
 
 
 # -- the lost-state signal must not be weakened (ADR-075) --------------------
+
 
 def test_dead_is_not_a_generation_status(tmp_path):
     """A ``dead`` observation must NOT become the anchor of the lost-state window.
@@ -229,6 +228,7 @@ def test_watchdog_event_does_not_pardon_lost_work(tmp_path):
 
 
 # -- Daemon-level sweep ------------------------------------------------------
+
 
 def test_sweep_covers_every_loaded_session(tmp_path):
     d = Daemon(tmp_path / "home", tmp_path / "work")

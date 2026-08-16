@@ -53,7 +53,8 @@ moves it to the host.
   remote, connect over a Tunnel or Remote-SSH — the notebook then works exactly
   as it does locally.
 
-> Windows is not currently supported.
+> On Windows, we recommend running Tithon inside WSL and connecting with VS Code using the WSL extension.  
+> Native Windows is not currently supported.
 
 ## Install
 
@@ -188,6 +189,32 @@ Environment variables read by the daemon and CLI:
 Outputs live in `$TITHON_HOME/sessions/<session>/journal.db` (raw messages plus
 folded snapshots), with rich outputs written as files under
 `<workdir>/.tithon/outputs/` and referenced from the journal.
+
+### Sharing a notebook's outputs
+
+A percent-format `.py` holds only code, and the journal above is machine-local
+(binary, unbounded, unmergeable). So alongside it the daemon keeps the _folded_
+output state as text in your project:
+
+```
+<project>/.tithon/
+  cells/<relpath>.json   # what each cell currently shows
+  outputs/               # its images, sha256-deduplicated
+```
+
+Commit that directory and whoever clones the repository opens the file with your
+results already in it — what `.ipynb` gives you, without the outputs living in
+the `.py`. Images are referenced rather than embedded, so a plot redrawn every
+step of a training loop still commits one file, not one per frame. Leave the
+directory uncommitted (or `.gitignore` it) to keep your outputs to yourself;
+nothing else depends on it, and your own session restores from the journal
+either way.
+
+Terminating a kernel yourself (`tithon kill`, or **Tithon: Terminate Kernel…**)
+means you are done with that session, so reopening the file no longer restores
+its cells. The history is kept — **Tithon: Restore Previous Outputs** brings it
+back. Every involuntary loss (daemon restart, host reboot, dropped tunnel, idle
+GC) still restores automatically.
 
 ## License
 

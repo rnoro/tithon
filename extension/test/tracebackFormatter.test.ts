@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { stripAnsiBackground, formatTraceback } from "../src/tracebackFormatter";
+import { describe, expect, it } from "vitest";
+import { formatTraceback, stripAnsiBackground } from "../src/tracebackFormatter";
 
 const ESC = "\x1b";
 
@@ -19,11 +19,15 @@ describe("stripAnsiBackground (RISKS #8/T6)", () => {
   });
 
   it("consumes a 256-color background group (48;5;N) as one unit", () => {
-    expect(stripAnsiBackground(`${ESC}[38;5;28;48;5;196mtext${ESC}[0m`)).toBe(`${ESC}[38;5;28mtext${ESC}[0m`);
+    expect(stripAnsiBackground(`${ESC}[38;5;28;48;5;196mtext${ESC}[0m`)).toBe(
+      `${ESC}[38;5;28mtext${ESC}[0m`,
+    );
   });
 
   it("consumes a truecolor background group (48;2;R;G;B) as one unit", () => {
-    expect(stripAnsiBackground(`${ESC}[1;48;2;255;0;0;37mtext${ESC}[0m`)).toBe(`${ESC}[1;37mtext${ESC}[0m`);
+    expect(stripAnsiBackground(`${ESC}[1;48;2;255;0;0;37mtext${ESC}[0m`)).toBe(
+      `${ESC}[1;37mtext${ESC}[0m`,
+    );
   });
 
   it("leaves a bare reset (\\x1b[m) untouched", () => {

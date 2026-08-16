@@ -5,11 +5,11 @@
  * per-cell text, the hash the execute path computes vs. the hash the live-sync
  * index computes from the file — then asserts each cell shows ITS OWN output.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
 import { computeCellHash, docCellsFromParsed } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
 
 const dec = new TextDecoder();
 
@@ -23,7 +23,9 @@ function cellText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
+// `_label` is unused on purpose: this helper reports by returning early rather
+// than throwing, so the string only documents the call site.
+async function waitFor(pred: () => boolean, ms: number, _label: string): Promise<void> {
   const deadline = Date.now() + ms;
   while (!pred()) {
     if (Date.now() > deadline) return; // diagnostic: don't throw, just report
@@ -54,7 +56,9 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     const docCells = docCellsFromParsed(parsed);
     console.log("\n[v12] FILE has", parsed.length, "parsed cells");
     docCells.forEach((dc) => {
-      console.log(`[v12]  file cell #${dc.index} hash=${dc.cellHash.slice(0, 12)} src=${JSON.stringify(cellSource(parsed[dc.index]))}`);
+      console.log(
+        `[v12]  file cell #${dc.index} hash=${dc.cellHash.slice(0, 12)} src=${JSON.stringify(cellSource(parsed[dc.index]))}`,
+      );
     });
 
     const nb = await vscode.workspace.openNotebookDocument(uri);
@@ -63,19 +67,28 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     console.log("[v12] NOTEBOOK has", nb.cellCount, "cells");
     for (let i = 0; i < nb.cellCount; i++) {
       const t = nb.cellAt(i).document.getText();
-      console.log(`[v12]  nb cell #${i} hash=${computeCellHash(t).slice(0, 12)} text=${JSON.stringify(t)}`);
+      console.log(
+        `[v12]  nb cell #${i} hash=${computeCellHash(t).slice(0, 12)} text=${JSON.stringify(t)}`,
+      );
     }
 
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
     // Run ALL cells via the native command — no manual live step.
     await vscode.commands.executeCommand("notebook.execute");
 
     // Let outputs settle.
-    await waitFor(() => {
-      let withOutput = 0;
-      for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) withOutput++;
-      return withOutput >= nb.cellCount;
-    }, 20000, "all cells to show output");
+    await waitFor(
+      () => {
+        let withOutput = 0;
+        for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) withOutput++;
+        return withOutput >= nb.cellCount;
+      },
+      20000,
+      "all cells to show output",
+    );
 
     console.log("[v12] RESULT per-cell output:");
     for (let i = 0; i < nb.cellCount; i++) {
@@ -85,7 +98,10 @@ describe("Tithon multi-cell Run All in a real VSCode host (v12)", () => {
     // Each cell prints CELL<index>; assert it lands on the right cell.
     for (let i = 0; i < nb.cellCount; i++) {
       const t = cellText(nb.cellAt(i));
-      assert.ok(t.includes(`CELL${i}`), `cell #${i} should contain CELL${i} but had ${JSON.stringify(t)}`);
+      assert.ok(
+        t.includes(`CELL${i}`),
+        `cell #${i} should contain CELL${i} but had ${JSON.stringify(t)}`,
+      );
     }
   });
 });

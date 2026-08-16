@@ -8,16 +8,17 @@
  * changes AND the kernel pid changes AND the counter resets to 1 (fresh kernel,
  * not a re-attach).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items)
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+  for (const o of cell.outputs)
+    for (const it of o.items)
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
   return s;
 }
 function kpid(t: string): number | null {
@@ -30,20 +31,32 @@ function runN(t: string): number | null {
 }
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) { if (Date.now() > deadline) throw new Error(`timed out: ${label}`); await new Promise((r) => setTimeout(r, 50)); }
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
 const daemonPid = () => {
-  try { return fs.readFileSync(path.join(process.env.TITHON_HOME!, "daemon.pid"), "utf8").trim(); }
-  catch { return ""; }
+  try {
+    return fs.readFileSync(path.join(process.env.TITHON_HOME!, "daemon.pid"), "utf8").trim();
+  } catch {
+    return "";
+  }
 };
 async function runCell0(uri: vscode.Uri): Promise<void> {
-  await vscode.commands.executeCommand("notebook.cell.execute", { ranges: [new vscode.NotebookRange(0, 1)], document: uri });
+  await vscode.commands.executeCommand("notebook.cell.execute", {
+    ranges: [new vscode.NotebookRange(0, 1)],
+    document: uri,
+  });
 }
 
 describe("Tithon restart daemon -> fresh kernels (v26)", () => {
@@ -52,12 +65,16 @@ describe("Tithon restart daemon -> fresh kernels (v26)", () => {
     await ext().activate();
     // The extension must be able to relaunch the daemon after shutdown; give it
     // the venv interpreter (no `tithon` on the test PATH, no Python extension).
-    await vscode.workspace.getConfiguration("tithon")
+    await vscode.workspace
+      .getConfiguration("tithon")
       .update("pythonPath", process.env.TITHON_PYTHON!, vscode.ConfigurationTarget.Global);
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     await runCell0(uri);
     await waitFor(() => kpid(cellText(nb.cellAt(0))) !== null, 30000, "first run");
@@ -73,13 +90,23 @@ describe("Tithon restart daemon -> fresh kernels (v26)", () => {
 
     // Re-run: must be a FRESH kernel (different pid, counter reset to 1).
     await runCell0(uri);
-    await waitFor(() => {
-      const k = kpid(cellText(nb.cellAt(0)));
-      return k !== null && k !== kpid1;
-    }, 30000, "fresh kernel after restart");
+    await waitFor(
+      () => {
+        const k = kpid(cellText(nb.cellAt(0)));
+        return k !== null && k !== kpid1;
+      },
+      30000,
+      "fresh kernel after restart",
+    );
     const txt = cellText(nb.cellAt(0));
-    assert.strictEqual(runN(txt), 1, `namespace must reset on fresh kernel (RUN 1), got ${JSON.stringify(txt)}`);
+    assert.strictEqual(
+      runN(txt),
+      1,
+      `namespace must reset on fresh kernel (RUN 1), got ${JSON.stringify(txt)}`,
+    );
     assert.notStrictEqual(kpid(txt), kpid1, "kernel pid must change after restart");
-    console.log(`[v26] after restart: daemon=${pid2} kernel=${kpid(txt)} (reset to RUN ${runN(txt)})`);
+    console.log(
+      `[v26] after restart: daemon=${pid2} kernel=${kpid(txt)} (reset to RUN ${runN(txt)})`,
+    );
   });
 });

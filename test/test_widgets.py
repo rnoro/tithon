@@ -4,6 +4,7 @@ Deterministic, no kernel: exercises comm_open/comm_msg/comm_close interpretation
 the widget-state+json snapshot shape, and binary-buffer handling (which tqdm's
 FloatProgress does not exercise — covered live by scripts/v5.sh).
 """
+
 import base64
 
 from tithon.widgets import WidgetMirror, is_comm
@@ -20,12 +21,19 @@ def _open(comm_id, state, target="jupyter.widget", buffer_paths=None, buffers=No
 
 def test_comm_open_creates_model_and_snapshot_shape():
     m = WidgetMirror()
-    ok = m.apply(*_open("c1", {
-        "_model_name": "FloatProgressModel",
-        "_model_module": "@jupyter-widgets/controls",
-        "_model_module_version": "2.0.0",
-        "value": 0.0, "max": 50000.0, "min": 0.0,
-    }))
+    ok = m.apply(
+        *_open(
+            "c1",
+            {
+                "_model_name": "FloatProgressModel",
+                "_model_module": "@jupyter-widgets/controls",
+                "_model_module_version": "2.0.0",
+                "value": 0.0,
+                "max": 50000.0,
+                "min": 0.0,
+            },
+        )
+    )
     assert ok and len(m) == 1
     snap = m.snapshot()
     assert snap["version_major"] == 2 and snap["version_minor"] == 0
@@ -41,21 +49,27 @@ def test_comm_msg_update_patches_state():
     m = WidgetMirror()
     m.apply(*_open("c1", {"_model_name": "FloatProgressModel", "value": 0.0, "max": 50000.0}))
     # simulate tqdm progressing to completion: value == max == total
-    m.apply("comm_msg", {"comm_id": "c1", "data": {"method": "update", "state": {"value": 50000.0}}}, [])
+    m.apply(
+        "comm_msg", {"comm_id": "c1", "data": {"method": "update", "state": {"value": 50000.0}}}, []
+    )
     assert m.snapshot()["state"]["c1"]["state"]["value"] == 50000.0
 
 
 def test_echo_update_also_patches():
     m = WidgetMirror()
     m.apply(*_open("c1", {"_model_name": "X", "value": 1}))
-    m.apply("comm_msg", {"comm_id": "c1", "data": {"method": "echo_update", "state": {"value": 2}}}, [])
+    m.apply(
+        "comm_msg", {"comm_id": "c1", "data": {"method": "echo_update", "state": {"value": 2}}}, []
+    )
     assert m.snapshot()["state"]["c1"]["state"]["value"] == 2
 
 
 def test_custom_messages_do_not_change_state():
     m = WidgetMirror()
     m.apply(*_open("c1", {"_model_name": "X", "value": 1}))
-    changed = m.apply("comm_msg", {"comm_id": "c1", "data": {"method": "custom", "content": {"k": "v"}}}, [])
+    changed = m.apply(
+        "comm_msg", {"comm_id": "c1", "data": {"method": "custom", "content": {"k": "v"}}}, []
+    )
     assert changed is False
     assert m.snapshot()["state"]["c1"]["state"]["value"] == 1
 
@@ -79,13 +93,19 @@ def test_comm_close_removes_model():
 def test_binary_buffers_kept_out_of_json_state_and_base64_in_snapshot():
     payload = b"\x89PNG\x00\x01\x02binary-not-utf8\xff"
     m = WidgetMirror()
-    m.apply(*_open(
-        "img",
-        {"_model_name": "ImageModel", "_model_module": "@jupyter-widgets/controls",
-         "_model_module_version": "2.0.0", "format": "png"},
-        buffer_paths=[["value"]],
-        buffers=[payload],
-    ))
+    m.apply(
+        *_open(
+            "img",
+            {
+                "_model_name": "ImageModel",
+                "_model_module": "@jupyter-widgets/controls",
+                "_model_module_version": "2.0.0",
+                "format": "png",
+            },
+            buffer_paths=[["value"]],
+            buffers=[payload],
+        )
+    )
     entry = m.snapshot()["state"]["img"]
     # buffer is NOT inside the JSON state (schema keeps it separate)
     assert "value" not in entry["state"]
@@ -96,7 +116,9 @@ def test_binary_buffers_kept_out_of_json_state_and_base64_in_snapshot():
 
 def test_buffer_replaced_by_update():
     m = WidgetMirror()
-    m.apply(*_open("img", {"_model_name": "ImageModel"}, buffer_paths=[["value"]], buffers=[b"old"]))
+    m.apply(
+        *_open("img", {"_model_name": "ImageModel"}, buffer_paths=[["value"]], buffers=[b"old"])
+    )
     m.apply(
         "comm_msg",
         {"comm_id": "img", "data": {"method": "update", "state": {}, "buffer_paths": [["value"]]}},
@@ -159,15 +181,19 @@ def test_malformed_state_is_rejected_not_raised():
     assert len(m) == 0
 
     bad_paths = {
-        "comm_id": "c2", "target_name": "jupyter.widget",
+        "comm_id": "c2",
+        "target_name": "jupyter.widget",
         "data": {"state": {"value": 1}, "buffer_paths": [42]},  # not path-shaped
     }
     assert m.would_accept("comm_open", bad_paths) is False
     assert m.apply("comm_open", bad_paths, []) is False
     assert len(m) == 0
 
-    m.apply("comm_open", {"comm_id": "c3", "target_name": "jupyter.widget",
-                           "data": {"state": {"value": 1}}}, [])
+    m.apply(
+        "comm_open",
+        {"comm_id": "c3", "target_name": "jupyter.widget", "data": {"state": {"value": 1}}},
+        [],
+    )
     bad_update = {"comm_id": "c3", "data": {"method": "update", "state": [1, 2, 3]}}
     assert m.would_accept("comm_msg", bad_update) is False
     assert m.apply("comm_msg", bad_update, []) is False

@@ -6,7 +6,7 @@
  * (its display text "# A Heading / some prose here" would raise SyntaxError if
  * submitted as code), and the two code cells run.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
@@ -43,7 +43,10 @@ describe("PROBE: Run All with an interleaved markdown cell", () => {
     const edr = await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 3, 15000, "cells");
     assert.strictEqual(nb.cellAt(1).kind, vscode.NotebookCellKind.Markup, "cell 1 is markdown");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     edr.selections = [new vscode.NotebookRange(0, nb.cellCount)];
     await vscode.commands.executeCommand("notebook.execute");
@@ -54,12 +57,19 @@ describe("PROBE: Run All with an interleaved markdown cell", () => {
     const t0 = cellText(nb.cellAt(0));
     const tmd = cellText(nb.cellAt(1));
     const t2 = cellText(nb.cellAt(2));
-    console.log(`[RUNALL_MD] cell0=${JSON.stringify(t0.trim())} md=${JSON.stringify(tmd.trim())} cell2=${JSON.stringify(t2.trim())}`);
-    console.log(`[RUNALL_MD] FINDING: markdownHasError=${/Error|Traceback|SyntaxError/.test(tmd)} -> ${/Error|Traceback|SyntaxError/.test(tmd) ? "BUG (markdown submitted as code)" : "OK (markdown not executed)"}`);
+    console.log(
+      `[RUNALL_MD] cell0=${JSON.stringify(t0.trim())} md=${JSON.stringify(tmd.trim())} cell2=${JSON.stringify(t2.trim())}`,
+    );
+    console.log(
+      `[RUNALL_MD] FINDING: markdownHasError=${/Error|Traceback|SyntaxError/.test(tmd)} -> ${/Error|Traceback|SyntaxError/.test(tmd) ? "BUG (markdown submitted as code)" : "OK (markdown not executed)"}`,
+    );
 
     assert.ok(t0.includes("CELL0_RAN"), "code cell 0 ran");
     assert.ok(t2.includes("CELL2_RAN"), "code cell 2 ran");
-    assert.ok(!/Error|Traceback|SyntaxError/.test(tmd), "markdown cell must NOT have an error output");
+    assert.ok(
+      !/Error|Traceback|SyntaxError/.test(tmd),
+      "markdown cell must NOT have an error output",
+    );
     assert.strictEqual(nb.cellAt(1).outputs.length, 0, "markdown cell must have no outputs");
   });
 });

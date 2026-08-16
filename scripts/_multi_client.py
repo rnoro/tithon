@@ -29,10 +29,19 @@ def _parse() -> argparse.Namespace:
     p.add_argument("--last-seen", type=int, default=0)
     p.add_argument("--ready", help="file to create once `sync` has arrived")
     p.add_argument("--go", help="wait for this file before submitting --exec cells")
-    p.add_argument("--exec", dest="cells", action="append", default=[],
-                   help="code to submit on this connection (repeatable)")
-    p.add_argument("--until-done", type=int, default=0,
-                   help="exit after this many `done` events have been received")
+    p.add_argument(
+        "--exec",
+        dest="cells",
+        action="append",
+        default=[],
+        help="code to submit on this connection (repeatable)",
+    )
+    p.add_argument(
+        "--until-done",
+        type=int,
+        default=0,
+        help="exit after this many `done` events have been received",
+    )
     p.add_argument("--timeout", type=float, default=120.0)
     return p.parse_args()
 
@@ -64,8 +73,9 @@ async def main() -> int:
         print(f"{a.name}: {msg}", flush=True)
 
     async with unix_connect(a.sock, max_size=None) as ws:
-        await ws.send(json.dumps(
-            {"op": "attach", "last_seen_seq": a.last_seen, "session": a.session}))
+        await ws.send(
+            json.dumps({"op": "attach", "last_seen_seq": a.last_seen, "session": a.session})
+        )
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -73,7 +83,7 @@ async def main() -> int:
                 return 3
             try:
                 raw = await asyncio.wait_for(ws.recv(), remaining)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 note(f"TIMEOUT (synced={synced} dones={dones}/{a.until_done})")
                 return 3
             except Exception as e:  # connection closed by the daemon

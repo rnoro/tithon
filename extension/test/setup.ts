@@ -11,11 +11,7 @@ if (typeof g.__webpack_public_path__ === "undefined") {
 }
 
 if (typeof g.DragEvent === "undefined" && typeof g.MouseEvent !== "undefined") {
-  g.DragEvent = class DragEvent extends g.MouseEvent {
-    constructor(type: string, init?: any) {
-      super(type, init);
-    }
-  };
+  g.DragEvent = class DragEvent extends g.MouseEvent {};
 }
 
 if (typeof g.ResizeObserver === "undefined") {

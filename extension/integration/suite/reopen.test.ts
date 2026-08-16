@@ -10,29 +10,37 @@
  * prints "RUN 2" — proving the cell actually re-executed (not just restored old
  * output) and the per-file kernel persisted across the reopen.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items)
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+  for (const o of cell.outputs)
+    for (const it of o.items)
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
   return s;
 }
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) { if (Date.now() > deadline) throw new Error(`timed out: ${label}`); await new Promise((r) => setTimeout(r, 50)); }
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
 async function runCell0(uri: vscode.Uri): Promise<void> {
   await vscode.commands.executeCommand("notebook.cell.execute", {
-    ranges: [new vscode.NotebookRange(0, 1)], document: uri,
+    ranges: [new vscode.NotebookRange(0, 1)],
+    document: uri,
   });
 }
 
@@ -45,7 +53,10 @@ describe("Tithon file stays runnable after close+reopen (v18)", () => {
     let nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await runCell0(uri);
     await waitFor(() => cellText(nb.cellAt(0)).includes("RUN 1"), 30000, "first run");
 
@@ -53,7 +64,8 @@ describe("Tithon file stays runnable after close+reopen (v18)", () => {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     await waitFor(
       () => !vscode.workspace.notebookDocuments.some((d) => d.uri.toString() === uri.toString()),
-      8000, "notebook to close",
+      8000,
+      "notebook to close",
     ).catch(() => undefined); // some VSCode builds keep the doc cached; proceed either way
 
     // Reopen and run again. If the close/reopen path were broken, this run would
@@ -61,7 +73,10 @@ describe("Tithon file stays runnable after close+reopen (v18)", () => {
     nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells after reopen");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await runCell0(uri);
     await waitFor(() => cellText(nb.cellAt(0)).includes("RUN 2"), 30000, "second run after reopen");
 

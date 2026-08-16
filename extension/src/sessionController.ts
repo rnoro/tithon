@@ -1,36 +1,36 @@
 /**
- * Notebook output restore binding (VSCode integration — spike, not yet run in a
- * real VSCode host; see DECISIONS ADR-012 for the verification stance).
+ * Notebook output restore binding (VSCode integration).
  *
- * This is the render half that the verified headless logic feeds: on
+ * This is the render half that the headless logic feeds: on
  * (re)connect it attaches a {@link SessionClient}, restores folded outputs with
  * {@link SessionClient.restoreInto}, and writes them into the notebook's cells
  * through the VSCode NotebookController execution API. The pure pieces it relies
- * on (subscribe + fold + cell_hash attach) are exercised end-to-end against a
- * real daemon by scripts/v7; this file is the thin, API-only glue VSCode needs.
+ * on (subscribe + fold + cell_hash attach) live outside this file, which is the
+ * thin, API-only glue VSCode needs.
  */
 import * as vscode from "vscode";
-import { SessionClient, type KernelSnapshot } from "./sessionClient";
-import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
-import { ensureDaemon, waitForDaemonStop, listPythonEnvironments } from "./daemonProcess";
-import { parse, type Cell } from "./serializer";
-import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
-import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
+import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
+import { ensureDaemon, listPythonEnvironments, waitForDaemonStop } from "./daemonProcess";
+import { type CellSink, LiveOutputSync, ThrottleScheduler } from "./liveSync";
+import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
+import type { OutputItem } from "./outputFold";
 import {
+  decodeBufferEntries,
   imageOf,
   imageRefsOf,
-  isOutputAreaView,
-  widgetModelIdOf,
-  widgetFallbackText,
-  widgetPayload,
   isDisplayOnlyWidget,
-  TITHON_WIDGET_MIME,
-  decodeBufferEntries,
+  isOutputAreaView,
   mergeBufferEntries,
+  TITHON_WIDGET_MIME,
   type WidgetBufferEntry,
   type WidgetState,
+  widgetFallbackText,
+  widgetModelIdOf,
+  widgetPayload,
 } from "./richOutput";
+import { type Cell, parse } from "./serializer";
+import { type KernelSnapshot, SessionClient } from "./sessionClient";
 import { formatTraceback } from "./tracebackFormatter";
 
 /**
@@ -106,16 +106,20 @@ interface RenderCtx {
 function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutputItem[] {
   switch (o.output_type) {
     case "stream":
-      return [vscode.NotebookCellOutputItem.text(o.text, o.name === "stderr" ? STDERR_MIME : STDOUT_MIME)];
+      return [
+        vscode.NotebookCellOutputItem.text(o.text, o.name === "stderr" ? STDERR_MIME : STDOUT_MIME),
+      ];
     case "error":
-      // Strip kernel-chosen background-color ANSI (RISKS #8/T6) — it can clash
+      // Strip kernel-chosen background-color ANSI — it can clash
       // with the editor's own theme; foreground/weight is left to VSCode's own
       // ANSI renderer, which already reconciles those with the active theme.
-      return [vscode.NotebookCellOutputItem.error({
-        name: o.ename ?? "Error",
-        message: o.evalue ?? "",
-        stack: formatTraceback(o.traceback ?? []).join("\n"),
-      })];
+      return [
+        vscode.NotebookCellOutputItem.error({
+          name: o.ename ?? "Error",
+          message: o.evalue ?? "",
+          stack: formatTraceback(o.traceback ?? []).join("\n"),
+        }),
+      ];
     case "display_data":
     case "execute_result": {
       const data = o.data ?? {};
@@ -131,7 +135,9 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       }
       // 2) Vector image (text-based) — VSCode renders it natively.
       const svg = data["image/svg+xml"];
-      if (typeof svg === "string") return [vscode.NotebookCellOutputItem.text(svg, "image/svg+xml")];
+      if (typeof svg === "string") {
+        return [vscode.NotebookCellOutputItem.text(svg, "image/svg+xml")];
+      }
       // 3) ipywidget (tqdm.notebook etc.): render it for real via the Tithon widget
       //    renderer (html-manager) when the mirror state is known, carrying the
       //    state in the output so the renderer needs no round-trip; keep a text
@@ -140,7 +146,7 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       const modelId = widgetModelIdOf(o);
       if (modelId) {
         // Interactive controls (sliders, buttons, text boxes...) have no
-        // client -> kernel comm back-channel (RISKS #4/T8) — rendering them
+        // client -> kernel comm back-channel — rendering them
         // via html-manager would produce a control that LOOKS functional but
         // silently drops every interaction. Render only display-only widgets
         // (and containers of them) interactively; anything else is the
@@ -212,7 +218,11 @@ interface PaintedSlot {
   item: OutputItem;
 }
 
-function toCellOutputs(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): vscode.NotebookCellOutput[] {
+function toCellOutputs(
+  outputs: OutputItem[],
+  stale: boolean,
+  ctx?: RenderCtx,
+): vscode.NotebookCellOutput[] {
   // One NotebookCellOutput PER folded output item — a NotebookCellOutput is a
   // single output's mimebundle (VSCode renders only ONE of its items), so
   // flattening every item into one output collapses e.g. tqdm-widget + stdout +
@@ -220,12 +230,14 @@ function toCellOutputs(outputs: OutputItem[], stale: boolean, ctx?: RenderCtx): 
   // ("only one output renders"). The widget's own two items (renderer payload +
   // text fallback) DO belong together — that grouping stays inside toOutputItems.
   // Matches the live appendOutput / seedCell path (one output per item).
-  return outputs.filter((o) => !isOutputAreaView(o, ctx?.widgets ?? null)).map((o) => {
-    const out = new vscode.NotebookCellOutput(toOutputItems(o, ctx));
-    // Surface the §3.2 "stale" badge: the cell was edited since this run.
-    if (stale) out.metadata = { tithonStale: true };
-    return out;
-  });
+  return outputs
+    .filter((o) => !isOutputAreaView(o, ctx?.widgets ?? null))
+    .map((o) => {
+      const out = new vscode.NotebookCellOutput(toOutputItems(o, ctx));
+      // Surface the §3.2 "stale" badge: the cell was edited since this run.
+      if (stale) out.metadata = { tithonStale: true };
+      return out;
+    });
 }
 
 /**
@@ -238,7 +250,10 @@ class VSCodeCellSink implements CellSink {
   // Per cell: the proxy execution and whether we've called start() on it yet.
   // A created-but-not-started execution renders as PENDING (the queued clock);
   // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
-  private readonly execs = new Map<number, { exec: vscode.NotebookCellExecution; started: boolean }>();
+  private readonly execs = new Map<
+    number,
+    { exec: vscode.NotebookCellExecution; started: boolean }
+  >();
   private readonly streamOut = new Map<string, vscode.NotebookCellOutput>();
   /**
    * Per display_id: the owning cell and every NotebookCellOutput created under
@@ -248,7 +263,7 @@ class VSCodeCellSink implements CellSink {
    * Keyed by display_id ALONE, unlike streamOut's `${idx}:`-prefixed key, and
    * deliberately NOT cleared when the creating execution ends: a display outlives
    * its cell's run, and `update_display` from ANOTHER cell must still find it
-   * (RISKS #6).
+   * regardless.
    *
    * `outs` is a LIST because both folds update EVERY item carrying the id
    * (`folding.py` / `outputFold.ts`), so `display(x, display_id="d")` twice then
@@ -271,9 +286,12 @@ class VSCodeCellSink implements CellSink {
   /** Per cell: what the document currently shows, so a repaint can update only
    *  the slots that changed (see {@link repaintInPlace}). Dropped wherever the
    *  cell's outputs are destroyed, alongside the display handles. */
-  private readonly painted = new Map<number, { outs: vscode.NotebookCellOutput[]; slots: PaintedSlot[] }>();
-  // Set by endAll() (live sync torn down). A structural backstop for RISKS #15:
-  // even if a stray flush reaches the sink after teardown (e.g. a scheduler
+  private readonly painted = new Map<
+    number,
+    { outs: vscode.NotebookCellOutput[]; slots: PaintedSlot[] }
+  >();
+  // Set by endAll() (live sync torn down). A structural backstop: even if a
+  // stray flush reaches the sink after teardown (e.g. a scheduler
   // that ignores cancel()), create() refuses to spin up a NEW proxy execution
   // that would never receive a matching `done` — a permanent spinner.
   private disposed = false;
@@ -298,7 +316,9 @@ class VSCodeCellSink implements CellSink {
     const next = (this.tail.get(idx) ?? Promise.resolve())
       .then(work)
       .catch(() => undefined)
-      .then(() => { this.queued -= 1; });
+      .then(() => {
+        this.queued -= 1;
+      });
     this.tail.set(idx, next);
   }
 
@@ -335,7 +355,9 @@ class VSCodeCellSink implements CellSink {
       // gains a CHILD references a model the renderer has never been given, and
       // can only get it by being rebuilt from a fresh payload.
       fingerprint: live
-        ? Object.keys(widgetPayload(o, ctx.widgets)?.state.state ?? {}).sort().join(",")
+        ? Object.keys(widgetPayload(o, ctx.widgets)?.state.state ?? {})
+            .sort()
+            .join(",")
         : slotFingerprint(o),
       live,
       item: o,
@@ -430,7 +452,9 @@ class VSCodeCellSink implements CellSink {
 
   /** Create the proxy execution in PENDING state (clock), if not present. No
    *  output ops here — VSCode rejects clearOutput/appendOutput before start(). */
-  private create(idx: number): { exec: vscode.NotebookCellExecution; started: boolean } | undefined {
+  private create(
+    idx: number,
+  ): { exec: vscode.NotebookCellExecution; started: boolean } | undefined {
     if (this.disposed) return undefined;
     let rec = this.execs.get(idx);
     if (!rec) {
@@ -636,13 +660,13 @@ class VSCodeCellSink implements CellSink {
    * so a live timer / re-displayed figure updates in place (no stacking).
    *
    * `idx` is the cell of the display's OWNER, which the daemon resolved
-   * session-wide (RISKS #6) — so it need not be the cell that emitted the
+   * session-wide — so it need not be the cell that emitted the
    * update, and that cell's run may be long finished. Hence the two branches,
    * mirroring `clear()`'s split: a running cell edits through its live
    * execution; a finished one gets a MOMENTARY execution that starts, replaces
    * and ends immediately (VSCode exposes no output-only edit). Never
    * `ensureStarted()` on the finished branch — it would clear the whole cell and
-   * leave a spinner no `done` will ever end (RISKS #15).
+   * leave a spinner no `done` will ever end.
    *
    * An update for a display this sink has no live handle for is DROPPED, in both
    * branches. Both folds no-op on an id no item carries, so appending one here
@@ -692,11 +716,11 @@ class VSCodeCellSink implements CellSink {
    * Replace the cell's outputs with an authoritative folded list. Used where an
    * incremental op cannot express the change — an `ipywidgets.Output`'s
    * `clear_output` removes only ITS outputs, so the cell is repainted from the
-   * fold instead of blanked (RISKS #17).
+   * fold instead of blanked.
    *
    * Mirrors `clear()`'s two branches deliberately: never `ensureStarted()` on a
    * cell with no live execution, which would leave a spinner no `done` ever
-   * ends (RISKS #15).
+   * ends.
    *
    * The paint itself takes the cheapest form that expresses the change:
    * {@link repaintInPlace} first, and a whole-list `replaceOutput` only when the
@@ -753,7 +777,7 @@ class VSCodeCellSink implements CellSink {
       // Re-checked INSIDE the chain: `chain` defers, so a flush that passed the
       // guard above can still land after endAll()/dispose(). Opening a proxy
       // execution then would leave a spinner teardown can no longer end
-      // (RISKS #15). `end()` is in a `finally` for the same reason — a throw in
+      // at all. `end()` is in a `finally` for the same reason — a throw in
       // paint() must not strand a started execution the chain then swallows.
       if (this.disposed) {
         // Only paint() pops the queued entry, so drop it here or a repaint that
@@ -777,7 +801,9 @@ class VSCodeCellSink implements CellSink {
       // A kernel-driven clear_output WHILE the cell is running: clear via the live
       // execution, keeping its spinner. Queue on the chain so it lands after any
       // in-flight append (e.g. a figure still fetching) rather than racing ahead.
-      this.chain(idx, async () => { await rec.exec.clearOutput(); });
+      this.chain(idx, async () => {
+        await rec.exec.clearOutput();
+      });
     } else {
       // No live execution for this cell — e.g. the daemon echoing back a user's
       // own "Clear Outputs" (a tombstone broadcast), or another window's clear.
@@ -848,8 +874,8 @@ class VSCodeCellSink implements CellSink {
    *
    * It cannot wait for the daemon's tombstone to echo back into `repaint`: in
    * that window a cross-cell update for a display this cell owns would call
-   * `replaceOutputItems` on an erased handle (RISKS #6 made those handles
-   * outlive their execution, which is what opened the window).
+   * `replaceOutputItems` on an erased handle — display handles deliberately
+   * outlive their execution, which is what opens the window.
    */
   notifyUserCleared(idx: number): void {
     this.invalidateDisplays(idx);
@@ -904,8 +930,11 @@ export class TithonNotebookController {
   private readonly liveSessions = new Map<
     string,
     {
-      dispose: () => void; refresh: () => void; activeCells: () => number[];
-      hasPendingFlush: () => boolean; diag: () => LiveDiag;
+      dispose: () => void;
+      refresh: () => void;
+      activeCells: () => number[];
+      hasPendingFlush: () => boolean;
+      diag: () => LiveDiag;
     }
   >();
 
@@ -917,23 +946,36 @@ export class TithonNotebookController {
   /** Count of live widget updates the renderer applied (live animation) — for verify. */
   widgetUpdatesApplied = 0;
   /** Test-only: the most recent reconnect seed mapping (per notebook uri). */
-  readonly lastSeedTrace = new Map<string, Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }>>();
+  readonly lastSeedTrace = new Map<
+    string,
+    Array<{
+      execId: string;
+      originIndex: number | null | undefined;
+      cellHash: string | null;
+      mappedCell: number | undefined;
+      staleMap: boolean;
+      status: string;
+    }>
+  >();
   // Coalesced live widget-state deltas pushed to the renderer (latest per comm id,
   // flushed ~50ms) so a 50k-update tqdm.notebook animates without flooding it.
   // Buffers merge BY PATH across the coalescing window (mergeBufferEntries), same
   // as sessionClient's own mirror — a window spanning several comm_msg frames must
   // not let an earlier frame's buffer silently drop just because a later frame in
-  // the SAME window only touched JSON state (RISKS #13).
+  // the SAME window only touched JSON state.
   // Keyed by owner+comm_id (NOT bare comm_id): two DIFFERENT notebooks' kernels
   // are independent processes, so their ipywidgets comm_ids are independently
   // UUID-generated and collide only in theory — but keying on comm_id alone
   // would still let a same-window update from notebook B silently merge into
   // (and overwrite the `owner` of) notebook A's pending entry, defeating
-  // disposeLive()'s purge for A (Codex ② caught this in the first draft).
+  // disposeLive()'s purge for A.
   // `owner` is the notebook uri string that produced this comm's update — kept so
   // disposeLive() can purge only its own entries out of this GLOBAL (cross-notebook)
   // buffer before the shared 50ms timer flushes; see `invalidateWidgetUpdatesFor`.
-  private readonly widgetUpdateBuf = new Map<string, { owner: string; commId: string; state: Record<string, unknown>; buffers: WidgetBufferEntry[] }>();
+  private readonly widgetUpdateBuf = new Map<
+    string,
+    { owner: string; commId: string; state: Record<string, unknown>; buffers: WidgetBufferEntry[] }
+  >();
 
   // NUL-separated: neither a uri nor a comm_id can contain one, so this can't
   // collide the way a printable separator (or bare comm_id) theoretically could.
@@ -948,12 +990,15 @@ export class TithonNotebookController {
   private readonly reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly reconnectAttempts = new Map<string, number>();
   // One withProgress notification per notebook uri, spanning the WHOLE reconnect
-  // cycle (RISKS #8/T6) — replaces a single 3s setStatusBarMessage flash, which
-  // gave no indication during a daemon restart that can take up to ~15s.
-  private readonly reconnectProgress = new Map<string, {
-    resolve: (outcome: "connected" | "cancelled") => void;
-    report: (message: string) => void;
-  }>();
+  // cycle: a daemon restart can take up to ~15s, and a momentary status-bar
+  // flash leaves the rest of that wait unexplained.
+  private readonly reconnectProgress = new Map<
+    string,
+    {
+      resolve: (outcome: "connected" | "cancelled") => void;
+      report: (message: string) => void;
+    }
+  >();
 
   constructor(sockPath?: string) {
     this.sockPath = sockPath ?? defaultSocketPath();
@@ -1042,7 +1087,9 @@ export class TithonNotebookController {
   /** Coalesce a live comm-state delta for the widget renderer (latest per comm id). */
   private queueWidgetUpdate(
     owner: string,
-    payload: { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] } | undefined,
+    payload:
+      | { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] }
+      | undefined,
   ): void {
     if (payload?.msg_type !== "comm_msg" || !payload.comm_id) return;
     const data = payload.data ?? {};
@@ -1051,7 +1098,9 @@ export class TithonNotebookController {
     const prior = this.widgetUpdateBuf.get(key);
     const state = { ...(prior?.state ?? {}), ...(data.state ?? {}) };
     const delta = decodeBufferEntries(data.buffer_paths, payload._buffers_b64);
-    const buffers = delta.length ? mergeBufferEntries(prior?.buffers, delta) : (prior?.buffers ?? []);
+    const buffers = delta.length
+      ? mergeBufferEntries(prior?.buffers, delta)
+      : (prior?.buffers ?? []);
     this.widgetUpdateBuf.set(key, { owner, commId: payload.comm_id, state, buffers });
     if (!this.widgetFlushTimer) {
       this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
@@ -1060,8 +1109,8 @@ export class TithonNotebookController {
 
   /** Drop a disposed live session's own pending widget deltas out of the shared
    * buffer, so its already-scheduled flush can't `postMessage` a stale update
-   * after detach/restart (RISKS #7 finding 2 — the buffer/timer are global across
-   * notebooks, `disposeLive` alone left them armed). */
+   * after detach/restart. The buffer and its timer are global across
+   * notebooks, so `disposeLive` alone would leave them armed. */
   private invalidateWidgetUpdatesFor(owner: string): void {
     for (const [key, entry] of this.widgetUpdateBuf) {
       if (entry.owner === owner) this.widgetUpdateBuf.delete(key);
@@ -1075,9 +1124,13 @@ export class TithonNotebookController {
       // Omit `buffers` entirely (not `[]`) when there's nothing to carry —
       // symmetric with the daemon's own wire choice (event_from_message omits
       // `_buffers_b64` when absent) and keeps the overwhelmingly common
-      // JSON-only postMessage payload exactly as small as before RISKS #13.
-      const msg: { type: string; comm_id: string; state: Record<string, unknown>; buffers?: typeof buffers } =
-        { type: "tithon.widget-update", comm_id, state };
+      // JSON-only postMessage payload as small as it can be.
+      const msg: {
+        type: string;
+        comm_id: string;
+        state: Record<string, unknown>;
+        buffers?: typeof buffers;
+      } = { type: "tithon.widget-update", comm_id, state };
       if (buffers.length) msg.buffers = buffers;
       void this.widgetMessaging.postMessage(msg);
     }
@@ -1208,7 +1261,11 @@ export class TithonNotebookController {
     const envs = await listPythonEnvironments();
     type Item = vscode.QuickPickItem & { path: string };
     const items: Item[] = [
-      { label: "$(check) Use the Python extension's interpreter", description: "default", path: "" },
+      {
+        label: "$(check) Use the Python extension's interpreter",
+        description: "default",
+        path: "",
+      },
       ...envs.map((e) => ({
         label: `$(snake) Python ${e.version ?? "?"}`,
         description: e.label ? `${e.label} — ${e.path}` : e.path,
@@ -1222,16 +1279,20 @@ export class TithonNotebookController {
     if (!pick) return;
     let chosen = pick.path;
     if (chosen === "__manual__") {
-      chosen = (await vscode.window.showInputBox({
-        prompt: "Absolute path to the Python interpreter (it must have `tithon` installed)",
-        value: this.sockPath, // hint; user replaces
-      })) ?? "";
+      chosen =
+        (await vscode.window.showInputBox({
+          prompt: "Absolute path to the Python interpreter (it must have `tithon` installed)",
+          value: this.sockPath, // hint; user replaces
+        })) ?? "";
       if (!chosen) return;
     }
-    await vscode.workspace.getConfiguration("tithon")
+    await vscode.workspace
+      .getConfiguration("tithon")
       .update("pythonPath", chosen, vscode.ConfigurationTarget.Global);
 
     // The interpreter is daemon-wide, so applying it means restarting the daemon.
+    // Always asks, even with confirmation off: the setting is chosen and the
+    // question here is "apply it NOW?", not a guard on a destructive click.
     const answer = await vscode.window.showWarningMessage(
       "Changing the interpreter restarts the Tithon daemon — all running kernels and cells will stop. Restart now?",
       { modal: true },
@@ -1240,7 +1301,7 @@ export class TithonNotebookController {
     );
     if (answer === "Restart now") {
       await this.restartDaemon();
-      vscode.window.setStatusBarMessage("Tithon: daemon restarted with the selected interpreter", 4000);
+      notifyInfo("Tithon: daemon restarted with the selected interpreter");
     }
   }
 
@@ -1262,7 +1323,7 @@ export class TithonNotebookController {
     }
     const running = kernels.filter((k) => k.kernel_pid != null);
     if (running.length === 0) {
-      vscode.window.showInformationMessage("Tithon: no running kernels.");
+      notifyWarn("Tithon: no running kernels.");
       return;
     }
     type Item = vscode.QuickPickItem & { session: string };
@@ -1288,12 +1349,13 @@ export class TithonNotebookController {
       matchOnDetail: true,
     });
     if (!pick) return;
-    const answer = await vscode.window.showWarningMessage(
-      `Terminate the kernel for ${kernelLabel(pick.session)}? Any running cell stops and the namespace is lost.`,
-      { modal: true },
-      "Terminate",
-    );
-    if (answer !== "Terminate") return;
+    const confirmed = await confirmDestructive({
+      message: `Terminate the kernel for ${kernelLabel(pick.session)}?`,
+      detail:
+        "The Python process is killed and its host/GPU memory freed: every variable is lost and any running cell stops. Previous outputs stay restorable.",
+      confirmLabel: "Terminate",
+    });
+    if (!confirmed) return;
     const ok = await this.daemon.killKernel(pick.session);
     // Tear down our live view for that file (if any) so the UI resets — the next
     // run/open spawns a fresh kernel.
@@ -1302,12 +1364,11 @@ export class TithonNotebookController {
     } catch {
       /* "default"/CLI session isn't a real uri — nothing to dispose */
     }
-    vscode.window.setStatusBarMessage(
-      ok
-        ? `Tithon: kernel terminated (${kernelLabel(pick.session)})`
-        : "Tithon: kernel was not running",
-      4000,
-    );
+    if (ok) {
+      notifyInfo(`Tithon: kernel terminated (${kernelLabel(pick.session)})`);
+    } else {
+      notifyWarn("Tithon: kernel was not running");
+    }
   }
 
   /** Line range of each cell (by index) in the on-disk percent file. */
@@ -1328,7 +1389,8 @@ export class TithonNotebookController {
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
-    for (const key of [...this.reconnectProgress.keys()]) this.finishReconnectProgress(key, "cancelled");
+    for (const key of [...this.reconnectProgress.keys()])
+      this.finishReconnectProgress(key, "cancelled");
     this.wantLive.clear();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
@@ -1348,7 +1410,7 @@ export class TithonNotebookController {
     // populated the map while we awaited startLive — keep the first, drop ours.
     // An explicit disposeLive (close/deselect) during the SAME await clears
     // wantLive — the user already left, so the freshly-started session must
-    // be torn down here too, not resurrected (RISKS #8/T6).
+    // be torn down here too, not resurrected.
     if (this.liveSessions.has(key) || !this.wantLive.has(key)) {
       session.dispose();
       return;
@@ -1374,11 +1436,40 @@ export class TithonNotebookController {
     this.reconnectAttempts.delete(key);
     this.finishReconnectProgress(key, "cancelled"); // deliberate stop, not a fault
     this.invalidateWidgetUpdatesFor(key);
+    this.closedRestoreOffered.delete(key); // reopening the file may offer again
     const s = this.liveSessions.get(key);
     if (s) {
       s.dispose();
       this.liveSessions.delete(key);
     }
+  }
+
+  /** Notebooks already told this session was closed. An auto-reconnect calls
+   *  startLive again, and one prompt per open is enough. */
+  private readonly closedRestoreOffered = new Set<string>();
+
+  /**
+   * Tell the user their closed session still holds output, and offer it back.
+   *
+   * A prompt rather than a silent restore: skipping the seed is the point, since
+   * they ended the session on purpose. But saying nothing would read as "the
+   * history is gone", which is the opposite of what happened and of what Tithon
+   * promises.
+   */
+  private offerClosedSessionRestore(notebook: vscode.NotebookDocument, count: number): void {
+    const key = notebook.uri.toString();
+    if (this.closedRestoreOffered.has(key)) return;
+    this.closedRestoreOffered.add(key);
+    const restore = "Restore outputs";
+    void vscode.window
+      .showInformationMessage(
+        `Kernel was closed for this file. ${count} previous execution` +
+          `${count === 1 ? "" : "s"} kept, not restored.`,
+        restore,
+      )
+      .then((choice) => {
+        if (choice === restore) void this.restore(notebook);
+      });
   }
 
   /** URIs the user wants kept live (set in ensureLive, cleared by disposeLive).
@@ -1402,7 +1493,9 @@ export class TithonNotebookController {
     const attempt = (this.reconnectAttempts.get(key) ?? 0) + 1;
     this.reconnectAttempts.set(key, attempt);
     const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
-    console.log(`[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`);
+    console.log(
+      `[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`,
+    );
     this.reportReconnectProgress(notebook, reason, attempt, delay);
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(key);
@@ -1422,7 +1515,7 @@ export class TithonNotebookController {
           // same ensureLive() call (see its own guard) — that dispose already
           // resolved the progress entry as "cancelled"; reporting "connected"
           // here too would show a stale "reconnected" toast after the user
-          // already closed the notebook (RISKS #8/T6 Codex ② review).
+          // already closed the notebook.
           if (this.wantLive.has(key)) this.finishReconnectProgress(key, "connected");
         },
         () => this.scheduleReconnect(nb, "retry"), // daemon still down: back off
@@ -1436,13 +1529,17 @@ export class TithonNotebookController {
    *  explicit dispose — distinguishing a real fault (kept retrying) from a
    *  deliberate stop (`disposeLive` resolves it as "cancelled", not a failure). */
   private reportReconnectProgress(
-    notebook: vscode.NotebookDocument, reason: string, attempt: number, delayMs: number,
+    notebook: vscode.NotebookDocument,
+    reason: string,
+    attempt: number,
+    delayMs: number,
   ): void {
     const key = notebook.uri.toString();
     const label = kernelLabel(key);
-    const message = attempt === 1
-      ? `connection lost (${reason}) — reconnecting…`
-      : `reconnecting… (attempt ${attempt}, retry in ${Math.round(delayMs / 1000)}s)`;
+    const message =
+      attempt === 1
+        ? `connection lost (${reason}) — reconnecting…`
+        : `reconnecting… (attempt ${attempt}, retry in ${Math.round(delayMs / 1000)}s)`;
     const existing = this.reconnectProgress.get(key);
     if (existing) {
       existing.report(message);
@@ -1461,16 +1558,22 @@ export class TithonNotebookController {
       entry.resolve = resolve;
     });
     this.reconnectProgress.set(key, entry);
-    void vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: `Tithon: ${label}`, cancellable: false },
-      async (progress) => {
-        liveReport = (m) => progress.report({ message: m });
-        liveReport(pending);
-        const result = await outcome;
-        progress.report({ message: result === "connected" ? "reconnected" : "disconnected" });
-        await new Promise((r) => setTimeout(r, result === "connected" ? 1000 : 700));
-      },
-    ).then(undefined, () => undefined); // never let a VSCode-side rejection go unhandled
+    void vscode.window
+      .withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Tithon: ${label}`,
+          cancellable: false,
+        },
+        async (progress) => {
+          liveReport = (m) => progress.report({ message: m });
+          liveReport(pending);
+          const result = await outcome;
+          progress.report({ message: result === "connected" ? "reconnected" : "disconnected" });
+          await new Promise((r) => setTimeout(r, result === "connected" ? 1000 : 700));
+        },
+      )
+      .then(undefined, () => undefined); // never let a VSCode-side rejection go unhandled
   }
 
   /** Resolve and dismiss an open reconnect progress notification, if any. */
@@ -1499,14 +1602,14 @@ export class TithonNotebookController {
    *
    * Reports its own outcome and never throws, so every caller behaves alike —
    * including `interruptHandler`, which VSCode gives nowhere to surface a
-   * rejection (a failed stop press used to be silent on that path).
+   * rejection — a failure there would otherwise be invisible to the user.
    */
   async interruptKernel(notebook: vscode.NotebookDocument): Promise<void> {
     try {
       await ensureDaemon(this.sockPath);
       const ok = await this.daemon.interrupt(notebook.uri.toString());
-      vscode.window.setStatusBarMessage(
-        ok ? "Tithon: interrupt sent" : "Tithon: no running kernel to interrupt", 3000);
+      if (ok) notifyInfo("Tithon: interrupt sent");
+      else notifyWarn("Tithon: no running kernel to interrupt");
     } catch (err) {
       vscode.window.showErrorMessage(`Tithon interrupt: ${String(err)}`);
     }
@@ -1572,7 +1675,7 @@ export class TithonNotebookController {
   ): void {
     const execIds: string[] = [];
     for (const ch of e.cellChanges) {
-      if (!ch.outputs || ch.outputs.length !== 0) continue; // only outputs -> empty
+      if (ch.outputs?.length !== 0) continue; // only outputs -> empty
       const idx = ch.cell.index;
       if (sink.isExecuting(idx)) continue; // our own clearOutput during a run
       // Synchronously, before the round trip below: the cell is ALREADY empty,
@@ -1591,14 +1694,19 @@ export class TithonNotebookController {
 
     await ensureDaemon(this.sockPath);
     const client = new SessionClient(
-      undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
+      undefined,
+      notebook.uri.toString(),
+      workdirForUri(notebook.uri),
+    );
     await client.attach(0);
     try {
       const attachments = client.restoreInto(cells, notebook.uri.toString());
       // Prefetch every image artifact before rendering so figures restore as
       // pictures, not "<Figure ...>" placeholders.
       const allOutputs = [...attachments.values()].flatMap((a) => a.outputs as OutputItem[]);
-      await client.prefetchArtifacts(allOutputs.flatMap((o) => imageRefsOf(o).map((r) => r.artifact_id)));
+      await client.prefetchArtifacts(
+        allOutputs.flatMap((o) => imageRefsOf(o).map((r) => r.artifact_id)),
+      );
       const ctx: RenderCtx = {
         image: (id) => client.cachedArtifact(id)?.bytes,
         widgets: client.widgets(),
@@ -1626,15 +1734,19 @@ export class TithonNotebookController {
    * by {@link LiveOutputSync}). Returns a handle with `dispose` (stops the
    * session) and `refresh` (rebuilds the cell-hash index from current cells).
    */
-  async startLive(
-    notebook: vscode.NotebookDocument,
-  ): Promise<{
-    dispose: () => void; refresh: () => void; activeCells: () => number[];
-    hasPendingFlush: () => boolean; diag: () => LiveDiag;
+  async startLive(notebook: vscode.NotebookDocument): Promise<{
+    dispose: () => void;
+    refresh: () => void;
+    activeCells: () => number[];
+    hasPendingFlush: () => boolean;
+    diag: () => LiveDiag;
   }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     const client = new SessionClient(
-      undefined, notebook.uri.toString(), workdirForUri(notebook.uri));
+      undefined,
+      notebook.uri.toString(),
+      workdirForUri(notebook.uri),
+    );
     await client.attach(0); // catch up on any prior state, then stream live
     // Register the reconnect handler with NO await between attach resolving and
     // here, so a drop during the seed/prefetch below cannot slip past an
@@ -1662,7 +1774,9 @@ export class TithonNotebookController {
       (execId) => client.outputsOf(execId),
     );
     const execs = client.executions();
-    live.seed(execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));
+    live.seed(
+      execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })),
+    );
     // Prefetch image bytes for the snapshot so seedCell renders matplotlib
     // figures synchronously below (and not as a "<Figure ...>" placeholder).
     // Events arriving during this await are captured by outputsOf() at seed time
@@ -1677,16 +1791,16 @@ export class TithonNotebookController {
     // but the `execs` snapshot taken before the await, and the seed/prefetch
     // already done, do not. Without this, that execution's live events would
     // arrive with nothing seeded to route them to and be silently dropped —
-    // the cell never shows the run at all (RISKS #6's bootstrap race, found
-    // by an Opus 5 review of this session's other work; verified end to end
-    // by v50/ADR-081's own two-client-one-session precedent). One re-check
+    // the cell never shows the run at all. One re-check
     // pass, not a loop-until-stable — narrows the window to "another
     // execution arrives during THIS second prefetch too", vanishingly
     // unlikely relative to the window this closes.
     const seenExecIds = new Set(execs.map((e) => e.execId));
     const lateExecs = client.executions().filter((e) => !seenExecIds.has(e.execId));
     if (lateExecs.length) {
-      live.seed(lateExecs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })));
+      live.seed(
+        lateExecs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })),
+      );
       await sink.prefetch(lateExecs.flatMap((e) => client.outputsOf(e.execId)));
       execs.push(...lateExecs);
     }
@@ -1698,26 +1812,61 @@ export class TithonNotebookController {
     // attach() resolved, so no live event can slip in between capturing the
     // snapshot and wiring onEvent — no gap, no duplication.
     const toMs = (s: number | null) => (s != null ? s * 1000 : undefined);
-    const trace: Array<{ execId: string; originIndex: number | null | undefined; cellHash: string | null; mappedCell: number | undefined; staleMap: boolean; status: string }> = [];
-    for (const ex of execs) trace.push({ execId: ex.execId, originIndex: ex.origin?.index, cellHash: ex.cellHash, mappedCell: live.cellOf(ex.execId), staleMap: live.staleOf(ex.execId), status: ex.status });
+    const trace: Array<{
+      execId: string;
+      originIndex: number | null | undefined;
+      cellHash: string | null;
+      mappedCell: number | undefined;
+      staleMap: boolean;
+      status: string;
+    }> = [];
+    for (const ex of execs)
+      trace.push({
+        execId: ex.execId,
+        originIndex: ex.origin?.index,
+        cellHash: ex.cellHash,
+        mappedCell: live.cellOf(ex.execId),
+        staleMap: live.staleOf(ex.execId),
+        status: ex.status,
+      });
     this.lastSeedTrace.set(notebook.uri.toString(), trace);
-    for (const ex of execs) {
+    // ...unless the user ENDED this session rather than losing it. Restoring is
+    // what makes a crash, a reboot or a dropped tunnel invisible; replaying the
+    // same outputs after a deliberate "Kill Kernel" instead contradicts what the
+    // user just did, on this open and every open after it. The history is not
+    // gone: `tithon.restoreOutputs` (and the prompt below) still seed it.
+    // Only the SEED is skipped: live sync below still runs, so the next cell the
+    // user executes streams into the notebook normally.
+    const closed = client.isClosedByUser();
+    if (closed && execs.length) this.offerClosedSessionRestore(notebook, execs.length);
+    for (const ex of closed ? [] : execs) {
       const idx = live.cellOf(ex.execId);
       if (idx === undefined) continue;
       // "skipped": a Run-All cell that never ran (the run stopped on an earlier
       // error). Leave the cell blank — nothing to restore.
       if (ex.status === "skipped") continue;
       const state =
-        ex.status === "done" ? "done"
-        : ex.status === "error" ? "error"
-        : ex.status === "queued" ? "queued"
-        // "orphaned": in-flight at a daemon/kernel restart, no `done` is coming —
-        // render output without a perpetual spinner (the "26667s running" bug).
-        : ex.status === "orphaned" ? "orphaned"
-        : "running";
+        ex.status === "done"
+          ? "done"
+          : ex.status === "error"
+            ? "error"
+            : ex.status === "queued"
+              ? "queued"
+              : // "orphaned": in-flight at a daemon/kernel restart, no `done` is coming —
+                // render output without a perpetual spinner (the "26667s running" bug).
+                ex.status === "orphaned"
+                ? "orphaned"
+                : "running";
       // staleOf: the cell was edited since this run (mapped by index, code gone) —
       // restore the old output flagged stale, ending neutral (ADR-047).
-      sink.seedCell(idx, client.outputsOf(ex.execId), state, toMs(ex.startedAt), toMs(ex.finishedAt), live.staleOf(ex.execId));
+      sink.seedCell(
+        idx,
+        client.outputsOf(ex.execId),
+        state,
+        toMs(ex.startedAt),
+        toMs(ex.finishedAt),
+        live.staleOf(ex.execId),
+      );
     }
     const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
     // Keep the index current as cells are added/edited after live started
@@ -1738,8 +1887,8 @@ export class TithonNotebookController {
       // must be rejected at the SOURCE too, not just cleaned up after queuing.
       // `disposeLive()` deletes from `liveSessions` synchronously as its last
       // step, so this reads the CURRENT state, not a snapshot from when onEvent
-      // was registered (RISKS #7 finding 2, follow-up after Codex ② caught the
-      // owner-tagging fix alone was insufficient).
+      // was registered. Owner-tagging the buffered entries alone is not
+      // enough — that only cleans up what was already queued.
       if (ev.kind === "widget" && this.liveSessions.has(notebook.uri.toString())) {
         this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
       }
@@ -1760,14 +1909,16 @@ export class TithonNotebookController {
     // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
     // so re-present the prompt from the snapshot (the live event won't replay).
     const pi = client.pendingInput();
-    if (pi) void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
+    if (pi) {
+      void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
+    }
     return {
       dispose: () => {
         changeSub.dispose();
         // Cancel any in-flight ThrottleScheduler window BEFORE endAll() closes
         // the sink's open executions — else a pending flush firing after this
         // point could call sink.status("running") and recreate a proxy
-        // execution with no `done` ever coming (RISKS #15).
+        // execution with no `done` ever coming.
         live.dispose();
         client.close();
         sink.endAll(); // don't leave cells spinning after we detach
@@ -1808,8 +1959,8 @@ export class TithonNotebookController {
   }
 
   /** True while this notebook's LiveOutputSync has a flush scheduled but not
-   *  yet fired — the precondition RISKS #15's v51 needs before tearing down,
-   *  so the test can wait for it instead of inferring timing indirectly. */
+   *  yet fired — the precondition a teardown test needs, so it can wait for
+   *  a real pending flush instead of inferring timing indirectly. */
   hasPendingFlush(notebook: vscode.NotebookDocument): boolean {
     return this.liveSessions.get(notebook.uri.toString())?.hasPendingFlush() ?? false;
   }
@@ -1822,14 +1973,14 @@ export class TithonNotebookController {
   }
 
   /** True while an auto-reconnect progress notification is open for this
-   *  notebook (RISKS #8/T6) — lets a test confirm the indicator actually
+   *  notebook — lets a test confirm the indicator actually
    *  appears during a real disconnect/reconnect cycle. */
   reconnectProgressActive(notebook: vscode.NotebookDocument): boolean {
     return this.reconnectProgress.has(notebook.uri.toString());
   }
 
   /** True while the shared widget-update coalescing timer is armed — the
-   *  precondition RISKS #7's finding-2 regression test needs before disposing,
+   *  precondition the stale-update regression test needs before disposing,
    *  matching `hasPendingFlush`'s pattern (poll for the real precondition
    *  instead of inferring timing). Global, not per-notebook, like the buffer
    *  itself (`widgetUpdateBuf`). */
@@ -1863,9 +2014,13 @@ function fmtIdle(seconds: number): string {
  * (onDidChangeSelectedNotebooks) and executing a cell both call ensureLive,
  * which restores the folded snapshot and starts live mirroring with no manual
  * step. The former `tithon.startLive` palette command was wholly redundant with
- * that auto path and was removed; `tithon.restoreOutputs` was likewise removed
- * from the user surface, surviving only as the test-only `tithon._restore`
- * handle the restore-path suites use to force a re-seed (ADR-068).
+ * that auto path and was removed.
+ *
+ * `tithon.restoreOutputs` is the exception: a session the user CLOSED is not
+ * re-seeded on open, so for that case — and only that case — a re-seed is
+ * something they have to be able to ask for. The test-only `tithon._restore`
+ * handle stays separate so the restore-path suites keep forcing a re-seed
+ * without depending on the user-facing command's wording.
  */
 export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
   const controller = new TithonNotebookController();
@@ -1878,10 +2033,20 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         vscode.window.showErrorMessage(`Tithon interpreter: ${String(err)}`);
       }
     }),
+    // Daemon-wide and therefore the broadest destructive action Tithon offers —
+    // it stops EVERY file's kernel, not just the active notebook's, so it asks
+    // first (see `confirmDestructive`).
     vscode.commands.registerCommand("tithon.restartDaemon", async () => {
+      const ok = await confirmDestructive({
+        message: "Restart the Tithon daemon?",
+        detail:
+          "Every running kernel is stopped — all variables in all files are lost and running cells are cancelled. Previous outputs stay restorable.",
+        confirmLabel: "Restart daemon",
+      });
+      if (!ok) return;
       try {
         await controller.restartDaemon();
-        vscode.window.setStatusBarMessage("Tithon: daemon restarted", 3000);
+        notifyInfo("Tithon: daemon restarted");
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon daemon restart: ${String(err)}`);
       }
@@ -1895,6 +2060,21 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
         vscode.window.showErrorMessage(`Tithon terminate kernel: ${String(err)}`);
       }
     }),
+    // Bring back the output of a session the user closed. Every other restore
+    // happens automatically on kernel selection; this one cannot, because
+    // skipping it is exactly what "the user closed this session" means.
+    vscode.commands.registerCommand("tithon.restoreOutputs", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (!nb) {
+        notifyWarn("Tithon: open a notebook first.");
+        return;
+      }
+      try {
+        await controller.restore(nb);
+      } catch (err) {
+        vscode.window.showErrorMessage(`Tithon restore: ${String(err)}`);
+      }
+    }),
     // Test-only: force a one-shot restore (fresh attach -> re-seed the folded
     // snapshot into the cells). Production restores automatically on kernel
     // selection; the restore-path suites (widget / rich-output reconstruction)
@@ -1906,20 +2086,20 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     // Test-only: tear down live sync for the active notebook via the SAME
     // disposeLive() path a real close/deselect/restart takes, deterministically
     // (real close/deselect timing in a headless Extension Host is not
-    // reliable enough to race against a 50ms flush window — RISKS #15's v51).
+    // reliable enough to race against a 50ms flush window).
     vscode.commands.registerCommand("tithon._disposeLive", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (nb) controller.disposeLive(nb.uri);
     }),
     // Test-only: whether the active notebook's live sync has a flush scheduled
-    // but not yet fired — v51 polls this to deterministically catch the
-    // RISKS #15 window before disposing, instead of inferring timing from a
+    // but not yet fired — polled to deterministically catch the flush-after-
+    // teardown window before disposing, instead of inferring timing from a
     // second client's event arrival.
     vscode.commands.registerCommand("tithon._hasPendingFlush", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       return nb ? controller.hasPendingFlush(nb) : false;
     }),
-    // Test-only: whether a reconnect progress notification (RISKS #8/T6) is
+    // Test-only: whether a reconnect progress notification is
     // currently open for the active notebook.
     vscode.commands.registerCommand("tithon._reconnectProgressActive", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
@@ -1928,11 +2108,16 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     // Test-only: lets the integration suite confirm the widget renderer painted
     // html (vs the text fallback) and applied live animation updates.
     vscode.commands.registerCommand("tithon._widgetRenderLog", () => controller.widgetRenders),
-    vscode.commands.registerCommand("tithon._widgetUpdateCount", () => controller.widgetUpdatesApplied),
+    vscode.commands.registerCommand(
+      "tithon._widgetUpdateCount",
+      () => controller.widgetUpdatesApplied,
+    ),
     // Test-only: whether the shared widget-update coalescing timer is currently
-    // armed — RISKS #7 finding-2 regression test polls this to catch a
+    // armed — the stale-update regression test polls this to catch a
     // genuinely pending flush before disposing, same pattern as _hasPendingFlush.
-    vscode.commands.registerCommand("tithon._hasPendingWidgetFlush", () => controller.hasPendingWidgetFlush()),
+    vscode.commands.registerCommand("tithon._hasPendingWidgetFlush", () =>
+      controller.hasPendingWidgetFlush(),
+    ),
     // Test-only: check-and-dispose in ONE command, so nothing can fire the
     // 50ms widget-flush timer in the gap between observing "pending" and
     // tearing down — a gap that exists only because two separate
@@ -1963,7 +2148,7 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
     // Test-only: the most recent reconnect seed mapping for the active notebook.
     vscode.commands.registerCommand("tithon._seedTrace", () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
-      return nb ? controller.lastSeedTrace.get(nb.uri.toString()) ?? [] : [];
+      return nb ? (controller.lastSeedTrace.get(nb.uri.toString()) ?? []) : [];
     }),
   );
   return controller;

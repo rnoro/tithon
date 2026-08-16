@@ -12,9 +12,9 @@
  * round-trip (the fix must not regress the v6 0-byte-diff guarantee for unedited
  * files via a false "edited" detection).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
@@ -48,8 +48,14 @@ describe("BUG: edited existing cell must persist on save (not revert to old cont
 
     await vscode.workspace.save(nb.uri);
     const after = readFileSync(uri.fsPath).toString("latin1");
-    console.log(`[EDITSAVE] control: bytesBefore=${original.length} bytesAfter=${after.length} exact=${after === original}`);
-    assert.strictEqual(after, original, "an unedited save must be byte-exact (no spurious rewrite)");
+    console.log(
+      `[EDITSAVE] control: bytesBefore=${original.length} bytesAfter=${after.length} exact=${after === original}`,
+    );
+    assert.strictEqual(
+      after,
+      original,
+      "an unedited save must be byte-exact (no spurious rewrite)",
+    );
   });
 
   it("edits cell 0 and saves — disk reflects the edit, not the stale old content", async () => {
@@ -81,7 +87,9 @@ describe("BUG: edited existing cell must persist on save (not revert to old cont
 
     const hasEdit = onDisk.includes("EDITED_CONTENT");
     const hasStale = onDisk.includes('print("old")');
-    console.log(`[EDITSAVE] FINDING: edit persisted=${hasEdit}, stale-old-content-on-disk=${hasStale} -> ${hasEdit && !hasStale ? "FIXED (edit saved)" : "BUG (edit lost / old content written)"}`);
+    console.log(
+      `[EDITSAVE] FINDING: edit persisted=${hasEdit}, stale-old-content-on-disk=${hasStale} -> ${hasEdit && !hasStale ? "FIXED (edit saved)" : "BUG (edit lost / old content written)"}`,
+    );
 
     assert.ok(hasEdit, "the edited content must be written to disk");
     assert.ok(!hasStale, "the old (pre-edit) content must NOT survive on disk");

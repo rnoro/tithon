@@ -10,7 +10,7 @@
  * the live index is built from the in-memory cell text the daemon actually runs,
  * not from the stale disk file.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
@@ -53,16 +53,15 @@ describe("Tithon maps output despite a stale/mismatched disk file (v13)", () => 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // Edit the cell in memory only — disk still says DISKVERSION.
     const cellDoc = nb.cellAt(0).document;
     const edit = new vscode.WorkspaceEdit();
-    edit.replace(
-      cellDoc.uri,
-      new vscode.Range(0, 0, cellDoc.lineCount, 0),
-      'print("EDITED")',
-    );
+    edit.replace(cellDoc.uri, new vscode.Range(0, 0, cellDoc.lineCount, 0), 'print("EDITED")');
     assert.ok(await vscode.workspace.applyEdit(edit), "in-memory edit applied");
     assert.ok(nb.isDirty, "notebook is dirty (disk is now stale)");
     assert.strictEqual(nb.cellAt(0).document.getText(), 'print("EDITED")');

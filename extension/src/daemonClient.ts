@@ -1,11 +1,12 @@
 /**
- * Minimal daemon client (spike level) — talks the daemon's WebSocket protocol
+ * Minimal daemon client — talks the daemon's WebSocket protocol
  * over its unix domain socket (SPEC.md; the daemon binds a 0600 unix
  * socket, never TCP). Used by the CodeLens "Run Cell" wiring to submit code.
  */
+
+import { homedir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
-import { homedir } from "os";
-import { join } from "path";
 
 export interface ExecOrigin {
   uri: string;
@@ -72,7 +73,10 @@ export class DaemonClient {
    *  root — on first creation the daemon roots this session's artifacts/kernel
    *  cwd there and names its dir readably (ADR-044). */
   async execute(
-    code: string, origin?: ExecOrigin, workdir?: string, allowStdin = false,
+    code: string,
+    origin?: ExecOrigin,
+    workdir?: string,
+    allowStdin = false,
   ): Promise<string> {
     const session = sessionOf(origin);
     const ws = await this.open();
@@ -80,8 +84,9 @@ export class DaemonClient {
       // attach live-only first so the daemon is ready to stream our events.
       ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
       await this.waitFor(ws, (m) => m.op === "sync");
-      ws.send(JSON.stringify(
-        { op: "execute", code, origin, session, workdir, allow_stdin: allowStdin }));
+      ws.send(
+        JSON.stringify({ op: "execute", code, origin, session, workdir, allow_stdin: allowStdin }),
+      );
       const ack = await this.waitFor(ws, (m) => m.op === "execute_ack");
       return ack.exec_id as string;
     } finally {
@@ -107,10 +112,16 @@ export class DaemonClient {
     try {
       ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
       await this.waitFor(ws, (m) => m.op === "sync");
-      ws.send(JSON.stringify({
-        op: "execute_batch", cells, stop_on_error: stopOnError, session, workdir,
-        allow_stdin: allowStdin,
-      }));
+      ws.send(
+        JSON.stringify({
+          op: "execute_batch",
+          cells,
+          stop_on_error: stopOnError,
+          session,
+          workdir,
+          allow_stdin: allowStdin,
+        }),
+      );
       const ack = await this.waitFor(ws, (m) => m.op === "execute_ack");
       return (ack.exec_ids ?? []) as string[];
     } finally {
@@ -200,9 +211,7 @@ export class DaemonClient {
   }
 
   /** `timeoutMs` bounds the wait; without it the caller waits indefinitely. */
-  private waitFor(
-    ws: WebSocket, pred: (m: any) => boolean, timeoutMs?: number,
-  ): Promise<any> {
+  private waitFor(ws: WebSocket, pred: (m: any) => boolean, timeoutMs?: number): Promise<any> {
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const done = () => {
@@ -235,8 +244,14 @@ export class DaemonClient {
         }, timeoutMs);
       }
       ws.on("message", onMsg);
-      ws.once("error", (e) => { done(); reject(e); });
-      ws.once("close", () => { done(); reject(new Error("daemon closed connection")); });
+      ws.once("error", (e) => {
+        done();
+        reject(e);
+      });
+      ws.once("close", () => {
+        done();
+        reject(new Error("daemon closed connection"));
+      });
     });
   }
 }

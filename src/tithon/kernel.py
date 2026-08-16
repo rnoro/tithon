@@ -6,6 +6,7 @@ with ``start_new_session=True`` (setsid) so a daemon crash/restart leaves it
 running, and the connection file + pid file under the session directory let
 the next daemon re-attach (SPEC.md).
 """
+
 from __future__ import annotations
 
 import logging

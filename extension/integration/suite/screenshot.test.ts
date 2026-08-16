@@ -5,16 +5,18 @@
  * window open so an external screenshot can capture the RENDERED output — proof
  * that the pixels appear, not just that cell.outputs is populated.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
 
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items) {
-    if (it.mime.includes("stdout") || it.mime === "text/plain" || it.mime.includes("error")) s += dec.decode(it.data);
-  }
+  for (const o of cell.outputs)
+    for (const it of o.items) {
+      if (it.mime.includes("stdout") || it.mime === "text/plain" || it.mime.includes("error"))
+        s += dec.decode(it.data);
+    }
   return s;
 }
 
@@ -28,7 +30,10 @@ async function waitFor(pred: () => boolean, ms: number, label: string): Promise<
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -40,14 +45,21 @@ describe("Tithon screenshot demo", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 3, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     await vscode.commands.executeCommand("notebook.execute"); // Run All
-    await waitFor(() => {
-      let n = 0;
-      for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) n++;
-      return n >= nb.cellCount;
-    }, 30000, "all cells have output");
+    await waitFor(
+      () => {
+        let n = 0;
+        for (let i = 0; i < nb.cellCount; i++) if (cellText(nb.cellAt(i)).length > 0) n++;
+        return n >= nb.cellCount;
+      },
+      30000,
+      "all cells have output",
+    );
 
     for (let i = 0; i < nb.cellCount; i++) {
       console.log(`[shot] cell #${i} -> ${JSON.stringify(cellText(nb.cellAt(i)))}`);

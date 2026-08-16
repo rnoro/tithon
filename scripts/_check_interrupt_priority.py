@@ -68,8 +68,9 @@ async def request(sock: str, msg: dict, reply_op: str, timeout: float) -> dict:
 
 async def create_session(sock: str, session: str, workdir: str) -> None:
     """Force a real kernel spawn: `status` on an unknown session creates it."""
-    await request(sock, {"op": "status", "session": session, "workdir": workdir},
-                  "status_reply", timeout=180)
+    await request(
+        sock, {"op": "status", "session": session, "workdir": workdir}, "status_reply", timeout=180
+    )
 
 
 async def main() -> int:
@@ -82,30 +83,35 @@ async def main() -> int:
 
     # B) An interrupt for a never-seen session must not bring one into existence.
     ghost = "file:///proj/v60-never-opened.py"
-    reply = await request(args.sock, {"op": "interrupt", "session": ghost},
-                          "interrupted", timeout=30)
+    reply = await request(
+        args.sock, {"op": "interrupt", "session": ghost}, "interrupted", timeout=30
+    )
     if reply.get("ok"):
         die(f"interrupt on a non-existent session reported ok=true ({reply})")
     live = await request(args.sock, {"op": "status"}, "status_reply", timeout=30)
     if any(s.get("session") == ghost for s in live.get("sessions", [])):
         die("interrupt CREATED a session (and spawned a kernel) for an unknown file")
-    print(f"v60: interrupt on an unknown session: ok=false, no session created")
+    print("v60: interrupt on an unknown session: ok=false, no session created")
 
     # A) Now contend: N kernel spawns in flight, then interrupt the running one.
     t0 = time.monotonic()
     creations = [
         asyncio.create_task(
-            create_session(args.sock, f"file:///proj/v60-load-{i}.py", args.workdir))
+            create_session(args.sock, f"file:///proj/v60-load-{i}.py", args.workdir)
+        )
         for i in range(args.spawns)
     ]
     await asyncio.sleep(SETTLE_S)
     if all(c.done() for c in creations):
-        die(f"the {args.spawns} kernel spawns finished within {SETTLE_S}s — "
-            "no contention window, the measurement below would be meaningless")
+        die(
+            f"the {args.spawns} kernel spawns finished within {SETTLE_S}s — "
+            "no contention window, the measurement below would be meaningless"
+        )
 
     t_int = time.monotonic()
-    reply = await request(args.sock, {"op": "interrupt", "session": args.session},
-                          "interrupted", timeout=180)
+    reply = await request(
+        args.sock, {"op": "interrupt", "session": args.session}, "interrupted", timeout=180
+    )
     interrupt_s = time.monotonic() - t_int
     if not reply.get("ok"):
         die(f"interrupt on the running session reported ok=false ({reply})")
@@ -113,11 +119,15 @@ async def main() -> int:
     await asyncio.gather(*creations)
     contention_s = time.monotonic() - t0
     budget = contention_s * LATENCY_BUDGET
-    print(f"v60: {args.spawns} kernel spawns took {contention_s:.2f}s; "
-          f"interrupt answered in {interrupt_s * 1000:.0f}ms (budget {budget:.2f}s)")
+    print(
+        f"v60: {args.spawns} kernel spawns took {contention_s:.2f}s; "
+        f"interrupt answered in {interrupt_s * 1000:.0f}ms (budget {budget:.2f}s)"
+    )
     if interrupt_s > budget:
-        die(f"interrupt waited {interrupt_s:.2f}s while {args.spawns} sessions were "
-            f"starting ({contention_s:.2f}s) — it is queued behind them, not prioritized")
+        die(
+            f"interrupt waited {interrupt_s:.2f}s while {args.spawns} sessions were "
+            f"starting ({contention_s:.2f}s) — it is queued behind them, not prioritized"
+        )
     print(json.dumps({"interrupt_s": interrupt_s, "contention_s": contention_s}))
     return 0
 

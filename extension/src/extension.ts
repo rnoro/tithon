@@ -1,29 +1,30 @@
 /**
- * Tithon VSCode extension activation (Phase 0 spike).
+ * Tithon VSCode extension activation.
  *
- * Wires the three §3.2/§3.3 pieces verified in Phase 0:
+ * Wires the three §3.2/§3.3 pieces:
  *  - the percent NotebookSerializer for the `tithon-py` Cell View,
  *  - a "Run Cell" CodeLens on the plain-text view that submits to the daemon,
  *  - the widget renderer messaging (push mirror snapshots to the renderer).
  * The output<->cell attachment uses the journal's cell_hash (see cellAttach).
  */
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
 import { ensureDaemon } from "./daemonProcess";
+import { PercentNotebookSerializer } from "./notebookSerializer";
+import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 import { registerRestore, workdirForUri } from "./sessionController";
 
 /* ===========================================================================
  * SINGLE-REPRESENTATION INVARIANTS — read this before editing anything below.
  *
- * A tithon-py Cell View reuses the .py's OWN `file://` URI as its notebook URI
- * (ADR-041), which is what keeps ruff / ty / Pylance alive inside cells. The
- * price is that notebook-aware language servers key ONE URI as both a text
- * document and a notebook document, and desync if both exist. Every bug in the
- * ADR-041 / -062 / -064 / -065 / -066 / -067 chain came from breaking one of the
- * five rules below. They are stated once here; the individual functions carry
- * the per-symptom detail.
+ * A tithon-py Cell View reuses the .py's OWN `file://` URI as its notebook URI,
+ * which is what keeps ruff / ty / Pylance alive inside cells. The price is that
+ * notebook-aware language servers key ONE URI as both a text document and a
+ * notebook document, and desync if both exist. The five rules below are what
+ * keep that from happening. They are stated once here; implementation sites
+ * point back to the relevant rule.
  *
  * I1. ONE representation per URI. While a URI is in `cellViewUris`, no plain
  *     text editor for that same URI may stay open (`closeStaleTextTabs`, and the
@@ -34,48 +35,35 @@ import { registerRestore, workdirForUri } from "./sessionController";
  *     `closeTextDocsAndWait` (the text DOCUMENT gone, not merely the tab) before
  *     `openWith … tithon-py`; ty rejects a `notebookDocument/didOpen` for a URI
  *     it still holds as text and then fails every later didChange ("document not
- *     found"), killing go-to-definition (ADR-064/-066). The wait is bounded, so
- *     a stuck buffer degrades to the old racy order — never to a freeze.
+ *     found"), killing go-to-definition. The wait is bounded, so a stuck
+ *     buffer degrades to the racy order — never to a freeze.
  *
  * I3. Arm/disarm the guard on the correct side of the switch. `openAsNotebook`
  *     adds to `cellViewUris` FIRST (so the guard keeps the URI text-free across
  *     the switch); `openAsText` deletes FIRST (so the guard does not close the
  *     very text editor being opened).
  *
- * I4. The guard keys off a VISIBLE notebook TAB, never a notebook DOCUMENT.
+ * I4. The guard keys off a TAB-BACKED notebook, never a notebook DOCUMENT.
  *     Overlapping fast toggles can strand a tabless "zombie" notebook document
  *     that lingers in `workspace.notebookDocuments` forever; keying off it would
- *     auto-close every reopened text editor and make the .py un-openable
- *     (ADR-065). Hence `hasCellViewTab`, and the self-heal that DROPS a stale
+ *     auto-close every reopened text editor and make the .py un-openable.
+ *     Hence `hasCellViewTab`, and the self-heal that DROPS a stale
  *     `cellViewUris` entry instead of eating the user's editor.
  *
  * I5. Toggles are serialized per URI (`queueToggle`). Both commands have async
  *     tails (I2's wait is up to 3s), so unserialized rapid toggles interleave two
  *     `openWith` calls and produce exactly the I4 zombie.
  *
- * Guarded by v39 (opt-in toggle), v41 (Pylance pseudo-path), v42/v43 (ty round
- * trip: didChange flood + inlay offsets), v44 (reopen after round trip) —
- * `make notebook`. Because these depend on VSCode/LSP internals rather than on
- * our own API surface, `make notebook-insiders` re-runs them against the next
- * VSCode build as an early warning.
+ * These depend on VSCode/LSP internals rather than on our own API surface, so
+ * unit tests alone cannot hold them.
  * ======================================================================== */
 
 /** Find a tithon-py notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
-  return vscode.workspace.notebookDocuments.find(
-    (n) => n.uri.fsPath === fileUri.fsPath,
-  );
+  return vscode.workspace.notebookDocuments.find((n) => n.uri.fsPath === fileUri.fsPath);
 }
 
-/**
- * Is a tithon-py Cell View TAB currently on screen for this URI? Deliberately
- * distinct from `findNotebook` (which finds a notebook DOCUMENT): overlapping
- * fast toggles can strand a TABLESS "zombie" notebook document (ADR-065) that
- * lingers in `workspace.notebookDocuments` with no editor. The single-
- * representation guard must key off a real, VISIBLE notebook tab — not a zombie
- * document — otherwise it auto-closes a reopened text editor for a file that has
- * no Cell View on screen, and the .py becomes un-openable.
- */
+/** Whether a tithon-py tab exists; a notebook document is insufficient (I4). */
 function hasCellViewTab(fileUri: vscode.Uri): boolean {
   const key = fileUri.toString();
   return vscode.window.tabGroups.all
@@ -110,6 +98,19 @@ function resolveNotebookUri(arg: unknown): vscode.Uri | undefined {
   return undefined;
 }
 
+/**
+ * The file a per-file command should act on, from either representation. The
+ * notebook editor is consulted BEFORE the text editor: inside a Cell View,
+ * `activeTextEditor` is the focused CELL (`vscode-notebook-cell:`), not the .py.
+ */
+function resolveTargetUri(arg: unknown): vscode.Uri | undefined {
+  return (
+    resolveNotebookUri(arg) ??
+    vscode.window.activeNotebookEditor?.notebook.uri ??
+    vscode.window.activeTextEditor?.document.uri
+  );
+}
+
 /** Close every open Cell-View (tithon-py notebook) tab for `uriStr`. */
 async function closeCellViewTabs(uriStr: string): Promise<void> {
   const tabs = vscode.window.tabGroups.all
@@ -134,43 +135,23 @@ function isTithon(nb: vscode.NotebookDocument): boolean {
   return nb.notebookType === "tithon-py";
 }
 
-/**
- * URIs currently presented as a Tithon Cell View.
- *
- * A tithon-py notebook reuses the .py's OWN file:// URI as its notebook URI (see
- * findNotebook). Notebook-aware Python language servers (ruff, ty, Pylance) key
- * documents by URI, so if the same .py is ALSO open as a plain text editor they
- * register one URI as both a text document AND a notebook document and desync:
- * ruff drops the cell ("vscode-notebook-cell://… isn't open"), ty's per-URI
- * controller collapses ("Document controller not available at file://…"), and
- * cell IntelliSense/diagnostics die. So we enforce a SINGLE representation per
- * URI: while a .py is a Cell View, no plain text editor for that same URI may
- * coexist. This is scoped to the cell-viewed URI only — navigating elsewhere
- * (go-to-definition into another file) still opens a normal text editor.
- */
+/** URIs currently guarded as tithon-py notebooks (I1). */
 const cellViewUris = new Set<string>();
+let alwaysOpenWithPickerOpen = false;
+let alwaysOpenWithActive = false;
 
-/**
- * Per-URI serialization of the text<->Cell-View toggle. `openAsNotebook` and
- * `openAsText` both issue async `vscode.openWith` calls plus tab closes, and
- * ADR-064's `closeTextDocsAndWait` keeps `openAsNotebook` running for up to 3s.
- * So if the user toggles fast, command N's async tail can still be in flight when
- * command N+1 starts — two conflicting `openWith` calls interleave and strand a
- * TABLESS "zombie" notebook document: `findNotebook` then returns it forever, so
- * `cellViewUris` never clears, the single-representation guard auto-closes every
- * reopened text editor, and the .py won't reopen (ADR-065). Chaining both
- * commands through one per-URI queue makes rapid toggles apply sequentially so
- * the last toggle wins deterministically and no half-open state is left behind.
- */
+/** Execute text<->notebook transitions sequentially per URI (I5). */
 const toggleQueues = new Map<string, Promise<unknown>>();
 function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
   const prev = toggleQueues.get(uriStr) ?? Promise.resolve();
   const next = prev.catch(() => {}).then(op);
   toggleQueues.set(uriStr, next);
   // Drop the entry once this op is the tail, so the map can't grow unbounded.
-  void next.catch(() => {}).finally(() => {
-    if (toggleQueues.get(uriStr) === next) toggleQueues.delete(uriStr);
-  });
+  void next
+    .catch(() => {})
+    .finally(() => {
+      if (toggleQueues.get(uriStr) === next) toggleQueues.delete(uriStr);
+    });
   return next;
 }
 
@@ -179,11 +160,7 @@ function queueToggle(uriStr: string, op: () => Promise<void>): Promise<void> {
 async function closeStaleTextTabs(uriStr: string): Promise<void> {
   const stale = vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
-    .filter(
-      (t) =>
-        t.input instanceof vscode.TabInputText &&
-        t.input.uri.toString() === uriStr,
-    );
+    .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.toString() === uriStr);
   if (stale.length) {
     try {
       await vscode.window.tabGroups.close(stale, true);
@@ -193,21 +170,7 @@ async function closeStaleTextTabs(uriStr: string): Promise<void> {
   }
 }
 
-/**
- * Close every plain-text editor for `uriStr` AND wait until its underlying text
- * DOCUMENT is gone from the workspace — i.e. the LSP `textDocument/didClose` has
- * been dispatched.
- *
- * A tithon-py notebook reuses the .py's OWN file:// URI (ADR-041), so a
- * notebook-aware Python LSP (ty/ruff) keys both representations under one URI. ty
- * REJECTS a `notebookDocument/didOpen` for a URI it still holds as a text
- * document, then errors every later `notebookDocument/didChange`
- * ("document not found …baseline.py") and go-to-definition dies. So a Cell View
- * must only open once NO file-scheme text document for the URI remains — closing
- * the tab is not enough, the document close (which drives the LSP didClose) lands
- * a tick later. Bounded by a short deadline so a stuck/dirty buffer can't hang
- * the switch (worst case we fall back to the old racy order, never a freeze).
- */
+/** Close text tabs and wait, boundedly, for the underlying document to close (I2). */
 async function closeTextDocsAndWait(uriStr: string): Promise<void> {
   await closeStaleTextTabs(uriStr);
   const stillOpen = (): boolean =>
@@ -272,40 +235,145 @@ async function redirectPseudoPathDefinition(tab: vscode.Tab): Promise<void> {
   }
 }
 
+/* ===========================================================================
+ * DURABLE "open this .py as a Notebook" — the editor-association rules.
+ *
+ * `contributes.notebooks[].priority: "option"` keeps an unassociated `.py`
+ * resolving to the TEXT editor while `vscode.openWith(uri, "tithon-py")` still
+ * works, so Tithon writes NOTHING to settings just to stay out of the way. The
+ * only settings write left is the user's explicit per-file opt-in below.
+ *
+ * A1. Write ONLY `inspect().workspaceValue`, never the object `get()` returns.
+ *     `get()` merges User + Workspace, so spreading it into a Workspace update
+ *     copies the user's unrelated associations into a COMMITTED
+ *     `.vscode/settings.json`.
+ *
+ * A2. Resolution is longest-pattern-STRING-wins, not semantic specificity
+ *     (`getRawAssociationsForResourceFromSetting` sorts by
+ *     `filenamePattern.length` desc; `getConfiguredDefaultEditor` takes `[0]`),
+ *     and per key a Workspace value beats a User one. That is what lets a
+ *     `**`+`/<rel>.py` pattern outrank a pre-existing User `*.py`. Equal-length
+ *     matches are an unordered tie — do not rely on precedence there.
+ *
+ * A3. A pattern containing `/` is matched against `` `${scheme}:${uri.path}` ``,
+ *     one without `/` against the basename alone. Measured consequences: an
+ *     ABSOLUTE `/abs/x.py` pattern never matches, and neither does a
+ *     scheme-qualified `file:` + `**`+`/x.py`. Only a bare suffix glob matches.
+ *
+ * A4. Config alone does not switch an ALREADY-OPEN editor, and must not try to
+ *     by itself: the text -> Cell View switch is the ordered, serialized
+ *     `openAsNotebook` path (I2/I5 above). The command writes the key, then
+ *     delegates the switch to that command.
+ *
+ * A5. There is no per-session "prefer text" override. `openAsText` stays a
+ *     per-open escape hatch that leaves the association alone — a session-state
+ *     override reintroduces a per-session state machine that strands a file
+ *     opening as plain text after a couple of reopens.
+ *
+ * A6. A DIFF resolves to the notebook diff editor only when BOTH sides match an
+ *     association (measured: one side pinned still gives a text diff, both gives
+ *     a notebook diff, on 1.85.0 and 1.133.0 alike). A git diff pairs `git:` and
+ *     `file:` URIs of the SAME path, and the pattern matches on the path, so
+ *     pinning a file silently turns its source-control diffs into notebook
+ *     diffs. A `.py` carries no outputs, so that trades line-level review for
+ *     cell chrome; `workbench.diffEditorAssociations` -> "default" keeps it
+ *     textual. Diff resolution reads that setting FIRST and falls back to
+ *     `workbench.editorAssociations` only when it matched nothing, so the entry
+ *     REPLACES rather than merges — which is also why forgetting a file must
+ *     retract it, or a stale entry keeps overriding that path. The setting does
+ *     not exist on the `engines.vscode` floor, hence the capability check —
+ *     see `isRegisteredSetting`.
+ * ======================================================================== */
+
+const ASSOCIATIONS_KEY = "workbench.editorAssociations";
+const DIFF_ASSOCIATIONS_KEY = "workbench.diffEditorAssociations";
+
 /**
- * Make .py open as TEXT by default. The tithon-py notebook needs a `*.py`
- * selector so `Open as Cell View` (vscode.openWith) works, but a notebook
- * selector also makes it the DEFAULT editor for .py — which the user does not
- * want. So we yield the default back to the text editor via editorAssociations,
- * leaving the Cell View available on demand (openWith / Reopen With). Guarded:
- * we only set it when the user has no `*.py` association, so an explicit user
- * choice (incl. "notebook as default") is never overwritten.
+ * Is `key` a registered configuration on the VSCode running us? `update()` on an
+ * unregistered key THROWS ("not a registered configuration"), and
+ * `workbench.diffEditorAssociations` is absent on our `engines.vscode` floor
+ * (measured: registered on 1.133.0, not on 1.85.0). `inspect()` answers without
+ * throwing — an unregistered key comes back as `{ key }` alone, a registered one
+ * always carries a `defaultValue`.
  */
-async function ensureTextDefaultForPy(): Promise<void> {
+function isRegisteredSetting(key: string): boolean {
+  return vscode.workspace.getConfiguration().inspect(key)?.defaultValue !== undefined;
+}
+
+/**
+ * The association pattern that pins ONE file to the Cell View, or undefined when
+ * the file is outside every workspace folder (nothing to scope a Workspace write
+ * to). Root-relative, so `**` + `/sub/train.py` outranks a User `*.py` by A2.
+ *
+ * This is a suffix glob, not a file identity: in a multi-root window two roots
+ * with the same relative path collide. Lengthening the suffix until exactly one
+ * workspace file matches is the known refinement.
+ */
+function associationPatternFor(uri: vscode.Uri): string | undefined {
+  // Both commands can be reached from the palette, where the target falls back
+  // to whatever editor is active — pinning a .md (or a `git:` revision) to a
+  // Python notebook type would be a resolution the user could not undo from the
+  // same menu, since the inverse only offers itself for a .py.
+  if (uri.scheme !== "file" || !uri.path.toLowerCase().endsWith(".py")) return undefined;
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!folder) return undefined;
+  const rel = path.relative(folder.uri.fsPath, uri.fsPath).split(path.sep).join("/");
+  if (!rel || rel.startsWith("..")) return undefined;
+  return `**/${rel}`;
+}
+
+/**
+ * Apply `mutate` to the WORKSPACE-scoped value of `key` only (A1) and write the
+ * result back. Returns false when there is nothing to change. Rejections are
+ * left to the caller to surface — a silently dropped write leaves the user with
+ * a menu item that appears to do nothing.
+ */
+async function updateWorkspaceAssociations(
+  key: string,
+  mutate: (assoc: Record<string, string>) => boolean,
+): Promise<boolean> {
+  const cfg = vscode.workspace.getConfiguration();
+  const current = cfg.inspect<Record<string, string>>(key)?.workspaceValue ?? {};
+  const next = { ...current };
+  if (!mutate(next)) return false;
+  await cfg.update(
+    key,
+    Object.keys(next).length ? next : undefined,
+    vscode.ConfigurationTarget.Workspace,
+  );
+  return true;
+}
+
+/**
+ * Keep `pattern`'s diffs textual while it is pinned (A6). Best effort by design:
+ * the setting is missing below VSCode ~1.9x, where the only consequence is that
+ * this file's git diffs render as notebook diffs — the pin itself still works,
+ * so this must never abort it.
+ */
+async function syncDiffAssociation(pattern: string, pinned: boolean): Promise<void> {
+  if (!isRegisteredSetting(DIFF_ASSOCIATIONS_KEY)) return;
   try {
-    const cfg = vscode.workspace.getConfiguration();
-    const assoc = cfg.get<Record<string, string>>("workbench.editorAssociations") ?? {};
-    if (!("*.py" in assoc)) {
-      await cfg.update(
-        "workbench.editorAssociations",
-        { ...assoc, "*.py": "default" },
-        vscode.ConfigurationTarget.Global,
-      );
-    }
-  } catch {
-    /* settings may be read-only in some hosts; the opt-in command still works */
+    await updateWorkspaceAssociations(DIFF_ASSOCIATIONS_KEY, (assoc) => {
+      if (pinned) {
+        if (assoc[pattern] === "default") return false;
+        assoc[pattern] = "default";
+        return true;
+      }
+      if (assoc[pattern] !== "default") return false;
+      delete assoc[pattern];
+      return true;
+    });
+  } catch (err) {
+    vscode.window.showWarningMessage(
+      `Tithon: the editor association was saved, but this file's diffs could not be kept textual — ${String(err)}`,
+    );
   }
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const client = new DaemonClient();
 
-  // .py opens as a plain text editor by default; Cell View is opt-in. Awaited so
-  // the association is in place before the user opens a .py (activates on startup).
-  await ensureTextDefaultForPy();
-
-  // The reconnect/restore half (subscribe -> fold -> restore -> attach),
-  // verified end-to-end against a real daemon by scripts/v7.
+  // The reconnect/restore half (subscribe -> fold -> restore -> attach).
   // Also owns the executeHandler so the native cell play button works.
   const notebookCtrl = registerRestore(context);
 
@@ -324,11 +392,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  // Single representation per URI (see cellViewUris). Track every tithon-py
-  // notebook — including ones VSCode auto-reopens as a notebook on restart —
-  // and, whenever a plain text editor for a cell-viewed URI appears (a second
-  // group, a peek/reopen, etc.), close it so ruff/ty never key one URI as both
-  // a text doc and a notebook doc.
+  // Track auto-reopened notebooks and reject a second representation (I1).
   vscode.workspace.notebookDocuments.forEach(trackCellView);
   context.subscriptions.push(
     vscode.workspace.onDidOpenNotebookDocument(trackCellView),
@@ -338,16 +402,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           tab.input instanceof vscode.TabInputText &&
           cellViewUris.has(tab.input.uri.toString())
         ) {
-          // Close the coexisting text editor ONLY when a real Cell View notebook
-          // TAB is on screen for this URI (the genuine text+notebook LSP
-          // collision, ADR-041). If cellViewUris still holds the URI but NO
-          // notebook tab is visible, the entry is STALE — a ghost left by a torn-
-          // down round trip, or a tabless "zombie" notebook document stranded by
-          // overlapping fast toggles (ADR-065). Closing the text editor then would
-          // make the .py un-openable: it flashes in the tab bar and vanishes. So
-          // self-heal the stale entry instead of eating the user's editor. Keying
-          // off a VISIBLE tab (not findNotebook, which a zombie document poisons)
-          // is what makes the reopen reliable.
+          // A stale set entry must self-heal instead of closing the user's tab (I4).
           if (hasCellViewTab(tab.input.uri)) {
             void closeStaleTextTabs(tab.input.uri.toString());
           } else {
@@ -404,6 +459,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           // to present the input box; without one (a bare text-editor run) keep
           // allow_stdin off so input() fails fast instead of hanging (ADR-050).
           const execId = await client.execute(arg.code, arg.origin, workdir, nb !== undefined);
+          // Deliberately the status bar, not a notification: this fires on EVERY
+          // run, and "Run All" over a 40-cell file would stack 40 toasts. Command
+          // outcomes go through `notify.ts`; per-execution chatter does not.
           vscode.window.setStatusBarMessage(`Tithon: submitted ${execId}`, 3000);
         } catch (err) {
           vscode.window.showErrorMessage(`Tithon: ${String(err)}`);
@@ -412,56 +470,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
     // Kernel control (Jupyter parity): restart gives a fresh namespace, interrupt
     // stops a runaway cell. Both act on the active notebook's per-file kernel.
+    // Restart destroys the namespace this whole system exists to keep alive, so
+    // it asks first (see `confirmDestructive`) — the toolbar button sits one
+    // click away from ▶ and a mis-click costs a multi-hour training state.
     vscode.commands.registerCommand("tithon.restartKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (!nb) return;
+      const name = path.basename(nb.uri.fsPath);
+      const ok = await confirmDestructive({
+        message: `Restart the kernel for ${name}?`,
+        detail:
+          "The Python process is replaced: every variable, import and loaded model is lost, and any running cell stops. Previous outputs stay restorable.",
+        confirmLabel: "Restart",
+      });
+      if (!ok) return;
       try {
         await notebookCtrl.restartKernel(nb);
-        vscode.window.setStatusBarMessage("Tithon: kernel restarted", 3000);
+        notifyInfo(`Tithon: kernel restarted (${name})`);
       } catch (err) {
         vscode.window.showErrorMessage(`Tithon restart: ${String(err)}`);
       }
     }),
     // Open the active .py (or a given uri) as the Tithon Cell View notebook.
-    // .py opens as TEXT by default now (no *.py notebook selector); this is the
-    // explicit opt-in. VSCode remembers the choice per file via "keep" too.
+    // A .py resolves to TEXT unless associated (`priority: "option"`), so this is
+    // the one-off opt-in; `tithon.alwaysOpenAsNotebook` is the durable one.
     vscode.commands.registerCommand("tithon.openAsNotebook", async (arg?: vscode.Uri) => {
       const uri = arg ?? vscode.window.activeTextEditor?.document.uri;
       if (!uri) {
-        vscode.window.showInformationMessage("Tithon: open a .py file first");
+        notifyWarn("Tithon: open a .py file first");
         return;
       }
-      // Serialize against a concurrent openAsText for the same URI (ADR-065) so
-      // rapid toggles can't interleave into a stranded zombie notebook.
       return queueToggle(uri.toString(), async () => {
-        // Single representation per URI (ADR-041/ADR-064): close any coexisting
-        // text editor and wait for its textDocument/didClose BEFORE opening the
-        // notebook, so ty/ruff never see a notebookDocument/didOpen for a URI they
-        // still hold as a text document (which they reject -> every later didChange
-        // is "document not found" -> go-to-definition dies). This is the failing
-        // open-as-text -> back-to-Cell-View round trip. Arm the guard first so
-        // onDidChangeTabs also keeps the URI text-free across the switch.
+        // Arm before closing; open only after the text document is gone (I2/I3/I5).
         cellViewUris.add(uri.toString());
         await closeTextDocsAndWait(uri.toString());
         await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
       });
     }),
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the
-    // notebook/toolbar button, which forwards a `{ notebookEditor: {...} }`
-    // context object — NOT a Uri (resolveNotebookUri unwraps it; fall back to the
-    // active notebook editor). Drop the URI from the Cell-View set FIRST so the
-    // single-representation guard (onDidChangeTabs) does not close the very text
-    // editor we are opening, then close the Cell-View tab so we never leave both
-    // a notebook and a text editor on the same URI (the ADR-041 LSP collision).
+    // notebook/toolbar button; normalize its action context via resolveNotebookUri.
     vscode.commands.registerCommand("tithon.openAsText", async (arg?: unknown) => {
-      const uri =
-        resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
+      const uri = resolveNotebookUri(arg) ?? vscode.window.activeNotebookEditor?.notebook.uri;
       if (!uri) {
-        vscode.window.showInformationMessage("Tithon: no notebook to open as text");
+        notifyWarn("Tithon: no notebook to open as text");
         return;
       }
-      // Serialize against a concurrent openAsNotebook for the same URI (ADR-065)
-      // so rapid toggles can't interleave into a stranded zombie notebook.
+      // Disarm before closing; both directions share the per-URI queue (I3/I5).
       return queueToggle(uri.toString(), async () => {
         try {
           cellViewUris.delete(uri.toString());
@@ -472,18 +526,146 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       });
     }),
+    // One durable choice, shaped like VSCode's Open With picker. The public
+    // menus expose only this command; the compatibility commands below remain
+    // registered for existing keybindings and integrations.
+    vscode.commands.registerCommand("tithon.alwaysOpenWith", async (arg?: unknown) => {
+      const uri = resolveTargetUri(arg);
+      const pattern = uri ? associationPatternFor(uri) : undefined;
+      if (!uri || !pattern) {
+        notifyWarn("Tithon: choose a .py file inside the open workspace folder first");
+        return;
+      }
+      if (alwaysOpenWithActive) return;
+      alwaysOpenWithActive = true;
+
+      try {
+        type EditorPick = vscode.QuickPickItem & { editorId: "default" | "tithon-py" };
+        const pickPromise = vscode.window.showQuickPick<EditorPick>(
+          [
+            { label: "$(file-code) Text Editor", editorId: "default" },
+            { label: "$(notebook) Notebook", editorId: "tithon-py" },
+          ],
+          {
+            title: "Always Open With…",
+            placeHolder: `Choose how ${path.basename(uri.fsPath)} opens in this workspace`,
+          },
+        );
+        alwaysOpenWithPickerOpen = true;
+        let pick: EditorPick | undefined;
+        try {
+          pick = await pickPromise;
+        } finally {
+          alwaysOpenWithPickerOpen = false;
+        }
+        if (!pick) return;
+
+        if (pick.editorId === "tithon-py") {
+          await vscode.commands.executeCommand("tithon.alwaysOpenAsNotebook", uri);
+          return;
+        }
+
+        try {
+          await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+            if (assoc[pattern] === "default") return false;
+            assoc[pattern] = "default";
+            return true;
+          });
+          // The exact `default` entry already makes diffs textual. Do not delete
+          // an existing diff entry: VSCode exposes no provenance that could tell
+          // Tithon's companion apart from the user's same-pattern preference.
+          await vscode.commands.executeCommand("tithon.openAsText", uri);
+          notifyInfo(
+            `Tithon: ${path.basename(uri.fsPath)} now opens in the Text Editor in this workspace`,
+          );
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Tithon: could not save the editor association — ${String(err)}`,
+          );
+        }
+      } finally {
+        alwaysOpenWithActive = false;
+      }
+    }),
+    // Make this ONE file open as the Cell View from now on, in this workspace.
+    // `priority: "option"` means an unassociated .py resolves to text, so the
+    // durable choice is exactly this key and nothing else (see the A1-A5 block).
+    vscode.commands.registerCommand("tithon.alwaysOpenAsNotebook", async (arg?: unknown) => {
+      const uri = resolveTargetUri(arg);
+      if (!uri) {
+        notifyWarn("Tithon: open a .py file first");
+        return;
+      }
+      const pattern = associationPatternFor(uri);
+      if (!pattern) {
+        notifyWarn(
+          "Tithon: this only applies to a .py file inside the open workspace folder — there is nowhere to save the choice otherwise.",
+        );
+        return;
+      }
+      try {
+        await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+          if (assoc[pattern] === "tithon-py") return false;
+          assoc[pattern] = "tithon-py";
+          return true;
+        });
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Tithon: could not save the editor association — ${String(err)}`,
+        );
+        return;
+      }
+      await syncDiffAssociation(pattern, true);
+      // A4: the association decides FUTURE opens. Switching what is on screen
+      // now is the ordered, serialized toggle's job — never an ad-hoc openWith.
+      if (!hasCellViewTab(uri)) {
+        await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
+      }
+      notifyInfo(`Tithon: ${path.basename(uri.fsPath)} now opens as a Notebook in this workspace`);
+    }),
+    // The inverse. Removes only its own key; every other association — including
+    // ones the user or VSCode's own "Configure default editor" wrote — is left
+    // byte-identical. Deliberately does NOT close the Cell View on screen: this
+    // is about future opens, and "Open as Text" is the per-open escape (A5).
+    vscode.commands.registerCommand("tithon.forgetAlwaysOpenAsNotebook", async (arg?: unknown) => {
+      const uri = resolveTargetUri(arg);
+      const pattern = uri ? associationPatternFor(uri) : undefined;
+      if (!uri || !pattern) {
+        notifyWarn("Tithon: open a .py file inside the workspace folder first");
+        return;
+      }
+      try {
+        const changed = await updateWorkspaceAssociations(ASSOCIATIONS_KEY, (assoc) => {
+          if (assoc[pattern] !== "tithon-py") return false;
+          delete assoc[pattern];
+          return true;
+        });
+        await syncDiffAssociation(pattern, false);
+        if (changed) {
+          notifyInfo(`Tithon: ${path.basename(uri.fsPath)} opens as text again`);
+        } else {
+          notifyWarn(`Tithon: ${path.basename(uri.fsPath)} was not pinned to the Notebook view`);
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Tithon: could not update the editor association — ${String(err)}`,
+        );
+      }
+    }),
     // Palette/keybinding entry to the same interrupt the cell ⏹ uses. It reports
     // its own outcome, so there is nothing to wrap here (see `interruptKernel`).
     vscode.commands.registerCommand("tithon.interruptKernel", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (nb) await notebookCtrl.interruptKernel(nb);
     }),
-    // Test affordance (like tithon._activeExecCells): expose the single-
-    // representation bookkeeping so integration tests can assert a URI is not
-    // left "stuck" in cellViewUris (which would make the guard auto-close every
-    // later text editor for that file — the "file won't reopen" bug, ADR-065).
+    // Test affordance for asserting the single-representation bookkeeping.
     vscode.commands.registerCommand("tithon._cellViewState", () => ({
       cellViewUris: [...cellViewUris],
+    })),
+    // Lets the real-VSCode suite wait for the picker itself before sending UI
+    // navigation commands; a timer would race the Extension Host under load.
+    vscode.commands.registerCommand("tithon._alwaysOpenWithState", () => ({
+      pickerOpen: alwaysOpenWithPickerOpen,
     })),
     // Test affordance: which lost-kernel ("state cleared") warnings have fired,
     // as `${uri}#${pid}`. Lets an integration test assert the host-reboot signal

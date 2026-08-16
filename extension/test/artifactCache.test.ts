@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ArtifactCache } from "../src/artifactCache";
 
 const bytes = (n: number) => ({ bytes: new Uint8Array(n) });
@@ -6,7 +6,11 @@ const bytes = (n: number) => ({ bytes: new Uint8Array(n) });
 describe("ArtifactCache (byte-budgeted LRU)", () => {
   it("evicts least-recently-used once over the byte budget", () => {
     // budget 250 bytes, generous entry cap.
-    const c = new ArtifactCache<{ bytes: Uint8Array } | null>((v) => (v ? v.bytes.length : 0), 250, 100);
+    const c = new ArtifactCache<{ bytes: Uint8Array } | null>(
+      (v) => (v ? v.bytes.length : 0),
+      250,
+      100,
+    );
     c.set("a", bytes(100));
     c.set("b", bytes(100));
     c.get("a"); // touch a -> b is now the LRU
@@ -18,7 +22,11 @@ describe("ArtifactCache (byte-budgeted LRU)", () => {
   });
 
   it("bounds memory across a long stream of distinct frames (the live-plot case)", () => {
-    const c = new ArtifactCache<{ bytes: Uint8Array } | null>((v) => (v ? v.bytes.length : 0), 1000, 100);
+    const c = new ArtifactCache<{ bytes: Uint8Array } | null>(
+      (v) => (v ? v.bytes.length : 0),
+      1000,
+      100,
+    );
     for (let i = 0; i < 10000; i++) c.set(`frame${i}`, bytes(200));
     expect(c.byteSize).toBeLessThanOrEqual(1000);
     expect(c.entries).toBeLessThanOrEqual(100);
@@ -27,7 +35,11 @@ describe("ArtifactCache (byte-budgeted LRU)", () => {
   });
 
   it("caches null (not-found) without counting bytes, capped by entry count", () => {
-    const c = new ArtifactCache<{ bytes: Uint8Array } | null>((v) => (v ? v.bytes.length : 0), 1 << 20, 3);
+    const c = new ArtifactCache<{ bytes: Uint8Array } | null>(
+      (v) => (v ? v.bytes.length : 0),
+      1 << 20,
+      3,
+    );
     c.set("x", null);
     c.set("y", null);
     c.set("z", null);

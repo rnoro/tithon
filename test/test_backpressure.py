@@ -1,11 +1,10 @@
 """Host-memory protection: a slow/stalled client must not grow the daemon
 without bound, and must be dropped (it can reconnect and resync)."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-
-import pytest
 
 from tithon import daemon as daemon_mod
 from tithon.daemon import Session, Subscriber

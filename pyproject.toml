@@ -64,7 +64,32 @@ dev = [
     "matplotlib",
     "tqdm",
     "ipywidgets",
+    "ruff>=0.9",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
+
+# Formatting / linting. `line-length = 100` is measured, not defaulted: at the
+# stock 88 about 90 existing lines reflow, at 100 only four do, so this is the
+# width the code was already written to. The TS side (extension/biome.json) is
+# pinned to the same number so a reader moving between the two halves of the
+# repo does not re-learn where the margin is.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "scripts/corpus"]
+
+[tool.ruff.lint]
+# E/F are pyflakes+pycodestyle, I sorts imports, UP modernizes for py311,
+# B catches real bugs (mutable defaults, loop-variable capture). Anything
+# beyond this starts rewriting working code for taste.
+select = ["E", "F", "I", "UP", "B"]
+# The formatter owns line width. E501 only ever fires on what the formatter
+# cannot split — a long string literal or a comment — so leaving it on turns
+# every such line into a permanent lint error nobody can clear.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test bodies deliberately shadow and re-bind for readability.
+"test/**" = ["B011"]

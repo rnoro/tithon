@@ -24,7 +24,7 @@
  * Runs with Pylance ENABLED (the runner uses TITHON_LSP_EXT_DIR); v32 covers the
  * ruff/ty CROSS-file case (Pylance absent there).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 function ext(): vscode.Extension<unknown> {
@@ -55,8 +55,7 @@ const notebookFor = (uri: vscode.Uri): vscode.NotebookDocument | undefined =>
   );
 
 type DefResult = vscode.Location | vscode.LocationLink;
-const defUri = (d: DefResult): vscode.Uri =>
-  "targetUri" in d ? d.targetUri : d.uri;
+const defUri = (d: DefResult): vscode.Uri => ("targetUri" in d ? d.targetUri : d.uri);
 const defRange = (d: DefResult): vscode.Range =>
   "targetRange" in d ? d.targetRange : (d as vscode.Location).range;
 
@@ -97,12 +96,19 @@ describe("same-file go-to-definition stays in the Cell View (v41, Pylance)", () 
     // (A) go-to-definition resolves to a same-file definition. Pylance hands back
     // the `<notebook>.py.py#<cell>` pseudo-path (logged for the record).
     let defs: DefResult[] = [];
-    await waitFor(async () => {
-      defs = (await vscode.commands.executeCommand<DefResult[]>(
-        "vscode.executeDefinitionProvider", useCell.uri, pos,
-      )) ?? [];
-      return defs.length > 0;
-    }, 40000, "go-to-definition resolved");
+    await waitFor(
+      async () => {
+        defs =
+          (await vscode.commands.executeCommand<DefResult[]>(
+            "vscode.executeDefinitionProvider",
+            useCell.uri,
+            pos,
+          )) ?? [];
+        return defs.length > 0;
+      },
+      40000,
+      "go-to-definition resolved",
+    );
     const target = defUri(defs[0]);
     // eslint-disable-next-line no-console
     console.log(`v41: raw definition uri = ${target.toString()} (scheme=${target.scheme})`);
@@ -112,16 +118,23 @@ describe("same-file go-to-definition stays in the Cell View (v41, Pylance)", () 
     await vscode.commands.executeCommand("vscode.open", target, { selection: defRange(defs[0]) });
 
     // (B) the redirect must leave NO phantom `*.py.py` text tab.
-    await waitFor(() => phantomTabsFor().length === 0, 15000,
-      `phantom .py.py tab must be closed (have ${JSON.stringify(phantomTabsFor())})`);
+    await waitFor(
+      () => phantomTabsFor().length === 0,
+      15000,
+      `phantom .py.py tab must be closed (have ${JSON.stringify(phantomTabsFor())})`,
+    );
 
     // (C)/(D) the notebook is active and the DEFINING cell (index 0) is selected.
     await waitFor(
       () => vscode.window.activeNotebookEditor?.notebook.uri.toString() === uri.toString(),
-      15000, "the tithon-py notebook is the active editor after redirect");
+      15000,
+      "the tithon-py notebook is the active editor after redirect",
+    );
     const ane = vscode.window.activeNotebookEditor!;
     // eslint-disable-next-line no-console
-    console.log(`v41: active notebook = ${ane.notebook.uri.toString()} selCell=${ane.selection.start}`);
+    console.log(
+      `v41: active notebook = ${ane.notebook.uri.toString()} selCell=${ane.selection.start}`,
+    );
     assert.strictEqual(ane.selection.start, 0, "the defining cell (index 0) must be selected");
   });
 });

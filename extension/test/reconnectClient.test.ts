@@ -10,8 +10,7 @@
  * real kernel needed): it answers an attach with snapshot+sync, then triggers
  * the drop on demand.
  */
-import { describe, it, expect } from "vitest";
-import { type WebSocket as WS } from "ws";
+import { describe, expect, it } from "vitest";
 import { SessionClient } from "../src/sessionClient";
 import { fakeDaemon, fakeDaemonRaw, settle } from "./fakeDaemon";
 
@@ -71,10 +70,14 @@ describe("SessionClient — disconnect surfacing for reconnect", () => {
   });
 
   it("attach rejects with the daemon's message on an error op (ADR-060)", async () => {
-    const d = await fakeErrorDaemon("kernel process exited during startup — is ipykernel installed?");
+    const d = await fakeErrorDaemon(
+      "kernel process exited during startup — is ipykernel installed?",
+    );
     const c = new SessionClient(d.sock, "s");
     let msg = "";
-    await c.attach(0).catch((e: Error) => { msg = e.message; });
+    await c.attach(0).catch((e: Error) => {
+      msg = e.message;
+    });
     expect(msg).toContain("ipykernel");
     c.close();
     await d.close();

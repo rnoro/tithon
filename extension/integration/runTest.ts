@@ -12,7 +12,8 @@
  * notebook/LSP guard suites against the insiders build as an early warning, so a
  * breaking change is caught before it reaches users on stable.
  */
-import * as path from "path";
+
+import * as path from "node:path";
 import { runTests } from "@vscode/test-electron";
 
 async function main(): Promise<void> {
@@ -41,9 +42,7 @@ async function main(): Promise<void> {
   // Python language servers (ruff/ty) live, so it passes TITHON_LSP_EXT_DIR — a
   // curated extensions dir — and we drop --disable-extensions for that run.
   const lspExtDir = process.env.TITHON_LSP_EXT_DIR;
-  const extArgs = lspExtDir
-    ? [`--extensions-dir=${lspExtDir}`]
-    : ["--disable-extensions"];
+  const extArgs = lspExtDir ? [`--extensions-dir=${lspExtDir}`] : ["--disable-extensions"];
 
   // Default "stable" matches @vscode/test-electron's own default (latest stable),
   // so the existing bundles are unchanged; the insiders bundle overrides it.
@@ -74,6 +73,11 @@ async function main(): Promise<void> {
       TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
       TITHON_HELPER: process.env.TITHON_HELPER ?? "",
       TITHON_SUITE: process.env.TITHON_SUITE ?? "",
+      // "1" leaves `tithon.confirmDestructiveActions` at its shipped default, so
+      // the suite that verifies the modal gate sees what a user sees. Every other
+      // suite drives restart/terminate unattended, so the bootstrap turns it off.
+      TITHON_CONFIRM_DESTRUCTIVE: process.env.TITHON_CONFIRM_DESTRUCTIVE ?? "",
+      TITHON_CONFIRM_TARGET: process.env.TITHON_CONFIRM_TARGET ?? "",
     },
   });
 }

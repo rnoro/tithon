@@ -4,6 +4,7 @@ Clearing a cell's output appends a synthetic ``clear_output`` tombstone — it d
 NOT delete journal rows — so the folded snapshot empties, a fresh attach does not
 restore the cleared output, the cached ``folded_json`` is re-materialized, and the
 freed image artifact is GC'd. The originals stay in ``messages`` (auditable)."""
+
 import asyncio
 import base64
 import json
@@ -55,9 +56,9 @@ def test_clear_outputs_empties_fold_and_persists(tmp_path):
     n = s.clear_outputs(["e1"])
 
     assert n == 1
-    assert fold.outputs() == []                          # folded view emptied
-    folded_col = s.journal.executions()[0][5]            # executions()[*][5] = folded_json
-    assert json.loads(folded_col) == []                  # cached snapshot re-materialized
+    assert fold.outputs() == []  # folded view emptied
+    folded_col = s.journal.executions()[0][5]  # executions()[*][5] = folded_json
+    assert json.loads(folded_col) == []  # cached snapshot re-materialized
     # tombstone appended; originals preserved (append-only journal).
     types = [m[1] for m in s.journal.messages_for_exec("e1")]
     assert types[-1] == "clear_output"

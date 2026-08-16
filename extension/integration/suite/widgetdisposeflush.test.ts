@@ -22,7 +22,7 @@
  * `widgetUpdatesApplied` could still climb post-dispose is exactly the stale
  * buffered entry this test targets.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const WIDGET_MIME = "application/vnd.tithon.widget+json";
@@ -33,7 +33,11 @@ function outputMimes(cell: vscode.NotebookCell): string[] {
   return mimes;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
@@ -43,7 +47,10 @@ async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -51,8 +58,10 @@ function ext(): vscode.Extension<unknown> {
 const updateCount = async () =>
   (await vscode.commands.executeCommand("tithon._widgetUpdateCount")) as number;
 const disposeLiveIfPendingWidgetFlush = async () =>
-  (await vscode.commands.executeCommand("tithon._disposeLiveIfPendingWidgetFlush")) as
-    { disposed: boolean; countAtDispose?: number };
+  (await vscode.commands.executeCommand("tithon._disposeLiveIfPendingWidgetFlush")) as {
+    disposed: boolean;
+    countAtDispose?: number;
+  };
 
 describe("Tithon: disposeLive() cancels a stray widget-update flush (v53, RISKS #7)", () => {
   it("a widget update pending at dispose time never reaches the renderer afterward", async () => {
@@ -61,7 +70,10 @@ describe("Tithon: disposeLive() cancels a stray widget-update flush (v53, RISKS 
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
 
     await vscode.commands.executeCommand("notebook.execute");
     await waitFor(() => outputMimes(nb.cellAt(0)).includes(WIDGET_MIME), 30000, "live widget mime");
@@ -83,14 +95,18 @@ describe("Tithon: disposeLive() cancels a stray widget-update flush (v53, RISKS 
       }
       return undefined;
     })();
-    assert.ok(beforeDispose !== undefined, "never observed a pending widget-flush window while the loop streamed updates");
+    assert.ok(
+      beforeDispose !== undefined,
+      "never observed a pending widget-flush window while the loop streamed updates",
+    );
 
     // Several multiples of the 50ms coalescing window.
     await new Promise((r) => setTimeout(r, 500));
 
     const afterDispose = await updateCount();
     assert.strictEqual(
-      afterDispose, beforeDispose,
+      afterDispose,
+      beforeDispose,
       "a widget update pending at dispose time must not reach the renderer after disposeLive()",
     );
   });

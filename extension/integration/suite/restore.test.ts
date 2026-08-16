@@ -8,7 +8,7 @@
  * assert the cells now carry the outputs the daemon journaled (stdout "0\n1\n2\n",
  * execute_result "42", an error with ename ValueError).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
@@ -86,9 +86,7 @@ describe("Tithon restore inside a real VSCode host (v8)", () => {
     // value cell: execute_result text/plain "42"
     const hasValue = flat.some((o) => o.text.trim() === "42");
     // boom cell: an error output carrying ValueError
-    const hasError = flat.some(
-      (o) => o.mime.includes("error") && o.text.includes("ValueError"),
-    );
+    const hasError = flat.some((o) => o.mime.includes("error") && o.text.includes("ValueError"));
 
     assert.ok(hasLoop, `expected a cell with stdout "0\\n1\\n2\\n"; got ${JSON.stringify(all)}`);
     assert.ok(hasValue, `expected a cell with execute_result "42"; got ${JSON.stringify(all)}`);

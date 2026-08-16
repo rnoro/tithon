@@ -99,8 +99,7 @@ export interface WidgetStateEntry {
  * Decode a comm event's `_buffers_b64` (daemon-forwarded, base64) into
  * {@link WidgetBufferEntry} entries keyed by their `buffer_paths`. Tolerates
  * a length mismatch between the two arrays (zips to the shorter) rather than
- * throwing — the daemon's own `_merge_buffers` is equally lenient (RISKS #13
- * Codex ④ review, finding 4).
+ * throwing — the daemon's own `_merge_buffers` is equally lenient.
  */
 export function decodeBufferEntries(
   bufferPaths: unknown,
@@ -126,7 +125,7 @@ function bufferPathKey(path: (string | number)[]): string {
  * the daemon's `WidgetMirror._merge_buffers`: a path present in `next`
  * replaces the prior entry at that path; every other path is left untouched.
  * ipywidgets' own comm protocol only resends buffers that actually changed
- * (RISKS #13), so replacing the whole array would silently drop unrelated,
+ * so replacing the whole array would silently drop unrelated,
  * still-current buffers (e.g. a size update on an Image widget must not wipe
  * its still-valid pixel data).
  */
@@ -213,25 +212,32 @@ export function widgetPayload(
   };
 }
 
-// Widgets with no client -> kernel back-channel (RISKS #4/T8: comm is receive-only
-// today, so a control's own DOM interaction updates its LOCAL view state and never
+// Widgets with no client -> kernel back-channel. The comm path is receive-only,
+// so a control's own DOM interaction updates its LOCAL view state and never
 // reaches the kernel or errors — a slider drag or button click does nothing, with
-// no indication anything is wrong). This is an ALLOW-list, not a deny-list, on
+// no indication anything is wrong. This is an ALLOW-list, not a deny-list, on
 // purpose: an unrecognized model — including any future ipywidgets control — falls
 // back to text by default rather than risking a silent no-op control that LOOKS
 // functional. Every entry verified against the installed `@jupyter-widgets`
 // package source (its View class registers no DOM listener that writes back to
-// the model) — a Codex ② review flagged this as otherwise unverifiable and its own
-// sandbox couldn't reach node_modules to check. `OutputModel` is deliberately
+// the model) — an entry that cannot be checked against that source does not
+// belong here. `OutputModel` is deliberately
 // EXCLUDED despite having no interaction of its own: its `outputs` trait can
 // nest a `display_data` item carrying ANOTHER widget's
 // `application/vnd.jupyter.widget-view+json` reference, entirely outside the
 // `children` array this function walks — an interactive widget captured inside
-// an Output widget would slip past this guard undetected (Codex ② finding 1).
+// an Output widget would slip past this guard undetected.
 const DISPLAY_ONLY_MODELS = new Set([
-  "HTMLModel", "HTMLMathModel", "LabelModel", "ImageModel",
-  "IntProgressModel", "FloatProgressModel",
-  "BoxModel", "HBoxModel", "VBoxModel", "GridBoxModel",
+  "HTMLModel",
+  "HTMLMathModel",
+  "LabelModel",
+  "ImageModel",
+  "IntProgressModel",
+  "FloatProgressModel",
+  "BoxModel",
+  "HBoxModel",
+  "VBoxModel",
+  "GridBoxModel",
 ]);
 
 /**
@@ -257,7 +263,7 @@ export function isDisplayOnlyWidget(
     const ch = s.children;
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
     // that isn't an array (a malformed/unexpected shape) fails closed instead of
-    // silently being treated as childless — Codex ② finding 2.
+    // silently being treated as childless.
     if (ch === undefined) return true;
     if (!Array.isArray(ch)) return false;
     for (const c of ch) {
@@ -311,7 +317,11 @@ export function widgetFallbackText(
     const name = String(s._model_name ?? "");
     if (name.includes("Progress") && typeof s.value === "number") {
       if (!progress) progress = { value: s.value, max: typeof s.max === "number" ? s.max : 0 };
-    } else if ((name === "HTMLModel" || name === "LabelModel") && typeof s.value === "string" && s.value) {
+    } else if (
+      (name === "HTMLModel" || name === "LabelModel") &&
+      typeof s.value === "string" &&
+      s.value
+    ) {
       labels.push(unescapeHtml(s.value).trim());
     }
     const ch = s.children;
@@ -338,7 +348,7 @@ export function widgetFallbackText(
  * An `ipywidgets.Output` widget's OWN view is not worth rendering.
  *
  * The widget exists to display the outputs it captured, and Tithon renders
- * those at cell level (they fold into the same cell — see RISKS #17), so its
+ * those at cell level (they fold into the same cell), so its
  * view is a placeholder for content already shown directly below it. It cannot
  * take the html-manager path either: `OutputModel` is deliberately absent from
  * the display-only allow-list, because its `outputs` trait nests other widgets

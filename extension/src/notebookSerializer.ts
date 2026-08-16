@@ -4,16 +4,16 @@
  * a cell document. Round-trip is delegated to the byte-exact pure serializer:
  * each cell carries its verbatim parsed structure in metadata, and
  * `serializeNotebook` reconstructs from that — so an unedited open->save is a
- * 0-byte diff (the Phase 0 ⑥ guarantee, verified by scripts/v6.sh).
+ * 0-byte diff.
  */
 import * as vscode from "vscode";
 import {
-  parse,
-  serialize,
-  cellSource,
-  uncommentMarkdown,
-  resolveCell,
   type Cell,
+  cellSource,
+  parse,
+  resolveCell,
+  serialize,
+  uncommentMarkdown,
 } from "./serializer";
 
 const dec = new TextDecoder();
@@ -27,16 +27,10 @@ export class PercentNotebookSerializer implements vscode.NotebookSerializer {
     const nb = parse(text);
     const cells = nb.cells.map((cell) => {
       const isMarkup = cell.kind === "markdown";
-      const kind = isMarkup
-        ? vscode.NotebookCellKind.Markup
-        : vscode.NotebookCellKind.Code;
+      const kind = isMarkup ? vscode.NotebookCellKind.Markup : vscode.NotebookCellKind.Code;
       const raw = cellSource(cell);
       const value = isMarkup ? uncommentMarkdown(raw) : raw;
-      const data = new vscode.NotebookCellData(
-        kind,
-        value,
-        isMarkup ? "markdown" : "python",
-      );
+      const data = new vscode.NotebookCellData(kind, value, isMarkup ? "markdown" : "python");
       // verbatim structure for byte-exact serialization
       data.metadata = { [META_KEY]: cell };
       return data;

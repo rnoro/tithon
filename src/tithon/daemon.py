@@ -12,6 +12,7 @@ next client to touch that file re-attaches to the running kernel.
 All events carry a monotonic per-session ``seq``; clients attach with
 ``last_seen_seq`` and receive snapshot+delta.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,6 +32,7 @@ from urllib.request import url2pathname
 
 from websockets.asyncio.server import unix_serve
 
+from . import sidecar
 from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
@@ -49,8 +51,8 @@ DEFAULT_SESSION = "default"
 # The cap/timeout are env-tunable so verification can force the bound quickly;
 # the defaults are the production values.
 SUB_QUEUE_MAX = int(os.environ.get("TITHON_SUB_QUEUE_MAX", "10000"))  # max queued events/sub
-SUB_POLL = float(os.environ.get("TITHON_SUB_POLL", "0.5"))            # dropped-flag recheck (s)
-SEND_TIMEOUT = float(os.environ.get("TITHON_SEND_TIMEOUT", "10.0"))   # max stall on send (s)
+SUB_POLL = float(os.environ.get("TITHON_SUB_POLL", "0.5"))  # dropped-flag recheck (s)
+SEND_TIMEOUT = float(os.environ.get("TITHON_SEND_TIMEOUT", "10.0"))  # max stall on send (s)
 # Cap each connection's send buffer (websockets `write_limit`) so a slow client
 # makes ws.send apply backpressure instead of buffering unboundedly in daemon
 # memory. With the bounded queue, host memory per subscriber is ~queue + this.
@@ -172,7 +174,7 @@ class Subscriber:
 
     __slots__ = ("queue", "dropped")
 
-    def __init__(self, queue: "asyncio.Queue") -> None:
+    def __init__(self, queue: asyncio.Queue) -> None:
         self.queue = queue
         self.dropped = False
 
@@ -197,6 +199,20 @@ class Session:
         self.journal = Journal(session_dir / "journal.db", session_id)
         self.kernel = KernelHandle(session_dir, workdir, session_dir / "kernel.log")
         self.artifacts = ArtifactStore(workdir, self.journal)
+        # The project-local, git-shareable projection of this file's folds
+        # (see sidecar.py). None for the CLI/default session and for a file
+        # outside the project root — neither has a document inside the project.
+        self.sidecar_path = sidecar.sidecar_path(workdir, _uri_to_path(session_id))
+        # Set when the user ENDS this session on purpose (kill kernel, or a
+        # daemon shutdown that takes the kernels with it), cleared by the next
+        # execution. Persisted in the journal because it must outlive the daemon:
+        # reconnecting after a crash has to restore, reopening after a
+        # deliberate close must not (see `_handler`'s kill_kernel).
+        self.closed_by_user = self.journal.get_meta("closed_by_user") == "1"
+        # Executions restored from the shared sidecar rather than run here; they
+        # own no raw messages, so `_rebuild_folds` hydrates their folds and
+        # `_execution_snapshots` withholds a continuation state for them.
+        self._imported: set[str] = set()
         self.kc = None
         self.kernel_status = "unknown"
         self.kernel_pyversion: str | None = None  # e.g. "3.11.5"
@@ -279,7 +295,7 @@ class Session:
             # Must stay ahead of `_start_tasks()`: this reads the shell channel
             # directly. A re-attached busy kernel takes the separate recovery path
             # below; waiting on kernel_info there would discard the output emitted
-            # while that request sat behind the running cell (RISKS #18).
+            # while that request sat behind the running cell.
             await self._capture_kernel_info()
             await asyncio.sleep(STDIN_SETTLE_S)
             orphaned = self.journal.orphan_inflight()
@@ -293,6 +309,10 @@ class Session:
                 await asyncio.sleep(STDIN_SETTLE_S)
         if orphaned:
             log.info("[%s] marked %d in-flight executions orphaned", self.session_id, orphaned)
+        # Must precede the rebuild (it hydrates the imported folds) and the
+        # `_exec_counter` seed below (local executions continue after the
+        # imported seqs rather than colliding with them).
+        self._import_sidecar()
         self._rebuild_folds()
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
@@ -311,8 +331,11 @@ class Session:
         self.touch()
         log.info(
             "session ready id=%s kernel_pid=%s reattached=%s lost_state=%s dir=%s",
-            self.session_id, self.kernel.pid, self.kernel.reattached,
-            self.kernel_lost_state, self.session_dir,
+            self.session_id,
+            self.kernel.pid,
+            self.kernel.reattached,
+            self.kernel_lost_state,
+            self.session_dir,
         )
 
     def _classify_kernel_generation(self) -> None:
@@ -351,10 +374,9 @@ class Session:
             # We inherited a kernel someone else spawned. Its provenance is
             # whatever the journal recorded when it was created — carry it
             # forward rather than re-deciding (that is the durability fix).
-            replaced_involuntarily = (
-                last_content.get("status") == "replaced"
-                and not last_content.get("deliberate")
-            )
+            replaced_involuntarily = last_content.get(
+                "status"
+            ) == "replaced" and not last_content.get("deliberate")
             self.kernel_lost_state = bool(replaced_involuntarily)
             self.kernel_generation = last_seq
             return
@@ -372,7 +394,8 @@ class Session:
         self.kernel_lost_state = True
         # Record the involuntary replacement so it outlives this daemon process.
         seq = self.journal.append_message(
-            None, "tithon.kernel",
+            None,
+            "tithon.kernel",
             {"status": "replaced", "pid": self.kernel.pid, "deliberate": False},
         )
         self.kernel_generation = seq
@@ -389,12 +412,12 @@ class Session:
             asyncio.create_task(self._stdin_pump(), name=f"stdin-{self.session_id}"),
         ]
         if recovery is not None:
-            self._tasks.append(asyncio.create_task(
-                self._recover_inflight(*recovery), name=f"recover-{self.session_id}"
-            ))
-        self._tasks.append(asyncio.create_task(
-            self._exec_worker(), name=f"exec-{self.session_id}"
-        ))
+            self._tasks.append(
+                asyncio.create_task(
+                    self._recover_inflight(*recovery), name=f"recover-{self.session_id}"
+                )
+            )
+        self._tasks.append(asyncio.create_task(self._exec_worker(), name=f"exec-{self.session_id}"))
 
     # -- kernel liveness watchdog ----------------------------------------------
     def check_kernel_liveness(self) -> bool:
@@ -420,12 +443,14 @@ class Session:
             return False
         self.kernel_status = "dead"
         self._journal_lifecycle(
-            None, "tithon.kernel",
+            None,
+            "tithon.kernel",
             {"status": "dead", "pid": self.kernel.pid, "deliberate": False},
         )
         log.warning(
             "[%s] kernel died out-of-band (pid=%s) — no execution was in flight",
-            self.session_id, self.kernel.pid,
+            self.session_id,
+            self.kernel.pid,
         )
         return True
 
@@ -519,9 +544,9 @@ class Session:
         self.journal.orphan_inflight()
         for seq, exec_id, msg_type, content_json in self.journal.messages_after(orphan_seq):
             if msg_type == "tithon.done":
-                self._broadcast(event_from_message(
-                    seq, exec_id, msg_type, json.loads(content_json)
-                ))
+                self._broadcast(
+                    event_from_message(seq, exec_id, msg_type, json.loads(content_json))
+                )
         # Discard batches still WAITING in the queue (submitted behind the cell that
         # was running): orphan_inflight already flipped their queued execs to
         # 'orphaned', so leaving them in the queue would make the fresh worker run
@@ -535,7 +560,8 @@ class Session:
         # reboot inside that window would otherwise leave a fresh kernel with no
         # deliberate marker in front of it, reported as a surprise loss.
         self._journal_lifecycle(
-            None, "tithon.kernel",
+            None,
+            "tithon.kernel",
             {"status": "restarting", "pid": self.kernel.pid, "deliberate": True},
         )
         await asyncio.to_thread(self.kernel.restart)  # blocking teardown; see `stop`
@@ -555,7 +581,8 @@ class Session:
         self._recovery_gate.set()
         self._start_tasks()
         self._journal_lifecycle(
-            None, "tithon.kernel",
+            None,
+            "tithon.kernel",
             {"status": "restarted", "pid": self.kernel.pid, "deliberate": True},
         )
         self.kernel_lost_state = False
@@ -568,6 +595,31 @@ class Session:
         ok = self.kernel.interrupt()
         self._journal_lifecycle(None, "tithon.kernel", {"status": "interrupted"})
         return ok
+
+    def set_closed_by_user(self, closed: bool) -> None:
+        """Record durably whether the user ENDED this session or it merely stopped.
+
+        Restoring a file's cells on open is only justified when the disconnect
+        was involuntary — a daemon restart, a host reboot, an idle-GC reap, a
+        dropped tunnel. When the user killed the kernel themselves, re-seeding
+        hands back output they deliberately walked away from, and every later
+        reopen keeps handing it back. The journal holds the flag because it has
+        to outlive the daemon that observed the intent.
+
+        Not a delete: the history stays, and a client can still ask for it (the
+        snapshot carries `closed_by_user`, not a truncated execution list).
+
+        A KILLED session can never be re-armed. Two clients can be attached at
+        once, and a connection binds its `session` reference for life (see
+        `_killed`): after client B kills the kernel, client A's already-bound
+        handler can still submit — which would clear the flag on a session that
+        is being torn down, so the next open would restore the very history the
+        kill was meant to retire.
+        """
+        if self.closed_by_user == closed or (not closed and self._killed):
+            return
+        self.closed_by_user = closed
+        self.journal.set_meta("closed_by_user", "1" if closed else "0")
 
     def clear_outputs(self, exec_ids: list[str] | None) -> int:
         """Permanently clear the folded outputs of executions (all if ``None``).
@@ -586,21 +638,96 @@ class Session:
         artifact GC reclaim the image files (so a cleared plot frees its PNG).
         """
         targets = (
-            list(self._folds) if exec_ids is None
-            else [e for e in exec_ids if e in self._folds]
+            list(self._folds) if exec_ids is None else [e for e in exec_ids if e in self._folds]
         )
+        reclaim: list[tuple[set[str], set[str]]] = []
         for exec_id in targets:
             fold = self._folds[exec_id]
             before = fold.artifact_ids()
             content = {"wait": False, SCOPE_KEY: SCOPE_CELL}
             seq = self.journal.append_message(exec_id, "clear_output", content)
             fold.apply("clear_output", content)
-            self._gc_artifacts(before, fold.artifact_ids())
             self.journal.set_folded(exec_id, json.dumps(fold.outputs()))
             self._broadcast(event_from_message(seq, exec_id, "clear_output", content))
+            reclaim.append((before, fold.artifact_ids()))
         if targets:
+            # The clear reaches the shared snapshot too — otherwise a colleague
+            # who pulls still sees output this user deleted on purpose.
+            #
+            # Published BEFORE the image files are reclaimed, and the reclaim is
+            # abandoned if that write failed (full disk, read-only checkout).
+            # Either order without the gate leaves the shared snapshot naming an
+            # image that is already deleted — which a clone imports as an output
+            # it cannot render. Leaking the files is the recoverable half: the
+            # next successful publish is followed by the startup sweep.
+            if self._publish_sidecar():
+                for before, after in reclaim:
+                    self._gc_artifacts(before, after)
+            else:
+                log.warning(
+                    "[%s] shared snapshot stale; keeping %d cleared image set(s)",
+                    self.session_id,
+                    len(reclaim),
+                )
             log.info("[%s] user-cleared %d execution(s)", self.session_id, len(targets))
         return len(targets)
+
+    def _import_sidecar(self) -> None:
+        """Seed this session from the project's shared snapshot, if that is the
+        only history there is.
+
+        The gate is `count_local_executions()`, not "is the journal empty": once
+        the user has run a cell here, THIS machine's record is authoritative and
+        a pulled sidecar must not overwrite it. Before that, a sidecar whose
+        bytes differ from the last imported ones replaces the imported rows
+        wholesale — so pulling a notebook a colleague re-ran shows their new
+        outputs instead of the ones cloned last week.
+        """
+        if self.sidecar_path is None:
+            return
+        found = sidecar.read(self.sidecar_path)
+        if found is None:
+            return
+        doc, sha = found
+        if self.journal.get_meta("sidecar_sha") == sha:
+            return
+        if self.journal.count_local_executions():
+            return
+        dropped = self.journal.drop_imported()
+        imported = sidecar.import_into(self.journal, self.artifacts.workdir, doc)
+        self.journal.set_meta("sidecar_sha", sha)
+        log.info(
+            "[%s] imported %d shared execution(s), replacing %d", self.session_id, imported, dropped
+        )
+
+    def _publish_sidecar(self) -> bool:
+        """Rewrite the project's shared snapshot from the current folds.
+
+        Returns whether the shared file now agrees with the folds — False means
+        it is stale, and a caller about to delete image files it may still name
+        must hold off (see `clear_outputs`).
+
+        Called wherever an execution reaches a terminal state or its output is
+        cleared — the same moments `folded_json` is written — so the shared file
+        never claims output the daemon has already dropped. Its own sha is
+        recorded so the next start does not read back its own write as an
+        incoming change (`_import_sidecar`).
+
+        Never fatal: a read-only checkout or a full disk must not fail the run
+        that produced the output.
+        """
+        if self.sidecar_path is None:
+            return True  # nothing shared, so nothing can be left inconsistent
+        doc = sidecar.build(self._execution_snapshots())
+        try:
+            sidecar.write(self.sidecar_path, doc)
+        except OSError as e:
+            log.warning("[%s] could not publish %s: %s", self.session_id, self.sidecar_path, e)
+            return False
+        self.journal.set_meta(
+            "sidecar_sha", hashlib.sha256(sidecar.dumps(doc).encode("utf-8")).hexdigest()
+        )
+        return True
 
     def _rebuild_folds(self) -> None:
         """Recompute in-memory folded snapshots from raw journal messages.
@@ -611,7 +738,7 @@ class Session:
         only ever saw one execution's own rows could not place it. The same pass
         rebuilds the display registry, so the two can never disagree about who
         owns a display after a restart. Streamed (never ``.fetchall()``) so
-        restart memory stays independent of history length (RISKS #9a).
+        restart memory stays independent of history length.
 
         Then seed the live-artifact reference counter from the rebuilt folds and
         sweep ``.tithon/outputs/`` of any artifact no surviving fold references —
@@ -619,8 +746,18 @@ class Session:
         that predated artifact GC)."""
         # Seed every execution first: `self._folds` must stay total (`_handle_iopub`
         # indexes it unguarded), including for an execution that produced no output.
-        for exec_id, *_ in self.journal.executions():
-            self._folds[exec_id] = ExecutionFold()
+        # An IMPORTED execution owns no raw messages for the pass below to replay,
+        # so it is hydrated from its stored fold instead — an empty one would both
+        # render the shared cell blank and make the sweep at the end of this
+        # function delete the image files the import just brought in.
+        self._imported = self.journal.imported_exec_ids()
+        for exec_id, _seq, _code, _status, _count, folded_json, *_ in self.journal.executions():
+            if exec_id in self._imported:
+                self._folds[exec_id] = ExecutionFold.hydrate(
+                    json.loads(folded_json) if folded_json else []
+                )
+            else:
+                self._folds[exec_id] = ExecutionFold()
         self._display_registry.clear()
         for _seq, exec_id, msg_type, content_json in self.journal.all_messages():
             if msg_type.startswith("tithon."):
@@ -645,11 +782,11 @@ class Session:
     def _rebuild_mirror(self) -> None:
         """Replay journaled comm messages to restore widget state after restart.
 
-        Streams the journal via a cursor filtered to comm rows in SQL (RISKS
-        #9a) — a long stream/output history is never fetched or parsed here,
-        so restart cost scales with widget traffic, not total history length.
+        Streams the journal via a cursor filtered to comm rows in SQL — a long
+        stream/output history is never fetched or parsed here, so restart cost
+        scales with widget traffic, not total history length.
         `WidgetMirror.apply()` itself never raises on malformed content (it
-        validates and rejects instead — RISKS #14's journal-before-mutate
+        validates and rejects instead, because the journal-before-mutate
         ordering means a malformed row, once journaled, replays on every
         future restart), but the surrounding `_buffers_b64` decode is daemon
         code, not the mirror's — one bad row here must skip and continue, not
@@ -661,8 +798,11 @@ class Session:
                 buffers = [base64.b64decode(b) for b in content.pop("_buffers_b64", [])]
                 self._mirror.apply(msg_type, content, buffers)
             except Exception:
-                log.exception("[%s] skipping malformed comm row at seq=%d during rebuild",
-                               self.session_id, seq)
+                log.exception(
+                    "[%s] skipping malformed comm row at seq=%d during rebuild",
+                    self.session_id,
+                    seq,
+                )
 
     async def _wait_kernel_ready(self, timeout: float = 120.0) -> None:
         """Poll kernel_info until the kernel replies.
@@ -684,7 +824,7 @@ class Session:
             msg_id = self.kc.kernel_info()
             try:
                 reply = await asyncio.wait_for(self.kc.shell_channel.get_msg(), 2.0)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 reply = None
             if (
                 reply is not None
@@ -716,7 +856,7 @@ class Session:
             for _ in range(15):
                 try:
                     reply = await asyncio.wait_for(self.kc.shell_channel.get_msg(), 2.0)
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     continue
                 if (
                     reply["header"]["msg_type"] == "kernel_info_reply"
@@ -751,14 +891,14 @@ class Session:
                 reply = await asyncio.wait_for(asyncio.shield(fut), 10.0)
                 try:
                     await asyncio.wait_for(fence["idle"].wait(), 2.0)
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     continue
                 if not fence["busy"]:
                     continue
                 li = (reply.get("content") or {}).get("language_info") or {}
                 self.kernel_pyversion = li.get("version")
                 return
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 continue
             except Exception:
                 if not self.kernel.is_alive():
@@ -771,9 +911,7 @@ class Session:
                     self._shell_waiters.pop(msg_id, None)
                     self._control_fences.pop(msg_id, None)
 
-    async def _recover_inflight(
-        self, exec_id: str, msg_id: str, allow_stdin: bool
-    ) -> None:
+    async def _recover_inflight(self, exec_id: str, msg_id: str, allow_stdin: bool) -> None:
         """Resume journaling an accepted execution owned by the previous daemon.
 
         The old shell reply is addressed to the dead client's ZMQ identity, so a
@@ -782,28 +920,30 @@ class Session:
         terminalized as ``orphaned`` (or ``error`` when an error frame proves it)
         once the control fence says ipykernel left the old handler.
         """
-        log.info("[%s] recovering in-flight exec %s (msg_id=%s)",
-                 self.session_id, exec_id, msg_id)
+        log.info("[%s] recovering in-flight exec %s (msg_id=%s)", self.session_id, exec_id, msg_id)
         terminalized = False
         try:
             if allow_stdin and self.journal.has_pending_input(exec_id):
                 # An input_request is routed to the old client's stdin identity;
                 # interrupt is the only bounded, honest recovery policy.
                 self.kernel.interrupt()
-                self._journal_lifecycle(
-                    exec_id, "tithon.input_resolved", {"exec_id": exec_id}
-                )
+                self._journal_lifecycle(exec_id, "tithon.input_resolved", {"exec_id": exec_id})
             await self._recovery_probe()
             outputs = self._folds[exec_id].outputs()
             status = "error" if self.journal.has_error(exec_id) else "orphaned"
             folded = json.dumps(outputs)
             finished_at, seq = self.journal.finish_recovered(exec_id, status, folded)
-            self._broadcast(event_from_message(
-                seq, exec_id, "tithon.done",
-                {"status": status, "execution_count": None, "ts": finished_at},
-            ))
-            log.info("[%s] recovered exec %s terminalized status=%s",
-                     self.session_id, exec_id, status)
+            self._broadcast(
+                event_from_message(
+                    seq,
+                    exec_id,
+                    "tithon.done",
+                    {"status": status, "execution_count": None, "ts": finished_at},
+                )
+            )
+            log.info(
+                "[%s] recovered exec %s terminalized status=%s", self.session_id, exec_id, status
+            )
             terminalized = True
         except asyncio.CancelledError:
             raise
@@ -813,10 +953,14 @@ class Session:
                 self._emit_kernel_dead(exec_id)
                 folded = json.dumps(self._folds[exec_id].outputs())
                 finished_at, seq = self.journal.finish_recovered(exec_id, "error", folded)
-                self._broadcast(event_from_message(
-                    seq, exec_id, "tithon.done",
-                    {"status": "error", "execution_count": None, "ts": finished_at},
-                ))
+                self._broadcast(
+                    event_from_message(
+                        seq,
+                        exec_id,
+                        "tithon.done",
+                        {"status": "error", "execution_count": None, "ts": finished_at},
+                    )
+                )
                 terminalized = True
         finally:
             self._msgid_to_exec.pop(msg_id, None)
@@ -825,6 +969,9 @@ class Session:
                 self._recovering = False
                 self._busy = False
                 self.touch()
+                # A cell that was in flight across a daemon restart also ends in
+                # a shareable state — publish it like any other completion.
+                self._publish_sidecar()
                 if self._recovery_gate is not None:
                     self._recovery_gate.set()
 
@@ -885,8 +1032,12 @@ class Session:
         if fut is None:
             # No awaiter: a reply to a request nobody is waiting on any more (its
             # caller timed out or was cancelled) — the only reply ever dropped.
-            log.debug("[%s] unrouted shell reply parent=%s type=%s",
-                      self.session_id, parent, msg["header"]["msg_type"])
+            log.debug(
+                "[%s] unrouted shell reply parent=%s type=%s",
+                self.session_id,
+                parent,
+                msg["header"]["msg_type"],
+            )
             return
         if not fut.done():
             fut.set_result(msg)
@@ -903,7 +1054,7 @@ class Session:
         return fut
 
     def _fail_shell_waiters(self, reason: str) -> None:
-        for msg_id, fut in list(self._shell_waiters.items()):
+        for fut in list(self._shell_waiters.values()):
             if not fut.done():
                 fut.set_exception(ConnectionError(reason))
         self._shell_waiters.clear()
@@ -914,7 +1065,9 @@ class Session:
         if msg_type == "status":
             new_state = content.get("execution_state", self.kernel_status)
             if new_state != self.kernel_status:
-                log.debug("[%s] kernel status: %s → %s", self.session_id, self.kernel_status, new_state)
+                log.debug(
+                    "[%s] kernel status: %s → %s", self.session_id, self.kernel_status, new_state
+                )
             self.kernel_status = new_state
         parent_id = (msg.get("parent_header") or {}).get("msg_id")
         control = self._control_fences.get(parent_id)
@@ -946,12 +1099,15 @@ class Session:
             artifact_ref = ",".join(refs) or None
         target = self._display_target(exec_id, msg_type, content)
         seq = self.journal.append_message(
-            exec_id, msg_type, content, artifact_ref,
+            exec_id,
+            msg_type,
+            content,
+            artifact_ref,
             target_exec=target if target != exec_id else None,
         )
         # Claim ownership only once the creating row is DURABLE, matching the
-        # journal-before-mutate order the fold and the widget mirror already keep
-        # (RISKS #14). A registry that ran ahead of a failed append would route
+        # journal-before-mutate order the fold and the widget mirror already
+        # keep. A registry that ran ahead of a failed append would route
         # later updates at an owner no restart can re-derive.
         if msg_type == "display_data":
             self._register_display(exec_id, content)
@@ -1001,7 +1157,7 @@ class Session:
 
         Everything folds into its emitter except an `update_display_data` for a
         display_id another execution created — that one belongs to the creator,
-        which is what makes `update_display` reach across cells (RISKS #6). The
+        which is what makes `update_display` reach across cells. The
         registry is only consulted, never used to invent a target: an unknown id,
         or an owner with no fold left, falls back to the emitter so the update
         still fold-no-ops rather than raising.
@@ -1030,7 +1186,7 @@ class Session:
         journal-then-fold order): `would_accept` decides acceptance without
         mutating, so a `journal.append_message` failure propagates before
         `apply()` ever runs — the live mirror can never get ahead of what a
-        restart's `_rebuild_mirror` would derive from the journal (RISKS #14).
+        restart's `_rebuild_mirror` would derive from the journal.
         """
         if not self._mirror.would_accept(msg_type, content):
             return
@@ -1054,10 +1210,10 @@ class Session:
         fold = self._folds.get(exec_id) if exec_id is not None else None
         if fold is not None:
             fold.apply(msg_type, content)
-        # Same builder as the attach-backlog path (ADR-083), so a live and a
-        # resuming client get the identical frame for this row — including any
+        # Same builder as the attach-backlog path, so a live and a resuming
+        # client get the identical frame for this row — including any
         # `_buffers_b64` on `stored`, which event_from_message forwards when
-        # present (RISKS #13). Carrying the comm data is what animates a
+        # present. Carrying the comm data is what animates a
         # tqdm.notebook bar live rather than only on reconnect.
         self._broadcast(event_from_message(seq, exec_id, msg_type, stored))
 
@@ -1094,8 +1250,12 @@ class Session:
                 "password": bool(content.get("password", False)),
             }
             self._journal_lifecycle(exec_id, "tithon.input_request", dict(self._pending_input))
-            log.info("[%s] input_request exec=%s password=%s",
-                     self.session_id, exec_id, self._pending_input["password"])
+            log.info(
+                "[%s] input_request exec=%s password=%s",
+                self.session_id,
+                exec_id,
+                self._pending_input["password"],
+            )
 
     def send_input(self, value: str) -> bool:
         """Answer a pending input()/getpass() prompt (client `input_reply` op).
@@ -1160,6 +1320,13 @@ class Session:
             finally:
                 self._busy = False
                 self.touch()  # the idle clock starts when the batch finishes
+                # Once per USER ACTION, not once per cell. Publishing rebuilds
+                # every execution's fold, so a per-cell write makes a Run-All
+                # quadratic in the notebook's length. The file is a projection of
+                # a journal that already holds everything, so it is free to lag a
+                # running batch — and a daemon that dies mid-batch republishes
+                # when `_recover_inflight` terminalizes the cell it was on.
+                self._publish_sidecar()
 
     async def _run_one(self, exec_id: str, code: str, allow_stdin: bool = False) -> str:
         """Execute one cell on the kernel; journal its lifecycle; return the
@@ -1234,7 +1401,7 @@ class Session:
                 # `shield` so the poll timeout cancels only this wait, never the
                 # future the pump is still going to resolve.
                 reply = await asyncio.wait_for(asyncio.shield(fut), KERNEL_REPLY_POLL)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if not self.kernel.is_alive():
                     self._emit_kernel_dead(exec_id)
                     return "error", None
@@ -1242,8 +1409,9 @@ class Session:
             except ConnectionError:
                 # Channels torn down under us (restart/stop). The exec worker is
                 # being cancelled too; fail this cell rather than wait forever.
-                log.info("[%s] exec %s: shell channel closed before reply",
-                         self.session_id, exec_id)
+                log.info(
+                    "[%s] exec %s: shell channel closed before reply", self.session_id, exec_id
+                )
                 return "error", None
             content = reply["content"]
             self._emit_reply_payloads(exec_id, content.get("payload") or [])
@@ -1269,17 +1437,20 @@ class Session:
             try:
                 await asyncio.wait_for(idle.wait(), KERNEL_REPLY_POLL)
                 return
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if not self.kernel.is_alive():
-                    log.warning("[%s] exec %s: kernel died before publishing idle",
-                                self.session_id, exec_id)
+                    log.warning(
+                        "[%s] exec %s: kernel died before publishing idle", self.session_id, exec_id
+                    )
                     return
                 waited += KERNEL_REPLY_POLL
                 if waited >= IDLE_BARRIER_TIMEOUT:
                     log.warning(
                         "[%s] exec %s: no iopub idle within %.0fs — persisting the "
                         "fold anyway (output may be incomplete)",
-                        self.session_id, exec_id, IDLE_BARRIER_TIMEOUT,
+                        self.session_id,
+                        exec_id,
+                        IDLE_BARRIER_TIMEOUT,
                     )
                     return
 
@@ -1334,8 +1505,9 @@ class Session:
         seq = self.journal.append_message(exec_id, "error", content)
         self._folds[exec_id].apply("error", content)
         self._broadcast(event_from_message(seq, exec_id, "error", content))
-        log.warning("[%s] kernel died during exec %s (pid=%s)",
-                    self.session_id, exec_id, self.kernel.pid)
+        log.warning(
+            "[%s] kernel died during exec %s (pid=%s)", self.session_id, exec_id, self.kernel.pid
+        )
 
     def _mark_skipped(self, exec_id: str) -> None:
         """Terminate a queued cell that a Run-All skipped after an earlier error.
@@ -1349,8 +1521,7 @@ class Session:
             "tithon.done",
             {"status": "skipped", "execution_count": None, "ts": finished_at},
         )
-        log.info("[%s] exec %s skipped (run stopped on an earlier error)",
-                 self.session_id, exec_id)
+        log.info("[%s] exec %s skipped (run stopped on an earlier error)", self.session_id, exec_id)
 
     def _drain_queue(self) -> int:
         """Drop every batch still waiting in the exec queue; return the count.
@@ -1385,25 +1556,41 @@ class Session:
                 sub.dropped = True
                 log.warning(
                     "[%s] subscriber overflow (>%d queued) — dropping client",
-                    self.session_id, SUB_QUEUE_MAX,
+                    self.session_id,
+                    SUB_QUEUE_MAX,
                 )
 
-    def submit(self, code: str, submitted_by: str | None = None,
-               origin: dict | None = None, allow_stdin: bool = False) -> str:
+    def submit(
+        self,
+        code: str,
+        submitted_by: str | None = None,
+        origin: dict | None = None,
+        allow_stdin: bool = False,
+    ) -> str:
         """Submit one cell (CLI / single play). A one-cell batch has nothing to
         stop, so stop_on_error is moot."""
         return self.submit_batch(
-            [{"code": code, "origin": origin}], submitted_by,
-            stop_on_error=False, allow_stdin=allow_stdin,
+            [{"code": code, "origin": origin}],
+            submitted_by,
+            stop_on_error=False,
+            allow_stdin=allow_stdin,
         )[0]
 
-    def submit_batch(self, cells: list[dict], submitted_by: str | None = None,
-                     stop_on_error: bool = False, allow_stdin: bool = False) -> list[str]:
+    def submit_batch(
+        self,
+        cells: list[dict],
+        submitted_by: str | None = None,
+        stop_on_error: bool = False,
+        allow_stdin: bool = False,
+    ) -> list[str]:
         """Submit a batch of cells as ONE queue item (one user action). When
         ``stop_on_error`` and a cell raises, the worker skips the remaining cells
         of this batch (native "Run All" semantics — see _exec_worker).
         ``allow_stdin`` (per user action) enables the input()/getpass() bridge:
         a client that can present an input box opts in, CLI/default stays off."""
+        # Running a cell re-opens a session the user had closed: from here on
+        # its output is current again, so restore-on-open is armed once more.
+        self.set_closed_by_user(False)
         batch: list[tuple[str, str]] = []
         exec_ids: list[str] = []
         for cell in cells:
@@ -1416,7 +1603,12 @@ class Session:
             # even for CLI runs that send no origin (SPEC.md).
             cell_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
             self.journal.insert_execution(
-                exec_id, self._exec_counter, code, submitted_by, origin, cell_hash,
+                exec_id,
+                self._exec_counter,
+                code,
+                submitted_by,
+                origin,
+                cell_hash,
                 allow_stdin=allow_stdin,
             )
             self._folds[exec_id] = ExecutionFold()
@@ -1430,11 +1622,28 @@ class Session:
         self.touch()
         return exec_ids
 
-    def snapshot(self) -> dict:
+    def _execution_snapshots(self) -> list[dict]:
+        """Every execution in the shape clients and the sidecar both consume.
+
+        ONE builder: the shared sidecar is written from these exact dicts, so a
+        cell restored from a cloned snapshot and the same cell restored over the
+        socket cannot disagree about what the output was.
+        """
         execs = []
-        for (exec_id, seq, code, status, execution_count, folded_json,
-             cell_origin_uri, cell_range, cell_hash, cell_index,
-             started_at, finished_at) in self.journal.executions():
+        for (
+            exec_id,
+            seq,
+            code,
+            status,
+            execution_count,
+            folded_json,
+            cell_origin_uri,
+            cell_range,
+            cell_hash,
+            cell_index,
+            started_at,
+            finished_at,
+        ) in self.journal.executions():
             fold = self._folds.get(exec_id)
             # `fold_state` rides beside `outputs` so a client can CONTINUE folding
             # this execution the way the daemon does (see `fold_state`). Only a
@@ -1443,7 +1652,11 @@ class Session:
             fold_state = None
             if fold is not None:
                 outputs = fold.outputs()
-                fold_state = fold.fold_state()
+                # An imported execution ran on someone else's machine and is
+                # terminal by construction, so there is nothing left to continue
+                # and its hydrated fold has no real area ownership to advertise.
+                if exec_id not in self._imported:
+                    fold_state = fold.fold_state()
             else:
                 outputs = json.loads(folded_json) if folded_json else []
             origin = None
@@ -1468,6 +1681,9 @@ class Session:
                     "finished_at": finished_at,
                 }
             )
+        return execs
+
+    def snapshot(self) -> dict:
         return {
             "session": self.session_id,
             "max_seq": self.journal.max_seq(),
@@ -1482,7 +1698,10 @@ class Session:
                 "generation": self.kernel_generation,
             },
             "queue_len": self._queue.qsize(),
-            "executions": execs,
+            "executions": self._execution_snapshots(),
+            # The user closed this session on purpose, so its history is history:
+            # a client restores nothing until asked (see `closed_by_user`).
+            "closed_by_user": self.closed_by_user,
             "widgets": self._mirror.snapshot(),
             # A cell blocked on input()/getpass() at attach time, so a reconnecting
             # client re-presents the prompt (None when nothing is waiting).
@@ -1536,7 +1755,7 @@ class Session:
         while True:
             try:
                 event = await asyncio.wait_for(sub.queue.get(), SUB_POLL)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if sub.dropped:
                     return await _notify_overflow(ws)
                 continue
@@ -1546,11 +1765,14 @@ class Session:
                 continue  # already covered by snapshot/delta replay
             try:
                 await asyncio.wait_for(ws.send(json.dumps(event)), SEND_TIMEOUT)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 # Client stalled accepting data: drop it (host stays healthy).
                 sub.dropped = True
-                log.warning("[%s] subscriber send stalled >%.0fs — dropping client",
-                            self.session_id, SEND_TIMEOUT)
+                log.warning(
+                    "[%s] subscriber send stalled >%.0fs — dropping client",
+                    self.session_id,
+                    SEND_TIMEOUT,
+                )
                 return await _notify_overflow(ws)
 
 
@@ -1625,8 +1847,11 @@ class Daemon:
         ):
             os.chmod(self.sock_path, 0o600)
             self.pid_file.write_text(str(os.getpid()))
-            log.info("daemon ready pid=%d sock=%s (sessions are per-file, lazy)",
-                     os.getpid(), self.sock_path)
+            log.info(
+                "daemon ready pid=%d sock=%s (sessions are per-file, lazy)",
+                os.getpid(),
+                self.sock_path,
+            )
             bg: list[asyncio.Task] = []
             if self.idle_timeout > 0:
                 bg.append(asyncio.create_task(self._gc_loop(), name="idle-gc"))
@@ -1653,7 +1878,8 @@ class Daemon:
                 # `Session.start()` reports a requested reset, not a lost one.
                 try:
                     s._journal_lifecycle(
-                        None, "tithon.kernel",
+                        None,
+                        "tithon.kernel",
                         {"status": "shutdown", "deliberate": True},
                     )
                 except Exception:  # pragma: no cover - defensive
@@ -1677,8 +1903,14 @@ class Daemon:
         half-stopped session, tells any attached client the kernel is gone (a
         ``tithon.kernel`` ``killed`` event so spinners clear), then stops the
         session and kills its kernel. The journal/session dir stay on disk, so
-        reopening the file re-creates the session lazily with a fresh kernel and
-        the restored output history. Returns False if no such live session.
+        reopening the file re-creates the session lazily with a fresh kernel —
+        but NOT with its cells re-seeded, because this is the user deliberately
+        ending the session (`set_closed_by_user`). Returns False if no such
+        live session.
+
+        The idle-GC reap must never come through here: it kills a kernel the
+        user did not ask about, so it keeps its own sweep (`_gc_sweep`) and
+        leaves restore-on-open armed.
         """
         if not session_id:
             return False
@@ -1686,14 +1918,14 @@ class Daemon:
             s = self._sessions.get(session_id)
         if s is None:
             return False
-        # Acquire the session's OWN restart lock before removing it from the
-        # manager — not after. Popping first (an earlier version of this fix)
-        # left a window, bounded by however long a CONCURRENT restart_kernel()
-        # holds this lock (up to its 120s kernel-ready wait), where the id was
-        # absent from `_sessions` while `s` was still alive and un-killed;
-        # `_get_session()` during that window found nothing and spawned a
-        # SECOND Session on the same session_dir/journal/kernel files
-        # (duplicate pumps, exec_id collisions). Holding the lock FIRST makes
+        # Acquire the session's OWN restart lock BEFORE removing it from the
+        # manager, never after. Popping first opens a window — bounded by
+        # however long a CONCURRENT restart_kernel() holds this lock, up to its
+        # 120s kernel-ready wait — where the id is absent from `_sessions` while
+        # `s` is still alive and un-killed; `_get_session()` during that window
+        # finds nothing and spawns a SECOND Session on the same
+        # session_dir/journal/kernel files (duplicate pumps, exec_id
+        # collisions). Holding the lock FIRST makes
         # "marked `_killed`" and "removed from the manager" atomic from
         # `_get_session()`'s perspective — the id stays visible (and bindable,
         # a pre-existing tolerated race — see `_killed`'s docstring) right up
@@ -1709,9 +1941,11 @@ class Daemon:
                 if self._sessions.get(session_id) is s:
                     self._sessions.pop(session_id)
             try:
+                s.set_closed_by_user(True)
                 # `deliberate` so reopening the file later does not warn about a loss.
                 s._journal_lifecycle(
-                    None, "tithon.kernel", {"status": "killed", "deliberate": True})
+                    None, "tithon.kernel", {"status": "killed", "deliberate": True}
+                )
             except Exception:  # pragma: no cover - defensive
                 log.exception("[%s] kill lifecycle broadcast failed", session_id)
             await s.stop(kill_kernel=True)
@@ -1792,7 +2026,9 @@ class Daemon:
                 await s.stop(kill_kernel=True)
             log.info(
                 "idle-GC reaped session %s (kernel pid=%s, idle %ds; journal kept)",
-                sid, s.kernel.pid, idle,
+                sid,
+                s.kernel.pid,
+                idle,
             )
 
     async def _handler(self, ws) -> None:
@@ -1827,8 +2063,7 @@ class Daemon:
                 if op == "kill_kernel":
                     target = msg.get("target")
                     ok = await self._kill_session(target)
-                    await ws.send(json.dumps(
-                        {"op": "kernel_killed", "ok": ok, "session": target}))
+                    await ws.send(json.dumps({"op": "kernel_killed", "ok": ok, "session": target}))
                     continue
                 # The stop button. Answered HERE — above the session bind — because
                 # `_get_session()` holds `_sessions_lock` across a kernel spawn, so
@@ -1904,28 +2139,44 @@ class Daemon:
                         pump = asyncio.create_task(session.sub_pump(ws, sub, cutoff))
                     log.info(
                         "[%s] client attached last_seen_seq=%d cutoff=%d backlog=%d",
-                        session.session_id, last, cutoff, len(backlog),
+                        session.session_id,
+                        last,
+                        cutoff,
+                        len(backlog),
                     )
                 elif op == "execute":
                     code = msg.get("code", "")
                     preview = code[:80].replace("\n", "↵")
                     exec_id = session.submit(
-                        code, msg.get("submitted_by"), msg.get("origin"),
+                        code,
+                        msg.get("submitted_by"),
+                        msg.get("origin"),
                         allow_stdin=bool(msg.get("allow_stdin", False)),
                     )
-                    log.info("[%s] execute queued exec_id=%s queue_len=%d code=%r",
-                             session.session_id, exec_id, session._queue.qsize(), preview)
+                    log.info(
+                        "[%s] execute queued exec_id=%s queue_len=%d code=%r",
+                        session.session_id,
+                        exec_id,
+                        session._queue.qsize(),
+                        preview,
+                    )
                     await ws.send(json.dumps({"op": "execute_ack", "exec_id": exec_id}))
                 elif op == "execute_batch":
                     cells = msg.get("cells", [])
                     stop_on_error = bool(msg.get("stop_on_error", True))
                     exec_ids = session.submit_batch(
-                        cells, msg.get("submitted_by"), stop_on_error,
+                        cells,
+                        msg.get("submitted_by"),
+                        stop_on_error,
                         allow_stdin=bool(msg.get("allow_stdin", False)),
                     )
-                    log.info("[%s] execute_batch queued %d cells stop_on_error=%s queue_len=%d",
-                             session.session_id, len(exec_ids), stop_on_error,
-                             session._queue.qsize())
+                    log.info(
+                        "[%s] execute_batch queued %d cells stop_on_error=%s queue_len=%d",
+                        session.session_id,
+                        len(exec_ids),
+                        stop_on_error,
+                        session._queue.qsize(),
+                    )
                     await ws.send(json.dumps({"op": "execute_ack", "exec_ids": exec_ids}))
                 elif op == "input_reply":
                     # Answer a pending input()/getpass() prompt. Sent over the live
@@ -1948,11 +2199,10 @@ class Daemon:
                         # see Session._killed. `session` stays bound to this now-
                         # stopped Session for the rest of the connection (bound
                         # once above, never re-resolved), so any FURTHER op sent
-                        # here would queue against a worker that no longer exists
-                        # (Codex ② caught this) — end the connection like the
-                        # session-creation-failure path above does, not `continue`.
-                        await ws.send(json.dumps(
-                            {"op": "error", "message": "session was killed"}))
+                        # here would queue against a worker that no longer exists.
+                        # End the connection like the session-creation-failure
+                        # path above does, not `continue`.
+                        await ws.send(json.dumps({"op": "error", "message": "session was killed"}))
                         return
                     await ws.send(json.dumps({"op": "kernel_restarted", "kernel_pid": pid}))
                 elif op == "get_artifact":

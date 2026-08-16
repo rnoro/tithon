@@ -5,6 +5,7 @@ finds the full snapshot, and asserts the Widget State Mirror contains a
 FloatProgress whose value equals its max equals the requested total. Prints a
 one-line summary and exits non-zero on any failure.
 """
+
 import json
 import sys
 
@@ -33,9 +34,7 @@ def main() -> int:
         print("v5check: snapshot has no widget models", file=sys.stderr)
         return 1
 
-    progress = [
-        (mid, e) for mid, e in state.items() if e.get("model_name") == "FloatProgressModel"
-    ]
+    progress = [(mid, e) for mid, e in state.items() if e.get("model_name") == "FloatProgressModel"]
     if not progress:
         print(f"v5check: no FloatProgressModel among {len(state)} models", file=sys.stderr)
         return 1
@@ -50,9 +49,7 @@ def main() -> int:
         print(f"v5check: FloatProgress value({value}) != total({TOTAL})", file=sys.stderr)
         return 1
 
-    print(
-        f"v5check OK: {len(state)} widget models; FloatProgress final value=={value}==max==total"
-    )
+    print(f"v5check OK: {len(state)} widget models; FloatProgress final value=={value}==max==total")
     return 0
 
 

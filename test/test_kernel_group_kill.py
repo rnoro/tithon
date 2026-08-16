@@ -16,6 +16,7 @@ so the liveness path under test is the production one.
 v58.sh proves the same guarantees end to end (real daemon, real kernel, real
 worker processes, over the CLI).
 """
+
 from __future__ import annotations
 
 import os

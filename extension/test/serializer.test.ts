@@ -1,16 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as fc from "fast-check";
-import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { describe, expect, it } from "vitest";
 import {
-  parse,
-  serialize,
-  countMarkers,
   bodyLinesFromText,
-  resolveCell,
   cellSource,
-  uncommentMarkdown,
   commentMarkdown,
+  countMarkers,
+  parse,
+  resolveCell,
+  serialize,
+  uncommentMarkdown,
 } from "../src/serializer";
 
 const CORPUS_DIR = join(__dirname, "..", "..", "scripts", "corpus");
@@ -44,18 +44,14 @@ describe("percent serializer — marker semantics", () => {
     const src = readBytesAsString(join(CORPUS_DIR, "string_marker.py"));
     const nb = parse(src);
     // real markers: "# %% real-a" and "# %% real-b" only.
-    const markerLines = nb.cells
-      .filter((c) => c.hasMarker)
-      .map((c) => c.markerLine!.text);
+    const markerLines = nb.cells.filter((c) => c.hasMarker).map((c) => c.markerLine!.text);
     expect(markerLines).toEqual(["# %% real-a", "# %% real-b"]);
   });
 
   it("does not split on a `# %%` inside a CRLF triple-quoted string", () => {
     const src = readBytesAsString(join(CORPUS_DIR, "crlf_string_marker.py"));
     const nb = parse(src);
-    const markerLines = nb.cells
-      .filter((c) => c.hasMarker)
-      .map((c) => c.markerLine!.text);
+    const markerLines = nb.cells.filter((c) => c.hasMarker).map((c) => c.markerLine!.text);
     expect(markerLines).toEqual(["# %% a", "# %% b"]);
   });
 
@@ -91,10 +87,9 @@ const termArb = fc.constantFrom("\n", "\r\n", "\r");
 // marker. This keeps the generated cell *structure* deterministic. String- and
 // bracket-aware splitting is asserted separately by the corpus tests above, and
 // adversarial losslessness by the arbitrary-latin1 property below.
-const bodyTextArb = fc.stringOf(
-  fc.constantFrom(..."abcdefghij0123 \t=+_.: ".split("")),
-  { maxLength: 24 },
-);
+const bodyTextArb = fc.stringOf(fc.constantFrom(..."abcdefghij0123 \t=+_.: ".split("")), {
+  maxLength: 24,
+});
 
 const markerTextArb = fc.constantFrom(
   "# %%",
@@ -154,11 +149,7 @@ describe("percent serializer — property: random percent files", () => {
   });
 
   it("round-trips arbitrary latin1 text byte-exactly (no partition assumptions)", () => {
-    const charArb = fc.constantFrom(
-      ..."abc 09#%[]{}'\"\\\t".split(""),
-      "\n",
-      "\r",
-    );
+    const charArb = fc.constantFrom(..."abc 09#%[]{}'\"\\\t".split(""), "\n", "\r");
     fc.assert(
       fc.property(fc.stringOf(charArb, { maxLength: 200 }), (text) => {
         expect(serialize(parse(text))).toBe(text);
@@ -240,7 +231,7 @@ describe("resolveCell — edited existing cells persist to disk", () => {
   });
 
   it("preserves a marker-less leading cell when edited (no spurious marker)", () => {
-    const nb = parse('import os\n# %%\nx = 1\n');
+    const nb = parse("import os\n# %%\nx = 1\n");
     const head = nb.cells[0];
     expect(head.hasMarker).toBe(false);
     const resolved = resolveCell("import sys", false, head);

@@ -43,7 +43,8 @@
     "notebooks": [
       {
         "type": "tithon-py",
-        "displayName": "Tithon Notebook",
+        "displayName": "Notebook",
+        "priority": "option",
         "selector": [
           {
             "filenamePattern": "*.py"
@@ -65,13 +66,13 @@
     "commands": [
       {
         "command": "tithon.restartKernel",
-        "title": "Tithon: Restart Kernel",
+        "title": "Restart Kernel",
         "category": "Tithon",
         "icon": "$(debug-restart)"
       },
       {
         "command": "tithon.interruptKernel",
-        "title": "Tithon: Interrupt Kernel",
+        "title": "Interrupt Kernel",
         "category": "Tithon",
         "icon": "$(debug-stop)"
       },
@@ -88,21 +89,45 @@
         "icon": "$(file-code)"
       },
       {
+        "command": "tithon.alwaysOpenAsNotebook",
+        "title": "Always Open This File as a Notebook",
+        "category": "Tithon",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "tithon.forgetAlwaysOpenAsNotebook",
+        "title": "Stop Always Opening This File as a Notebook",
+        "category": "Tithon",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "tithon.alwaysOpenWith",
+        "title": "Always Open With…",
+        "category": "Tithon",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "tithon.selectInterpreter",
-        "title": "Tithon: Select Python Interpreter",
+        "title": "Select Python Interpreter",
         "category": "Tithon",
         "icon": "$(snake)"
       },
       {
         "command": "tithon.restartDaemon",
-        "title": "Tithon: Restart Daemon",
+        "title": "Restart Daemon",
         "category": "Tithon"
       },
       {
         "command": "tithon.killKernel",
-        "title": "Tithon: Terminate Kernel…",
+        "title": "Terminate Kernel…",
         "category": "Tithon",
         "icon": "$(trash)"
+      },
+      {
+        "command": "tithon.restoreOutputs",
+        "title": "Restore Previous Outputs",
+        "category": "Tithon",
+        "icon": "$(history)"
       }
     ],
     "configuration": {
@@ -123,6 +148,11 @@
           "default": "",
           "description": "Python interpreter to run the daemon as `<python> -m tithon daemon` (works without activating the venv). Leave empty to use the interpreter selected by the Python extension."
         },
+        "tithon.confirmDestructiveActions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation in a modal dialog before an action that destroys running kernel state (Restart Kernel, Terminate Kernel, Restart Daemon). Turn off only if you restart often and accept losing the namespace on a mis-click."
+        },
         "tithon.kernelIdleTimeout": {
           "type": "number",
           "default": 0,
@@ -142,9 +172,19 @@
           "command": "tithon.openAsText",
           "when": "notebookType == tithon-py",
           "group": "navigation"
+        },
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py",
+          "group": "1_tithon@1"
         }
       ],
       "notebook/toolbar": [
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "notebookType == tithon-py",
+          "group": "tithon@1"
+        },
         {
           "command": "tithon.restartKernel",
           "when": "notebookType == tithon-py",
@@ -161,14 +201,36 @@
           "group": "kernel@1"
         }
       ],
+      "explorer/context": [
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py",
+          "group": "open@10"
+        }
+      ],
       "commandPalette": [
         {
           "command": "tithon.killKernel"
+        },
+        {
+          "command": "tithon.alwaysOpenAsNotebook",
+          "when": "false"
+        },
+        {
+          "command": "tithon.forgetAlwaysOpenAsNotebook",
+          "when": "false"
+        },
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py"
         }
       ]
     }
   },
   "scripts": {
+    "format": "biome format --write .",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
     "test": "vitest run",
     "test:serializer": "vitest run test/serializer.test.ts test/cellAttach.test.ts",
     "test:widget": "vitest run test/widget.test.ts",
@@ -177,9 +239,11 @@
     "vscode:prepublish": "node esbuild.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^3.0.0",
     "fast-check": "^3.15.0",
     "glob": "^13.0.6",
@@ -187,7 +251,6 @@
     "mocha": "^11.7.6",
     "typescript": "^5.4.0",
     "vitest": "^1.6.0",
-    "@types/ws": "^8.18.1",
     "vsce": "^2.15.0"
   },
   "dependencies": {

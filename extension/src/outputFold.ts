@@ -16,6 +16,7 @@
  * correctly as more live events arrive.
  */
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters ARE the subject — this buffer exists to give \r, \n and \b their terminal cursor meaning.
 const CTRL = /[\r\n\x08]/g;
 
 /** Line buffer with terminal-ish cursor semantics (\r, \n, \b). */
@@ -28,6 +29,7 @@ class StreamBuf {
     let idx = 0;
     CTRL.lastIndex = 0;
     let m: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: assigning in the condition is how a /g regex is walked; splitting it needs a second exec call that can drift from this one.
     while ((m = CTRL.exec(text)) !== null) {
       const seg = text.slice(idx, m.index);
       if (seg) this.emit(seg);
@@ -63,8 +65,18 @@ class StreamBuf {
 
 export type OutputItem =
   | { output_type: "stream"; name: string; text: string }
-  | { output_type: "display_data"; data: Record<string, unknown>; metadata?: Record<string, unknown>; display_id?: string }
-  | { output_type: "execute_result"; data: Record<string, unknown>; metadata?: Record<string, unknown>; execution_count?: number | null }
+  | {
+      output_type: "display_data";
+      data: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      display_id?: string;
+    }
+  | {
+      output_type: "execute_result";
+      data: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      execution_count?: number | null;
+    }
   | { output_type: "error"; ename?: string; evalue?: string; traceback?: string[] };
 
 interface StreamSlot {
@@ -251,7 +263,11 @@ export class ExecutionFold {
   outputs(): OutputItem[] {
     return this.items.map((it) => {
       if (it.output_type === "stream") {
-        return { output_type: "stream", name: (it as StreamSlot).name, text: (it as StreamSlot).buf.text };
+        return {
+          output_type: "stream",
+          name: (it as StreamSlot).name,
+          text: (it as StreamSlot).buf.text,
+        };
       }
       const { owner: _owner, ...rest } = it as any;
       return rest as OutputItem;

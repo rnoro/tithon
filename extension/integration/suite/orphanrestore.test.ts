@@ -15,12 +15,12 @@
  * its output, NOT be in the sink's open-execution set (no spinner), and not be
  * falsely marked successful; and live output must not have dirtied the notebook.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 
@@ -34,7 +34,11 @@ function plainText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
+async function waitFor(
+  pred: () => boolean | Promise<boolean>,
+  ms: number,
+  label: string,
+): Promise<void> {
   const deadline = Date.now() + ms;
   while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
@@ -68,7 +72,10 @@ describe("Tithon orphaned execution restores output without a stuck spinner (v38
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // Drive a cell that prints, then sleeps — so it is RUNNING with output.
     const text = readFileSync(fixture, "utf8");
@@ -90,7 +97,11 @@ describe("Tithon orphaned execution restores output without a stuck spinner (v38
     // orphan freezes a real, non-zero elapsed run time.
     await waitFor(() => plainText(cell()).includes("tick 8"), 30000, "running output (tick 8)");
     // Sanity: while running, the cell DOES have an open execution (a live spinner).
-    await waitFor(async () => (await activeExecCells()).includes(cellIdx), 30000, "running spinner");
+    await waitFor(
+      async () => (await activeExecCells()).includes(cellIdx),
+      30000,
+      "running spinner",
+    );
 
     // Restart the kernel: the daemon orphans the in-flight execution for real
     // (journal.orphan_inflight) and the extension re-attaches + re-seeds it.

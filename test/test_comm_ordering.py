@@ -3,6 +3,7 @@ Mirror. A failed `journal.append_message` (the iopub pump catches a handler
 exception and keeps going) must not leave the live mirror ahead of what a
 restart's `_rebuild_mirror` would derive from the journal alone — journal and
 mirror must never disagree about what was accepted."""
+
 from tithon.daemon import Session
 
 
@@ -32,6 +33,7 @@ def test_failed_append_does_not_mutate_the_mirror(tmp_path):
 
     def boom(*a, **kw):
         raise RuntimeError("simulated journal write failure")
+
     s.journal.append_message = boom
 
     raised = False
@@ -55,6 +57,7 @@ def test_live_mirror_matches_a_rebuild_after_a_failed_append(tmp_path):
 
     def boom(*a, **kw):
         raise RuntimeError("simulated journal write failure")
+
     real_append = s.journal.append_message
     s.journal.append_message = boom
     try:
@@ -67,7 +70,9 @@ def test_live_mirror_matches_a_rebuild_after_a_failed_append(tmp_path):
     s._handle_comm("e1", "comm_msg", _update("c1", 3), [])
 
     live_snapshot = s._mirror.snapshot()
-    assert live_snapshot["state"]["c1"]["state"]["value"] == 3  # NOT 2 — the failed update never applied
+    assert (
+        live_snapshot["state"]["c1"]["state"]["value"] == 3
+    )  # NOT 2 — the failed update never applied
 
     # Simulate a daemon restart: a FRESH Session reopening the same journal.
     s2 = Session("default", tmp_path / "sess", tmp_path / "work")
@@ -85,9 +90,16 @@ def test_handle_comm_never_journals_malformed_content(tmp_path):
     self-healing in-memory failure. Naively journaling first would have made
     it durable, crashing _rebuild_mirror on every future restart instead."""
     s = make_session(tmp_path)
-    s._handle_comm("e1", "comm_open", {
-        "comm_id": "c1", "target_name": "jupyter.widget", "data": {"state": "not-a-dict"},
-    }, [])
+    s._handle_comm(
+        "e1",
+        "comm_open",
+        {
+            "comm_id": "c1",
+            "target_name": "jupyter.widget",
+            "data": {"state": "not-a-dict"},
+        },
+        [],
+    )
     assert len(s._mirror) == 0
     assert s.journal.messages_after(0) == []
 

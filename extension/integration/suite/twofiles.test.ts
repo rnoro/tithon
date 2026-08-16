@@ -5,23 +5,30 @@
  * its own kernel + journal. We run A, then B, then A again, and assert each
  * file shows ONLY its own output and B cannot see A's variable.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items)
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+  for (const o of cell.outputs)
+    for (const it of o.items)
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
   return s;
 }
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) { if (Date.now() > deadline) throw new Error(`timed out: ${label}`); await new Promise((r) => setTimeout(r, 50)); }
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -29,12 +36,16 @@ async function open(uri: vscode.Uri): Promise<vscode.NotebookDocument> {
   const nb = await vscode.workspace.openNotebookDocument(uri);
   await vscode.window.showNotebookDocument(nb);
   await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-  await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+  await vscode.commands.executeCommand("notebook.selectKernel", {
+    id: "tithon",
+    extension: ext().id,
+  });
   return nb;
 }
 async function runCell0(uri: vscode.Uri): Promise<void> {
   await vscode.commands.executeCommand("notebook.cell.execute", {
-    ranges: [new vscode.NotebookRange(0, 1)], document: uri,
+    ranges: [new vscode.NotebookRange(0, 1)],
+    document: uri,
   });
 }
 
@@ -63,6 +74,9 @@ describe("Tithon two files = two isolated kernels (v19)", () => {
     const bTxt = cellText(nbB.cellAt(0));
     assert.ok(aTxt.includes("AAA"), `A missing its output: ${JSON.stringify(aTxt)}`);
     assert.ok(!aTxt.includes("BBB"), `A leaked B's output: ${JSON.stringify(aTxt)}`);
-    assert.ok(bTxt.includes("BBB False"), `B should run and NOT see A's va: ${JSON.stringify(bTxt)}`);
+    assert.ok(
+      bTxt.includes("BBB False"),
+      `B should run and NOT see A's va: ${JSON.stringify(bTxt)}`,
+    );
   });
 });

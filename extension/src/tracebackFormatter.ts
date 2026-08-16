@@ -1,6 +1,6 @@
 /**
- * Traceback ANSI cleanup (RISKS #8/T6, comparison doc §4-6) — a pure function so
- * it's unit-testable without a DOM. IPython's own traceback formatter sets
+ * Traceback ANSI cleanup — a pure function so it's unit-testable without a
+ * DOM. IPython's own traceback formatter sets
  * background-color SGR codes in some color schemes (`\x1b[4Xm` / `\x1b[10Xm` /
  * `\x1b[48;5;Nm` / `\x1b[48;2;R;G;Bm`), which VSCode's ANSI renderer applies
  * verbatim — the kernel's chosen background can clash badly with the editor's
@@ -18,6 +18,7 @@
 // reset (`;49`) would then have its reset stripped without ever stripping the
 // set it was resetting — an inconsistency only reachable by MIXING both forms
 // in one stream, which this project's own kernel source never does.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is what an SGR sequence starts with, so this pattern cannot be written without it.
 const SGR = /\x1b\[([0-9;]*)m/g;
 
 function isBackgroundParam(params: string[], i: number): number {

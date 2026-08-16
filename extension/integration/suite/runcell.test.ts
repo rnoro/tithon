@@ -11,7 +11,7 @@
  * persistent subscriber is attached before submit, and the streamed output lands
  * in the cell. This test asserts the cell shows output with no manual live step.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
@@ -56,7 +56,10 @@ describe("Tithon native Run Cell inside a real VSCode host (v11)", () => {
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext.id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext.id,
+    });
 
     // The whole point: NO manual live-sync step here. Just run the cell natively,
     // the way a user clicks the play button. This invokes the controller's
@@ -67,11 +70,18 @@ describe("Tithon native Run Cell inside a real VSCode host (v11)", () => {
     });
 
     // The cell must end up showing the printed output.
-    await waitFor(() => cellText(nb.cellAt(0)).includes("Iteration 4"), 30000, "cell output to appear");
+    await waitFor(
+      () => cellText(nb.cellAt(0)).includes("Iteration 4"),
+      30000,
+      "cell output to appear",
+    );
 
     const text = cellText(nb.cellAt(0));
     for (let i = 0; i < 5; i++) {
-      assert.ok(text.includes(`Iteration ${i}`), `missing line ${i} in cell output: ${JSON.stringify(text)}`);
+      assert.ok(
+        text.includes(`Iteration ${i}`),
+        `missing line ${i} in cell output: ${JSON.stringify(text)}`,
+      );
     }
   });
 });

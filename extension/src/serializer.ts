@@ -1,7 +1,7 @@
 /**
  * Percent-format (`# %%`) <-> cell model, with byte-exact round-trip.
  *
- * Design (SPEC.md, Phase 0 item ⑥): the on-disk source is pure
+ * Design (SPEC.md): the on-disk source is pure
  * percent-format `.py`. We parse it into a cell list for the Tithon Cell View
  * and serialize it back with ZERO reformatting. Round-trip integrity is an
  * absolute requirement, so the parser partitions the input into *physical
@@ -222,7 +222,7 @@ export function cellSource(cell: Cell): string {
  * normalized so the cell ends with exactly one.
  */
 export function bodyLinesFromText(value: string): PhysicalLine[] {
-  const v = value.endsWith("\n") ? value : value + "\n";
+  const v = value.endsWith("\n") ? value : `${value}\n`;
   const lines = v.split("\n");
   lines.pop(); // drop the trailing "" produced by the final "\n"
   return lines.map((text) => ({ text, terminator: "\n" }));
@@ -241,7 +241,7 @@ export function uncommentMarkdown(src: string): string {
 export function commentMarkdown(value: string): string {
   return value
     .split("\n")
-    .map((l) => (l === "" ? "#" : "# " + l))
+    .map((l) => (l === "" ? "#" : `# ${l}`))
     .join("\n");
 }
 
@@ -266,12 +266,12 @@ export function synthesizeCell(value: string, isMarkup: boolean): Cell {
  * first cell of the notebook.
  *
  * - **Unedited** (text matches the stored cell's display source): the stored
- *   structure is returned verbatim → byte-exact round-trip (the Phase 0 ⑥ /
- *   v6 guarantee holds for files opened and saved without changes).
+ *   structure is returned verbatim → byte-exact round-trip for a file opened
+ *   and saved without changes.
  * - **Edited**: the stored marker line and kind are preserved, but the body is
  *   rebuilt from the new text so the user's edit is actually persisted to disk.
- *   (Without this, an edited existing cell silently saved its OLD content —
- *   data loss; ADR-020 backlog item.)
+ *   Rebuilding is mandatory: emitting the stored structure for an edited cell
+ *   writes its OLD content back to disk, which is silent data loss.
  * - **New cell** (no stored structure): synthesized with a fresh marker.
  *
  * Only the FIRST cell may be marker-less (a leading module header). If a

@@ -7,7 +7,7 @@
  * render-before-state race). On any failure it degrades to the §3.3 text fallback.
  *
  * Live updates: the extension host pushes `tithon.widget-update` messages (comm
- * state deltas, optionally carrying binary buffers — RISKS #13) over the renderer
+ * state deltas, optionally carrying binary buffers) over the renderer
  * channel; we apply them to the live model so a tqdm.notebook bar animates, or an
  * Image widget's live-updating pixels stay current. We report the render outcome
  * back so the host (and verify) can confirm html vs fallback.
@@ -15,16 +15,17 @@
  * Bundled by esbuild (platform=browser, format=esm) into dist/widgetRenderer.js;
  * the render logic itself is covered under jsdom by test/widget.test.ts.
  */
-import {
-  createManager,
-  renderWidget,
-  renderFallbackText,
-  type WidgetStateSnapshot,
-} from "./widgetRender";
-import type { WidgetBufferEntry } from "./richOutput";
-import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
+import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+import type { WidgetBufferEntry } from "./richOutput";
+import {
+  createManager,
+  renderFallbackText,
+  renderWidget,
+  type WidgetStateSnapshot,
+} from "./widgetRender";
 // Must follow it: re-points the vendored light-theme text colours at the active
 // VSCode theme, winning on document order (see widgetTheme.css).
 import widgetThemeCss from "./widgetTheme.css";
@@ -72,18 +73,17 @@ export const activate: ActivationFunction = (context) => {
   injectCss();
   // Live managers by output-item id, so a comm update reaches the right widget.
   const managers = new Map<string, HTMLManager>();
-  // Per (output-item, comm_id) promise chain: `set_state()` is async, and a
-  // fire-and-forget call per message let an OLDER update's promise resolve
+  // Per (output-item, comm_id) promise chain: `set_state()` is async, so a
+  // fire-and-forget call per message lets an OLDER update's promise resolve
   // AFTER a newer one — restoring stale state/buffers — whenever two
-  // `tithon.widget-update` messages for the same model arrived close together
-  // (RISKS #13 Codex ② review, finding 1). Chaining off the prior promise for
-  // the SAME (item, comm_id) pair enforces arrival order without blocking
-  // updates to a DIFFERENT model.
+  // `tithon.widget-update` messages for the same model arrive close together.
+  // Chaining off the prior promise for the SAME (item, comm_id) pair enforces
+  // arrival order without blocking updates to a DIFFERENT model.
   const updateChains = new Map<string, Promise<void>>();
 
   context.onDidReceiveMessage?.((msg: unknown) => {
     const m = msg as UpdateMessage;
-    if (!m || m.type !== "tithon.widget-update") return;
+    if (m?.type !== "tithon.widget-update") return;
     for (const [itemId, mgr] of managers) {
       // The patch targets one comm id; managers without it are left alone.
       const withHasModel = mgr as HTMLManager & { has_model(id: string): boolean };
@@ -98,10 +98,9 @@ export const activate: ActivationFunction = (context) => {
           // deserializes only the attributes present in `m.state` (a delta)
           // and calls the model's own set(), which merges just those keys —
           // buffer-bearing or not — leaving every other trait (including
-          // buffers not mentioned in this delta) untouched. Calling
-          // `model.set_state()` directly (the old code) skipped this
-          // deserialize step entirely, so a buffer-bearing update never
-          // reached the model (RISKS #13).
+          // buffers not mentioned in this delta) untouched. Must NOT be
+          // shortcut to `model.set_state()`: that skips the deserialize step,
+          // so a buffer-bearing update never reaches the model.
           mgr.set_state({
             version_major: 2,
             version_minor: 0,

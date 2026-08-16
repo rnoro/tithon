@@ -10,6 +10,7 @@ SPEC.md). Execution lifecycle transitions are journaled as pseudo
 messages (``tithon.queued`` / ``tithon.started`` / ``tithon.done``) so that
 delta replay reproduces exactly what live subscribers saw.
 """
+
 from __future__ import annotations
 
 import json
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS artifacts(
   rel_path    TEXT NOT NULL,
   bytes_len   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta(
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 #: iopub message types preserved verbatim in the journal
@@ -85,8 +90,8 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
         # _handle_comm only when the message actually carried buffers), so
         # reading it yields the identical payload whether this is called with
         # the raw content or the journaled one — forwarded here whenever
-        # present (RISKS #13: a widget with partly-binary state, e.g. Image,
-        # must not go stale between reconnects). `data.buffer_paths` — which
+        # present, since a widget with partly-binary state (e.g. Image) must
+        # not go stale between reconnects. `data.buffer_paths` — which
         # says WHERE those bytes go — already rides inside `data`, forwarded
         # below unchanged.
         payload = {
@@ -135,14 +140,21 @@ class Journal:
             self.db.execute(
                 "ALTER TABLE executions ADD COLUMN allow_stdin INTEGER NOT NULL DEFAULT 0"
             )
+        if "imported" not in cols:  # added with shared-sidecar import
+            self.db.execute("ALTER TABLE executions ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
         mcols = {r[1] for r in self.db.execute("PRAGMA table_info(messages)").fetchall()}
         if "target_exec" not in mcols:  # added with session-wide display_id routing
             self.db.execute("ALTER TABLE messages ADD COLUMN target_exec TEXT")
 
     # -- messages ----------------------------------------------------------
-    def append_message(self, exec_id: str | None, msg_type: str, content: dict,
-                       artifact_ref: str | None = None,
-                       target_exec: str | None = None) -> int:
+    def append_message(
+        self,
+        exec_id: str | None,
+        msg_type: str,
+        content: dict,
+        artifact_ref: str | None = None,
+        target_exec: str | None = None,
+    ) -> int:
         """Append one row. ``exec_id`` is always the TRUE EMITTER.
 
         ``target_exec`` names the execution whose FOLD this row belongs to when
@@ -157,8 +169,15 @@ class Journal:
         cur = self.db.execute(
             "INSERT INTO messages(session_id, exec_id, msg_type, content_json, artifact_ref,"
             " target_exec, ts) VALUES(?,?,?,?,?,?,?)",
-            (self.session_id, exec_id, msg_type, json.dumps(content), artifact_ref,
-             target_exec, time.time()),
+            (
+                self.session_id,
+                exec_id,
+                msg_type,
+                json.dumps(content),
+                artifact_ref,
+                target_exec,
+                time.time(),
+            ),
         )
         return cur.lastrowid
 
@@ -186,7 +205,7 @@ class Journal:
     def all_messages(self) -> sqlite3.Cursor:
         """Every row (msg_seq, ROUTED exec_id, msg_type, content_json) in seq
         order, as a lazily-iterated cursor (no ``.fetchall()`` — a session's whole
-        history must never be materialized at once, RISKS #9a). Routing follows
+        history must never be materialized at once). Routing follows
         `messages_after`. One global-ordered pass is what lets `_rebuild_folds`
         replay rows into a fold OTHER than their emitter's."""
         return self.db.execute(
@@ -201,7 +220,7 @@ class Journal:
         scanning the session's whole history. The `IN` clause is built from
         `COMM_TYPES` (widgets.py) — the SAME authority `is_comm()` uses — so a
         future addition to that tuple cannot silently diverge between live
-        classification and this rebuild query (RISKS #9a)."""
+        classification and this rebuild query."""
         placeholders = ",".join("?" for _ in COMM_TYPES)
         return self.db.execute(
             "SELECT msg_seq, exec_id, msg_type, content_json FROM messages"
@@ -218,17 +237,21 @@ class Journal:
         under its emitter here and under the display's owner in `all_messages`.
         """
         return self.db.execute(
-            "SELECT msg_seq, msg_type, content_json FROM messages"
-            " WHERE exec_id=? ORDER BY msg_seq",
+            "SELECT msg_seq, msg_type, content_json FROM messages WHERE exec_id=? ORDER BY msg_seq",
             (exec_id,),
         ).fetchall()
 
     # -- executions --------------------------------------------------------
-    def insert_execution(self, exec_id: str, seq: int, code: str,
-                         submitted_by: str | None = None,
-                         origin: dict | None = None,
-                         cell_hash: str | None = None,
-                         allow_stdin: bool = False) -> None:
+    def insert_execution(
+        self,
+        exec_id: str,
+        seq: int,
+        code: str,
+        submitted_by: str | None = None,
+        origin: dict | None = None,
+        cell_hash: str | None = None,
+        allow_stdin: bool = False,
+    ) -> None:
         uri = origin.get("uri") if origin else None
         rng = origin.get("range") if origin else None
         idx = origin.get("index") if origin else None
@@ -237,15 +260,24 @@ class Journal:
             "INSERT INTO executions(exec_id, session_id, seq, code, submitted_by, status,"
             " cell_origin_uri, cell_range, cell_hash, cell_index, allow_stdin)"
             " VALUES(?,?,?,?,?, 'queued', ?,?,?,?,?)",
-            (exec_id, self.session_id, seq, code, submitted_by, uri, cell_range,
-             cell_hash, idx, int(allow_stdin)),
+            (
+                exec_id,
+                self.session_id,
+                seq,
+                code,
+                submitted_by,
+                uri,
+                cell_range,
+                cell_hash,
+                idx,
+                int(allow_stdin),
+            ),
         )
 
     def mark_started(self, exec_id: str, kernel_msg_id: str | None = None) -> float:
         ts = time.time()
         self.db.execute(
-            "UPDATE executions SET status='running', started_at=?, kernel_msg_id=?"
-            " WHERE exec_id=?",
+            "UPDATE executions SET status='running', started_at=?, kernel_msg_id=? WHERE exec_id=?",
             (ts, kernel_msg_id, exec_id),
         )
         return ts
@@ -282,12 +314,10 @@ class Journal:
         keep = recoverable[-1:]  # defensive: one kernel can execute only one request here
         keep_ids = {row[0] for row in keep}
         candidates = [
-            exec_id for (exec_id,) in self.db.execute(
+            exec_id
+            for (exec_id,) in self.db.execute(
                 "SELECT exec_id FROM executions WHERE status IN ('queued','running')"
-                + (
-                    f" AND exec_id NOT IN ({','.join('?' for _ in keep_ids)})"
-                    if keep_ids else ""
-                ),
+                + (f" AND exec_id NOT IN ({','.join('?' for _ in keep_ids)})" if keep_ids else ""),
                 tuple(keep_ids),
             )
         ]
@@ -324,7 +354,8 @@ class Journal:
                         (exec_id,),
                     )
                 self.append_message(
-                    exec_id, "tithon.done",
+                    exec_id,
+                    "tithon.done",
                     {"status": "orphaned", "execution_count": None, "ts": ts},
                 )
                 count += 1
@@ -366,13 +397,17 @@ class Journal:
 
     def has_error(self, exec_id: str) -> bool:
         """Whether the append-only journal contains an error from this execution."""
-        return self.db.execute(
-            "SELECT 1 FROM messages WHERE exec_id=? AND msg_type='error' LIMIT 1",
-            (exec_id,),
-        ).fetchone() is not None
+        return (
+            self.db.execute(
+                "SELECT 1 FROM messages WHERE exec_id=? AND msg_type='error' LIMIT 1",
+                (exec_id,),
+            ).fetchone()
+            is not None
+        )
 
-    def mark_done(self, exec_id: str, status: str, execution_count: int | None,
-                  folded_json: str) -> float:
+    def mark_done(
+        self, exec_id: str, status: str, execution_count: int | None, folded_json: str
+    ) -> float:
         ts = time.time()
         self.db.execute(
             "UPDATE executions SET status=?, execution_count=?, finished_at=?, folded_json=?"
@@ -405,9 +440,9 @@ class Journal:
         ``finished_at``.
         """
         exec_ids = [
-            exec_id for (exec_id,) in self.db.execute(
-                "SELECT exec_id FROM executions WHERE status IN ('queued','running')"
-                " ORDER BY seq"
+            exec_id
+            for (exec_id,) in self.db.execute(
+                "SELECT exec_id FROM executions WHERE status IN ('queued','running') ORDER BY seq"
             )
         ]
         return self._orphan_executions(exec_ids)
@@ -451,8 +486,9 @@ class Journal:
     #: ``tithon.kernel`` statuses that begin or end a kernel GENERATION. Anything
     #: else on that channel (``interrupted``) leaves the running kernel and its
     #: namespace in place and must not shadow the real provenance record.
-    GENERATION_STATUSES = frozenset({"restarting", "restarted", "killed", "shutdown", "gc",
-                                     "replaced"})
+    GENERATION_STATUSES = frozenset(
+        {"restarting", "restarted", "killed", "shutdown", "gc", "replaced"}
+    )
 
     def last_kernel_event(self) -> tuple[int, dict] | None:
         """The newest kernel-GENERATION message as ``(msg_seq, content)``.
@@ -487,8 +523,9 @@ class Journal:
             (artifact_id,),
         ).fetchone()
 
-    def register_artifact(self, artifact_id: str, sha256: str, mime: str,
-                          rel_path: str, bytes_len: int) -> None:
+    def register_artifact(
+        self, artifact_id: str, sha256: str, mime: str, rel_path: str, bytes_len: int
+    ) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO artifacts(artifact_id, sha256, mime, rel_path, bytes_len)"
             " VALUES(?,?,?,?,?)",
@@ -508,6 +545,94 @@ class Journal:
     def all_artifacts(self) -> list[tuple]:
         """(artifact_id, rel_path) for every registered artifact (startup sweep)."""
         return self.db.execute("SELECT artifact_id, rel_path FROM artifacts").fetchall()
+
+    # -- session meta (kv) -------------------------------------------------
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return default if row is None else row[0]
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO meta(key, value) VALUES(?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+    # -- imported (shared sidecar) executions ------------------------------
+    def count_executions(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM executions").fetchone()[0]
+
+    def count_local_executions(self) -> int:
+        """Executions that ran on THIS machine (never imported from a sidecar).
+
+        The re-import gate: a pulled sidecar may replace imported rows freely,
+        but never once the user has run something here — that history is theirs
+        and is not represented in the incoming file.
+        """
+        return self.db.execute("SELECT COUNT(*) FROM executions WHERE imported=0").fetchone()[0]
+
+    def imported_exec_ids(self) -> set[str]:
+        """Executions whose outputs came from a sidecar, so have no raw messages.
+
+        `_rebuild_folds` replays raw messages to rebuild a fold; these rows have
+        none, so their folds are hydrated from ``folded_json`` instead.
+        """
+        return {r[0] for r in self.db.execute("SELECT exec_id FROM executions WHERE imported=1")}
+
+    def drop_imported(self) -> int:
+        """Remove every imported execution (a newer sidecar supersedes them).
+
+        Imported rows own no ``messages`` rows, so nothing else has to be
+        cleaned up here; their artifacts are reclaimed by the ordinary
+        fold-driven sweep once the re-import has rebuilt the folds.
+        """
+        cur = self.db.execute("DELETE FROM executions WHERE imported=1")
+        return cur.rowcount or 0
+
+    def import_execution(
+        self,
+        exec_id: str,
+        seq: int,
+        code: str,
+        status: str,
+        execution_count: int | None,
+        folded_json: str,
+        origin: dict | None = None,
+        cell_hash: str | None = None,
+        started_at: float | None = None,
+        finished_at: float | None = None,
+    ) -> None:
+        """Insert one execution restored from a sidecar, already terminal.
+
+        Terminal on arrival by construction (`sidecar.py` never writes an
+        in-flight execution): a ``queued``/``running`` row here would be flipped
+        to ``orphaned`` by the next `orphan_inflight()` and shown as a cell that
+        was cut off mid-run on a machine that never ran it.
+        """
+        uri = origin.get("uri") if origin else None
+        rng = origin.get("range") if origin else None
+        idx = origin.get("index") if origin else None
+        self.db.execute(
+            "INSERT OR REPLACE INTO executions(exec_id, session_id, seq, code, status,"
+            " execution_count, cell_origin_uri, cell_range, cell_hash, cell_index,"
+            " started_at, finished_at, folded_json, imported)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+            (
+                exec_id,
+                self.session_id,
+                seq,
+                code,
+                status,
+                execution_count,
+                uri,
+                json.dumps(rng) if rng is not None else None,
+                cell_hash,
+                idx,
+                started_at,
+                finished_at,
+                folded_json,
+            ),
+        )
 
     def close(self) -> None:
         self.db.close()

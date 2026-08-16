@@ -18,28 +18,30 @@
  * Assertions are kept as strong as a gate's: if the product does not actually
  * survive, restore and resume, the recorder fails and no demo is written.
  */
-import * as assert from "assert";
-import * as fs from "fs";
-import * as path from "path";
+import * as assert from "node:assert";
+import * as fs from "node:fs";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
+import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
 import { SessionClient } from "../../src/sessionClient";
 import { workdirForUri } from "../../src/sessionController";
-import { computeCellHash } from "../../src/cellAttach";
 
 const dec = new TextDecoder();
 
 function cellText(cell: vscode.NotebookCell): string {
   let s = "";
-  for (const o of cell.outputs) for (const it of o.items)
-    if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
+  for (const o of cell.outputs)
+    for (const it of o.items)
+      if (it.mime.includes("stdout") || it.mime === "text/plain") s += dec.decode(it.data);
   return s;
 }
 
 /** Highest `step N` the cell has painted, or -1. Mirrors the fixture's log line. */
 function maxStep(t: string): number {
-  const ns = t.split("\n")
+  const ns = t
+    .split("\n")
     .map((x) => /^\s*step\s+(\d+)\s/.exec(x))
     .filter((m): m is RegExpExecArray => m !== null)
     .map((m) => Number(m[1]));
@@ -61,7 +63,10 @@ async function waitFor(
 
 function ext(): vscode.Extension<unknown> {
   const e = vscode.extensions.all.find((x) =>
-    (x.packageJSON?.contributes?.commands ?? []).some((c: { command?: string }) => c.command === "tithon.restartKernel"));
+    (x.packageJSON?.contributes?.commands ?? []).some(
+      (c: { command?: string }) => c.command === "tithon.restartKernel",
+    ),
+  );
   if (!e) throw new Error("Tithon extension not found");
   return e;
 }
@@ -111,11 +116,14 @@ describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => 
     await ext().activate();
     // Without an interpreter the extension cannot respawn the daemon it is about
     // to lose, and the demo would end at the disconnect.
-    await vscode.workspace.getConfiguration("tithon")
+    await vscode.workspace
+      .getConfiguration("tithon")
       .update("pythonPath", process.env.TITHON_PYTHON!, vscode.ConfigurationTarget.Global);
 
     const cells = parse(readFileSync(uri.fsPath, "utf8")).cells;
-    const loopIdx = cells.findIndex((c) => c.kind === "code" && c.body.some((l) => l.text.includes("TITHON_DEMO_LOOP")));
+    const loopIdx = cells.findIndex(
+      (c) => c.kind === "code" && c.body.some((l) => l.text.includes("TITHON_DEMO_LOOP")),
+    );
     assert.ok(loopIdx >= 0, "fixture needs the TITHON_DEMO_LOOP cell");
     const src = cellSource(cells[loopIdx]);
 
@@ -129,16 +137,26 @@ describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => 
     // a second kernel — orphaning the run this demo is about.
     const driver = new SessionClient(undefined, uri.toString(), workdirForUri(uri));
     const execId = await driver.execute(src, {
-      uri: uri.toString(), range: { start: 0, end: 0 }, cell_hash: computeCellHash(src), index: loopIdx,
+      uri: uri.toString(),
+      range: { start: 0, end: 0 },
+      cell_hash: computeCellHash(src),
+      index: loopIdx,
     });
 
     // 1) LIVE — attach and watch it stream.
     const nb = await vscode.workspace.openNotebookDocument(uri);
     await vscode.window.showNotebookDocument(nb);
     await waitFor(() => nb.cellCount >= 1, 15000, "cells");
-    await vscode.commands.executeCommand("notebook.selectKernel", { id: "tithon", extension: ext().id });
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon",
+      extension: ext().id,
+    });
     await tidyChrome();
-    await waitFor(() => maxStep(cellText(nb.cellAt(loopIdx))) >= 4, 40000, "streaming before the kill");
+    await waitFor(
+      () => maxStep(cellText(nb.cellAt(loopIdx))) >= 4,
+      40000,
+      "streaming before the kill",
+    );
     assert.strictEqual(await progressActive(), false, "no reconnect notification while healthy");
     const beforeObserver = new SessionClient(undefined, uri.toString(), workdirForUri(uri));
     await beforeObserver.attach(0);
@@ -177,10 +195,14 @@ describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => 
 
     // 4) The extension auto-starts a fresh daemon, which re-attaches the SAME
     //    detached kernel through its persisted connection file.
-    await waitFor(() => {
-      const p = daemonPid();
-      return p !== null && p !== pidBefore;
-    }, 60000, "daemon to auto-respawn with a new pid");
+    await waitFor(
+      () => {
+        const p = daemonPid();
+        return p !== null && p !== pidBefore;
+      },
+      60000,
+      "daemon to auto-respawn with a new pid",
+    );
     const newPid = daemonPid();
 
     // 5) Wait on the OUTCOME, not on the notification's bookkeeping flag. The
@@ -195,11 +217,16 @@ describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => 
     for (;;) {
       const now = maxStep(cellText(nb.cellAt(loopIdx)));
       if (now !== last) {
-        console.log(`[demo:trace] +${Math.round((Date.now() - killedAt) / 1000)}s cell shows step ${now} (pre-kill ${beforeKill})`);
+        console.log(
+          `[demo:trace] +${Math.round((Date.now() - killedAt) / 1000)}s cell shows step ${now} (pre-kill ${beforeKill})`,
+        );
         last = now;
       }
       if (now > beforeKill + 2) break;
-      if (Date.now() > resumeDeadline) throw new Error(`timed out: streaming did not resume past the kill (stuck at ${now}, pre-kill ${beforeKill})`);
+      if (Date.now() > resumeDeadline)
+        throw new Error(
+          `timed out: streaming did not resume past the kill (stuck at ${now}, pre-kill ${beforeKill})`,
+        );
       await new Promise((r) => setTimeout(r, 1000));
     }
     await tidyChrome();
@@ -208,15 +235,32 @@ describe("Tithon DEMO ASSET: the daemon dies, the training run does not", () => 
     await afterObserver.attach(0);
     const recovered = afterObserver.executions().find((e) => e.execId === execId);
     assert.ok(recovered, "the original execution id must survive the daemon kill");
-    assert.strictEqual(afterObserver.kernelInfo()?.pid, kernelPidBefore, "the detached kernel pid must be unchanged");
-    assert.strictEqual(recovered.startedAt, startedAtBefore, "the original execution timer must be unchanged");
+    assert.strictEqual(
+      afterObserver.kernelInfo()?.pid,
+      kernelPidBefore,
+      "the detached kernel pid must be unchanged",
+    );
+    assert.strictEqual(
+      recovered.startedAt,
+      startedAtBefore,
+      "the original execution timer must be unchanged",
+    );
     afterObserver.close();
-    console.log(`[demo] reconnected to a new daemon (pid ${newPid}); streaming again at step ${atRecover}`);
-    assert.notStrictEqual(nb.cellAt(loopIdx).executionSummary?.success, true, "cell should still be running");
+    console.log(
+      `[demo] reconnected to a new daemon (pid ${newPid}); streaming again at step ${atRecover}`,
+    );
+    assert.notStrictEqual(
+      nb.cellAt(loopIdx).executionSummary?.success,
+      true,
+      "cell should still be running",
+    );
     assert.ok(atRecover > beforeKill, "the run advanced across the kill");
     await new Promise((r) => setTimeout(r, 3000)); // dwell so the recovery is on camera
     const afterRecover = maxStep(cellText(nb.cellAt(loopIdx)));
-    assert.ok(afterRecover > atRecover, "live synchronization must keep advancing after the recovered snapshot");
+    assert.ok(
+      afterRecover > atRecover,
+      "live synchronization must keep advancing after the recovered snapshot",
+    );
     console.log(`[demo] streaming continued past the kill, now at step ${afterRecover}`);
 
     // Hold for the recorder's tail, keeping the frame clean the whole time.

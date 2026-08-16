@@ -1,5 +1,6 @@
 """v3 checker: real PNG file in .tithon/outputs/, journal references it
 (artifacts table + message content), fresh attach delivers the reference."""
+
 import hashlib
 import json
 import sqlite3
@@ -47,9 +48,7 @@ refs = db.execute(
 ).fetchone()[0]
 if refs < 1:
     fail("no journal message references the artifact rel_path")
-b64 = db.execute(
-    "SELECT COUNT(*) FROM messages WHERE LENGTH(content_json) > 20000"
-).fetchone()[0]
+b64 = db.execute("SELECT COUNT(*) FROM messages WHERE LENGTH(content_json) > 20000").fetchone()[0]
 if b64 > 0:
     fail("journal contains suspiciously large message content (base64 embedded?)")
 

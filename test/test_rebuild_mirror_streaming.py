@@ -3,6 +3,7 @@
 lazily-iterated cursor (no `.fetchall()`), so a session with a long
 stream/output history (a tqdm/print loop) restarts in time proportional to
 its widget traffic, not its total message count."""
+
 from tithon.daemon import Session
 
 
@@ -20,14 +21,19 @@ def test_rebuild_mirror_never_parses_non_comm_rows(tmp_path):
     # fetched and parsed this row, json.loads would raise — proving the SQL
     # msg_type filter, not a Python-side skip, is what excludes it.
     s.journal.db.execute(
-        "INSERT INTO messages(session_id, exec_id, msg_type, content_json, ts)"
-        " VALUES(?,?,?,?,?)",
+        "INSERT INTO messages(session_id, exec_id, msg_type, content_json, ts) VALUES(?,?,?,?,?)",
         ("default", "e1", "stream", "{not valid json", 0.0),
     )
-    s._handle_comm("e1", "comm_open", {
-        "comm_id": "c1", "target_name": "jupyter.widget",
-        "data": {"state": {"_model_name": "X", "value": 1}},
-    }, [])
+    s._handle_comm(
+        "e1",
+        "comm_open",
+        {
+            "comm_id": "c1",
+            "target_name": "jupyter.widget",
+            "data": {"state": {"_model_name": "X", "value": 1}},
+        },
+        [],
+    )
 
     # A fresh Session reopening the same journal — simulates a daemon restart.
     s2 = Session("default", tmp_path / "sess", tmp_path / "work")
@@ -39,13 +45,24 @@ def test_rebuild_mirror_never_parses_non_comm_rows(tmp_path):
 def test_comm_messages_after_filters_and_orders(tmp_path):
     s = make_session(tmp_path)
     s.journal.append_message("e1", "stream", {"name": "stdout", "text": "a\n"})
-    seq_open = s.journal.append_message("e1", "comm_open", {
-        "comm_id": "c1", "target_name": "jupyter.widget", "data": {"state": {"value": 1}},
-    })
+    seq_open = s.journal.append_message(
+        "e1",
+        "comm_open",
+        {
+            "comm_id": "c1",
+            "target_name": "jupyter.widget",
+            "data": {"state": {"value": 1}},
+        },
+    )
     s.journal.append_message("e1", "execute_result", {"data": {"text/plain": "1"}})
-    seq_msg = s.journal.append_message("e1", "comm_msg", {
-        "comm_id": "c1", "data": {"method": "update", "state": {"value": 2}},
-    })
+    seq_msg = s.journal.append_message(
+        "e1",
+        "comm_msg",
+        {
+            "comm_id": "c1",
+            "data": {"method": "update", "state": {"value": 2}},
+        },
+    )
 
     rows = list(s.journal.comm_messages_after(0))
     assert [r[0] for r in rows] == [seq_open, seq_msg]  # non-comm rows excluded, order preserved

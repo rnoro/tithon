@@ -10,9 +10,9 @@
  * could rewrite bytes. The control case asserts an unedited save is byte-exact;
  * the edit case asserts an edit persists and the file still parses to two cells.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
 import { parse } from "../../src/serializer";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
@@ -46,7 +46,9 @@ describe("PROBE: markdown cell save round-trip", () => {
 
     await vscode.workspace.save(nb.uri);
     const after = readFileSync(uri.fsPath).toString("latin1");
-    console.log(`[MDSAVE] control byte-exact=${after === original}; before=${JSON.stringify(original)} after=${JSON.stringify(after)}`);
+    console.log(
+      `[MDSAVE] control byte-exact=${after === original}; before=${JSON.stringify(original)} after=${JSON.stringify(after)}`,
+    );
     assert.strictEqual(after, original, "unedited markdown save must be byte-exact");
   });
 

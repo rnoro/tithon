@@ -22,6 +22,7 @@ These tests stub out the real kernel machinery (`_restart_kernel_inner`,
 `Session.stop`) to isolate the LOCKING behavior from kernel-spawn cost/timing —
 the race is about which coroutine's body runs when, not about ipykernel itself.
 """
+
 from __future__ import annotations
 
 import asyncio

@@ -6,7 +6,7 @@
  * editor so an external screenshot captures the .py as text (the user bug was
  * that this button did nothing). Proof in pixels, not just the data model.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
@@ -51,14 +51,8 @@ describe("Tithon Open-as-Text screenshot demo", () => {
 
     // Open the Cell View (the working half), make it active.
     await vscode.commands.executeCommand("tithon.openAsNotebook", uri);
-    await waitFor(
-      () => notebookTabsFor(uri).length > 0,
-      15000,
-      "Cell View tab opened",
-    );
-    const nb = vscode.workspace.notebookDocuments.find(
-      (d) => d.uri.toString() === uri.toString(),
-    )!;
+    await waitFor(() => notebookTabsFor(uri).length > 0, 15000, "Cell View tab opened");
+    const nb = vscode.workspace.notebookDocuments.find((d) => d.uri.toString() === uri.toString())!;
     await waitFor(() => nb.cellCount >= 1, 15000, "notebook cells");
     await vscode.window.showNotebookDocument(nb);
 
@@ -73,7 +67,9 @@ describe("Tithon Open-as-Text screenshot demo", () => {
     const doc = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(doc, { preview: false });
     // eslint-disable-next-line no-console
-    console.log(`[shot] opentext: textTabs=${textTabsFor(uri).length} notebookTabs=${notebookTabsFor(uri).length}`);
+    console.log(
+      `[shot] opentext: textTabs=${textTabsFor(uri).length} notebookTabs=${notebookTabsFor(uri).length}`,
+    );
     assert.ok(textTabsFor(uri).length > 0, "expected a text editor for the .py");
     assert.strictEqual(notebookTabsFor(uri).length, 0, "Cell View tab must be gone");
 

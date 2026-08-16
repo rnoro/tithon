@@ -11,6 +11,7 @@ display state" a live frontend would show:
 
 Pure logic, no I/O — unit-tested independently of the daemon.
 """
+
 from __future__ import annotations
 
 import re
@@ -91,9 +92,8 @@ class ExecutionFold:
     claim holds belongs to that widget's area, not to the cell. Crucially
     `Output.clear_output()` wraps itself in `with self:`, so its `clear_output`
     arrives under the claim — folding it as a cell-wide clear destroys the
-    cell's OTHER outputs. That is the whole bug behind RISKS #17: a training
-    loop showing a tqdm bar next to a live plot loses the bar the instant the
-    first frame is drawn.
+    cell's OTHER outputs — a training loop showing a tqdm bar next to a live
+    plot would lose the bar the instant the first frame is drawn.
 
     So each item remembers the area that produced it (`_owner`, a comm_id, or
     absent for the cell itself) and a clear only reaches its own area. Claims
@@ -206,13 +206,14 @@ class ExecutionFold:
             # live plot would fold to one line PER FRAME (measured: 118 items for
             # 118 steps) rather than the single updating line the user wrote.
             # An item in the SAME area still breaks the run, matching Jupyter.
-            if (last is not None and last["output_type"] == "stream"
-                    and last["name"] == name):
+            if last is not None and last["output_type"] == "stream" and last["name"] == name:
                 last["_buf"].write(text)
             else:
                 buf = StreamBuf()
                 buf.write(text)
-                self._items.append(self._own({"output_type": "stream", "name": name, "_buf": buf}, owner))
+                self._items.append(
+                    self._own({"output_type": "stream", "name": name, "_buf": buf}, owner)
+                )
         elif msg_type == "display_data":
             item = {
                 "output_type": "display_data",
@@ -247,6 +248,33 @@ class ExecutionFold:
                     owner,
                 )
             )
+
+    @classmethod
+    def hydrate(cls, outputs: list[dict], state: dict | None = None) -> ExecutionFold:
+        """Rebuild a fold from a persisted `outputs()` + `fold_state()` pair.
+
+        The inverse of those two, for an execution whose raw messages are NOT in
+        this journal — one imported from a shared sidecar (see `sidecar.py`).
+        Such an execution must not rebuild as an empty fold: `artifact_ids()`
+        feeds the startup GC refcount, so an empty one would make the sweep
+        delete the very image files the import brought in.
+        """
+        fold = cls()
+        owners = (state or {}).get("owners") or []
+        for i, item in enumerate(outputs):
+            owner = owners[i] if i < len(owners) else None
+            if item.get("output_type") == "stream":
+                buf = StreamBuf()
+                buf.write(item.get("text", ""))
+                it = {"output_type": "stream", "name": item.get("name", "stdout"), "_buf": buf}
+            else:
+                it = dict(item)
+            fold._items.append(cls._own(it, owner))
+        if state:
+            fold._claims = list(state.get("claims") or [])
+            fold._pending_clear = bool(state.get("pending_clear"))
+            fold._pending_owner_clear = set(state.get("pending_owner_clear") or [])
+        return fold
 
     def fold_state(self) -> dict:
         """Continuation state a client needs BEYOND `outputs()` to keep folding
@@ -296,8 +324,8 @@ class ExecutionFold:
         """The renderable snapshot. Bookkeeping keys are `_`-prefixed and never
         cross the wire — `_owner` is fold-internal, and a client seeded from
         this loses it, so a client reconnecting mid-claim cannot scope its own
-        subsequent clears (RISKS #17's client half: the snapshot needs a
-        continuation sidecar before `outputFold.ts` can be scoped too)."""
+        subsequent clears: the snapshot needs a continuation sidecar before
+        `outputFold.ts` can be scoped too."""
         out = []
         for it in self._items:
             if it["output_type"] == "stream":

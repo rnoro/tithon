@@ -5,6 +5,7 @@ on receipt, written to ``<workdir>/.tithon/outputs/`` with an sha-based
 filename, deduplicated by sha256, and the message content carries only a
 ``$tithon_artifact`` reference.
 """
+
 from __future__ import annotations
 
 import base64
