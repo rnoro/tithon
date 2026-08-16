@@ -67,8 +67,5 @@ Thumbs.db
 *.swp
 *~
 
-# vendored upstream reference checkout (docs/vscode-jupyter-comparison.md)
-vscode-jupyter/
-
 # demo recording work area (published assets live in docs/)
 scripts/demo/
