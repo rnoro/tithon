@@ -8,8 +8,9 @@
  *       (the deleted `ensureTextDefaultForPy`, whose failure mode on a read-only
  *       settings host was: every `.py` becomes a notebook, every diff a notebook
  *       diff);
- *   (b) `tithon.alwaysOpenAsNotebook` — ONE Workspace-scoped key per file,
- *       `**` + `/<workspace-relative path>`, which outranks any User `*.py` by
+ *   (b) `tithon.alwaysOpenWith` — one Explorer/editor/toolbar command whose
+ *       real Quick Pick writes ONE Workspace-scoped key per file, `**` +
+ *       `/<workspace-relative path>`, which outranks any User `*.py` by
  *       VSCode's longest-pattern-string-wins rule.
  *
  * The discriminating assertion for (b) is that the pinned file opens as a
@@ -34,12 +35,37 @@ function ext(): vscode.Extension<unknown> {
   return e;
 }
 
-async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
+async function waitFor(pred: () => boolean | Promise<boolean>, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;
-  while (!pred()) {
+  while (!(await pred())) {
     if (Date.now() > deadline) throw new Error(`timed out: ${label}`);
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/** Drive the actual Quick Pick instead of bypassing the public chooser. */
+async function chooseAlwaysOpenWith(
+  arg: unknown,
+  choice: "text" | "notebook" | "cancel",
+): Promise<void> {
+  const done = vscode.commands.executeCommand("tithon.alwaysOpenWith", arg);
+  await waitFor(
+    async () =>
+      (await vscode.commands.executeCommand<{ pickerOpen: boolean }>(
+        "tithon._alwaysOpenWithState",
+      )).pickerOpen,
+    5000,
+    "Always Open With Quick Pick opened",
+  );
+  if (choice === "cancel") {
+    await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+  } else {
+    if (choice === "notebook") {
+      await vscode.commands.executeCommand("workbench.action.quickOpenSelectNext");
+    }
+    await vscode.commands.executeCommand("workbench.action.acceptSelectedQuickOpenItem");
+  }
+  await done;
 }
 
 const inspectAssoc = () =>
@@ -109,6 +135,56 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
       vscode.workspace.getConfiguration().inspect(DIFF_ASSOC)?.defaultValue !== undefined;
   });
 
+  it("contributes one non-duplicated Always Open With surface", () => {
+    const contributes = ext().packageJSON.contributes;
+    const commands = contributes.commands as Array<{
+      command: string;
+      title: string;
+      category?: string;
+    }>;
+    assert.strictEqual(
+      contributes.notebooks.find((n: { type: string }) => n.type === "tithon-py")?.displayName,
+      "Notebook",
+      "VSCode appends the provider name; the notebook name must not repeat Tithon",
+    );
+    assert.deepStrictEqual(
+      commands
+        .filter((c) => c.command === "tithon.alwaysOpenWith")
+        .map((c) => ({ title: c.title, category: c.category })),
+      [{ title: "Always Open With…", category: "Tithon" }],
+      "the durable chooser must have one user-facing command name",
+    );
+    assert.deepStrictEqual(
+      commands.filter((c) => c.category === "Tithon" && c.title.startsWith("Tithon")),
+      [],
+      "the category already renders Tithon; command titles must not repeat it",
+    );
+
+    const menus = contributes.menus as Record<string, Array<{ command: string; when?: string }>>;
+    for (const surface of ["explorer/context", "editor/title", "notebook/toolbar"]) {
+      assert.strictEqual(
+        menus[surface].filter((m) => m.command === "tithon.alwaysOpenWith").length,
+        1,
+        `${surface} must expose exactly one durable chooser`,
+      );
+    }
+    assert.deepStrictEqual(
+      menus["explorer/context"].find((m) => m.command === "tithon.alwaysOpenWith")?.when,
+      "resourceScheme == file && resourceExtname == .py",
+      "Explorer must offer the chooser only for local .py files",
+    );
+    for (const legacy of [
+      "tithon.alwaysOpenAsNotebook",
+      "tithon.forgetAlwaysOpenAsNotebook",
+    ]) {
+      assert.strictEqual(
+        menus.commandPalette.find((m) => m.command === legacy)?.when,
+        "false",
+        `${legacy} must remain contributed for activation compatibility but hidden from users`,
+      );
+    }
+  });
+
   it("activation writes no Global *.py association", () => {
     const global = inspectAssoc()?.globalValue ?? {};
     assert.ok(
@@ -136,17 +212,9 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
     );
   });
 
-  it("'Always Open as Notebook' pins one workspace key and switches the open editor", async () => {
-    // Realistic menu path: the file is open as TEXT and the command takes no
-    // argument, resolving the target from the active editor.
-    await vscode.commands.executeCommand("vscode.open", target);
-    await waitFor(
-      () => vscode.window.activeTextEditor?.document.uri.toString() === target.toString(),
-      15000,
-      "target opened as text",
-    );
-
-    await vscode.commands.executeCommand("tithon.alwaysOpenAsNotebook");
+  it("the Explorer-style chooser pins Notebook and switches the open editor", async () => {
+    // A direct Uri is the argument shape VSCode's explorer/context menu sends.
+    await chooseAlwaysOpenWith(target, "notebook");
 
     await waitFor(() => targetPattern in workspaceAssoc(), 15000, "workspace association written");
     assert.deepStrictEqual(
@@ -164,6 +232,25 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
     // text -> Cell View switch for what is on screen now.
     await waitFor(() => notebookTabsFor(target).length === 1, 20000, "switched to the Cell View");
     await waitFor(() => textTabsFor(target).length === 0, 20000, "the text tab is gone");
+  });
+
+  it("cancelling the chooser changes neither settings nor representation", async () => {
+    const beforeAssoc = workspaceAssoc();
+    const beforeDiff =
+      vscode.workspace.getConfiguration().inspect<Record<string, string>>(DIFF_ASSOC)
+        ?.workspaceValue;
+
+    await chooseAlwaysOpenWith(target, "cancel");
+
+    assert.deepStrictEqual(workspaceAssoc(), beforeAssoc, "cancel changed editor associations");
+    assert.deepStrictEqual(
+      vscode.workspace.getConfiguration().inspect<Record<string, string>>(DIFF_ASSOC)
+        ?.workspaceValue,
+      beforeDiff,
+      "cancel changed diff associations",
+    );
+    assert.strictEqual(notebookTabsFor(target).length, 1, "cancel switched the visible editor");
+    assert.strictEqual(textTabsFor(target).length, 0, "cancel opened a text editor");
   });
 
   it("the pinned file then opens as a notebook with no text document for it", async () => {
@@ -253,30 +340,79 @@ describe("Tithon durable open-as-Notebook association (v64)", () => {
     }
   });
 
-  it("the inverse command removes exactly its own key and text opening returns", async () => {
-    await vscode.commands.executeCommand("tithon.forgetAlwaysOpenAsNotebook", target);
-    await waitFor(() => !(targetPattern in workspaceAssoc()), 15000, "association removed");
+  it("the notebook-toolbar chooser pins Text even over a broad Notebook association", async () => {
+    await vscode.workspace.getConfiguration().update(
+      ASSOC,
+      { ...workspaceAssoc(), "*.py": "tithon-py" },
+      vscode.ConfigurationTarget.Workspace,
+    );
+
+    // The real notebook toolbar sends this action-context object, not a Uri.
+    await chooseAlwaysOpenWith({ notebookEditor: { notebookUri: target } }, "text");
+    await waitFor(
+      () => workspaceAssoc()[targetPattern] === "default",
+      15000,
+      "explicit Text Editor association written",
+    );
     assert.deepStrictEqual(
       workspaceAssoc(),
-      { [SEEDED_KEY]: "hexEditor", [siblingPattern]: "tithon-py" },
-      "forget must remove only the target's key, leaving every other association intact",
+      {
+        [SEEDED_KEY]: "hexEditor",
+        [targetPattern]: "default",
+        [siblingPattern]: "tithon-py",
+        "*.py": "tithon-py",
+      },
+      "Text must replace only the target key and preserve broader/unrelated associations",
     );
     if (diffAssocSupported) {
       assert.deepStrictEqual(
         vscode.workspace.getConfiguration().inspect<Record<string, string>>(DIFF_ASSOC)
           ?.workspaceValue,
-        { [siblingPattern]: "default" },
-        "forget must retract its own diff companion and no one else's",
+        { [targetPattern]: "default", [siblingPattern]: "default" },
+        "Text must not delete a same-pattern diff preference with unknown provenance",
       );
     }
+
+    await waitFor(
+      () => vscode.window.activeTextEditor?.document.uri.toString() === target.toString(),
+      20000,
+      "chooser switched the Cell View to text",
+    );
+    assert.strictEqual(notebookTabsFor(target).length, 0, "Cell View stayed open after Text choice");
 
     await closeEverything(target);
     await vscode.commands.executeCommand("vscode.open", target);
     await waitFor(
       () => vscode.window.activeTextEditor?.document.uri.toString() === target.toString(),
       20000,
-      "unpinned file opens as text again",
+      "specifically pinned file opens as text despite broad Notebook association",
     );
-    assert.strictEqual(notebookTabsFor(target).length, 0, "no Cell View after unpinning");
+    assert.strictEqual(notebookTabsFor(target).length, 0, "specific Text choice lost to broad Notebook");
+
+    const withoutBroad = { ...workspaceAssoc() };
+    delete withoutBroad["*.py"];
+    await vscode.workspace.getConfiguration().update(
+      ASSOC,
+      withoutBroad,
+      vscode.ConfigurationTarget.Workspace,
+    );
+  });
+
+  it("the hidden legacy inverse remains callable for existing integrations", async () => {
+    await vscode.commands.executeCommand("tithon.forgetAlwaysOpenAsNotebook", sibling);
+    await waitFor(() => !(siblingPattern in workspaceAssoc()), 15000, "legacy association removed");
+    assert.deepStrictEqual(
+      workspaceAssoc(),
+      { [SEEDED_KEY]: "hexEditor", [targetPattern]: "default" },
+      "legacy inverse must remove only its own Notebook key",
+    );
+    if (diffAssocSupported) {
+      assert.deepStrictEqual(
+        vscode.workspace.getConfiguration().inspect<Record<string, string>>(DIFF_ASSOC)
+          ?.workspaceValue,
+        { [targetPattern]: "default" },
+        "legacy inverse must leave the Text choice's diff entry alone",
+      );
+    }
   });
 });

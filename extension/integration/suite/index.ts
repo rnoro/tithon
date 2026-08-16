@@ -1,9 +1,25 @@
 /** Mocha entry that runs inside the VSCode Extension Host. */
 import * as path from "path";
 import * as fs from "fs";
+import * as vscode from "vscode";
 import Mocha from "mocha";
 
-export function run(): Promise<void> {
+/**
+ * Destructive commands (`tithon.restartKernel`, `tithon.restartDaemon`) open a
+ * MODAL dialog no in-host test can answer, so the harness turns the gate off —
+ * the suites still drive the real command, only the dialog is skipped.
+ * `TITHON_CONFIRM_DESTRUCTIVE=1` leaves it at its shipped default for the one
+ * suite whose subject IS the gate.
+ */
+async function applyConfirmationPolicy(): Promise<void> {
+  if (process.env.TITHON_CONFIRM_DESTRUCTIVE === "1") return;
+  await vscode.workspace
+    .getConfiguration("tithon")
+    .update("confirmDestructiveActions", false, vscode.ConfigurationTarget.Global);
+}
+
+export async function run(): Promise<void> {
+  await applyConfirmationPolicy();
   const mocha = new Mocha({ ui: "bdd", color: false, timeout: 90000 });
   const dir = __dirname;
   // TITHON_SUITE selects a single suite by EXACT filename stem (e.g. "restore",

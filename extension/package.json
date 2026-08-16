@@ -43,7 +43,7 @@
     "notebooks": [
       {
         "type": "tithon-py",
-        "displayName": "Tithon Notebook",
+        "displayName": "Notebook",
         "priority": "option",
         "selector": [
           {
@@ -66,13 +66,13 @@
     "commands": [
       {
         "command": "tithon.restartKernel",
-        "title": "Tithon: Restart Kernel",
+        "title": "Restart Kernel",
         "category": "Tithon",
         "icon": "$(debug-restart)"
       },
       {
         "command": "tithon.interruptKernel",
-        "title": "Tithon: Interrupt Kernel",
+        "title": "Interrupt Kernel",
         "category": "Tithon",
         "icon": "$(debug-stop)"
       },
@@ -101,25 +101,31 @@
         "icon": "$(pinned)"
       },
       {
+        "command": "tithon.alwaysOpenWith",
+        "title": "Always Open With…",
+        "category": "Tithon",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "tithon.selectInterpreter",
-        "title": "Tithon: Select Python Interpreter",
+        "title": "Select Python Interpreter",
         "category": "Tithon",
         "icon": "$(snake)"
       },
       {
         "command": "tithon.restartDaemon",
-        "title": "Tithon: Restart Daemon",
+        "title": "Restart Daemon",
         "category": "Tithon"
       },
       {
         "command": "tithon.killKernel",
-        "title": "Tithon: Terminate Kernel…",
+        "title": "Terminate Kernel…",
         "category": "Tithon",
         "icon": "$(trash)"
       },
       {
         "command": "tithon.restoreOutputs",
-        "title": "Tithon: Restore Previous Outputs",
+        "title": "Restore Previous Outputs",
         "category": "Tithon",
         "icon": "$(history)"
       }
@@ -142,6 +148,11 @@
           "default": "",
           "description": "Python interpreter to run the daemon as `<python> -m tithon daemon` (works without activating the venv). Leave empty to use the interpreter selected by the Python extension."
         },
+        "tithon.confirmDestructiveActions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation in a modal dialog before an action that destroys running kernel state (Restart Kernel, Terminate Kernel, Restart Daemon). Turn off only if you restart often and accept losing the namespace on a mis-click."
+        },
         "tithon.kernelIdleTimeout": {
           "type": "number",
           "default": 0,
@@ -163,21 +174,16 @@
           "group": "navigation"
         },
         {
-          "command": "tithon.alwaysOpenAsNotebook",
-          "when": "resourceExtname == .py && activeEditor == workbench.editors.files.textFileEditor",
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py",
           "group": "1_tithon@1"
         }
       ],
       "notebook/toolbar": [
         {
-          "command": "tithon.alwaysOpenAsNotebook",
+          "command": "tithon.alwaysOpenWith",
           "when": "notebookType == tithon-py",
           "group": "tithon@1"
-        },
-        {
-          "command": "tithon.forgetAlwaysOpenAsNotebook",
-          "when": "notebookType == tithon-py",
-          "group": "tithon@2"
         },
         {
           "command": "tithon.restartKernel",
@@ -195,17 +201,28 @@
           "group": "kernel@1"
         }
       ],
+      "explorer/context": [
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py",
+          "group": "open@10"
+        }
+      ],
       "commandPalette": [
         {
           "command": "tithon.killKernel"
         },
         {
           "command": "tithon.alwaysOpenAsNotebook",
-          "when": "resourceExtname == .py"
+          "when": "false"
         },
         {
           "command": "tithon.forgetAlwaysOpenAsNotebook",
-          "when": "resourceExtname == .py"
+          "when": "false"
+        },
+        {
+          "command": "tithon.alwaysOpenWith",
+          "when": "resourceScheme == file && resourceExtname == .py"
         }
       ]
     }

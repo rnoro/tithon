@@ -120,7 +120,7 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | Command | What it does |
 | --- | --- |
 | `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text, once. |
-| `Tithon: Always Open This File as a Notebook` / `Stop Always Opening…` | Make the choice stick: this one file opens as a notebook from now on, in this workspace. |
+| `Tithon: Always Open With…` | Choose Text Editor or Notebook for this one file, permanently in this workspace. |
 | `Tithon: Restart Kernel` | Restart the session's kernel. |
 | `Tithon: Interrupt Kernel` | Interrupt the running cell. |
 | `Tithon: Select Python Interpreter` | Choose the interpreter the daemon runs the kernel as. |
@@ -130,15 +130,15 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 
 `Run Cell` is offered as a CodeLens above each `# %%` cell.
 
-A `.py` opens as a normal text editor unless you say otherwise — Tithon never
-converts an editor you already have open. `Always Open This File as a Notebook`
-records the choice as one `workbench.editorAssociations` entry in the workspace's
-`.vscode/settings.json`, so it survives reloads and can be committed for the team.
-If you want *every* `.py` in a workspace to open as a notebook, that is VSCode's
-own setting rather than a Tithon command — `Reopen With…` → `Configure default
-editor…` on a `.py`, choosing `Tithon Notebook`. It writes `"*.py":
-"tithon-py"`, which applies to every Python file in scope, `setup.py` and
-`conftest.py` included.
+A `.py` opens as a normal text editor unless you say otherwise. Use `Tithon:
+Always Open With…` from the Explorer context menu, editor title, or Notebook
+toolbar to choose `Text Editor` or `Notebook`. Tithon records the choice as one
+`workbench.editorAssociations` entry in the workspace's `.vscode/settings.json`,
+so it survives reloads and can be committed for the team. If you want *every*
+`.py` in a workspace to open as a notebook, that is VSCode's own setting rather
+than a Tithon command — `Reopen With…` → `Configure default editor…` on a `.py`,
+choosing `Notebook - Tithon`. It writes `"*.py": "tithon-py"`, which applies to
+every Python file in scope, `setup.py` and `conftest.py` included.
 
 ## Settings
 
@@ -147,6 +147,7 @@ editor…` on a `.py`, choosing `Tithon Notebook`. It writes `"*.py":
 | `tithon.autoStartDaemon` | `true` | Start the daemon on the host when it isn't already running (spawned detached, so it survives reconnects). |
 | `tithon.daemonCommand` | `tithon` | Command used to launch the daemon (run as `<command> daemon`). Set an absolute path if `tithon` isn't on `PATH`. |
 | `tithon.pythonPath` | `""` | Run the daemon as `<python> -m tithon daemon`. Leave empty to use the Python extension's selected interpreter. |
+| `tithon.confirmDestructiveActions` | `true` | Ask in a modal dialog before Restart Kernel, Terminate Kernel and Restart Daemon. Set to `false` if you restart often and accept losing the namespace to a mis-click. |
 | `tithon.kernelIdleTimeout` | `0` | Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. `0` = never. Applied when the extension (re)starts the daemon. |
 
 ## How it works

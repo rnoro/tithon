@@ -74,6 +74,11 @@ async function main(): Promise<void> {
       TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
       TITHON_HELPER: process.env.TITHON_HELPER ?? "",
       TITHON_SUITE: process.env.TITHON_SUITE ?? "",
+      // "1" leaves `tithon.confirmDestructiveActions` at its shipped default, so
+      // the suite that verifies the modal gate sees what a user sees. Every other
+      // suite drives restart/terminate unattended, so the bootstrap turns it off.
+      TITHON_CONFIRM_DESTRUCTIVE: process.env.TITHON_CONFIRM_DESTRUCTIVE ?? "",
+      TITHON_CONFIRM_TARGET: process.env.TITHON_CONFIRM_TARGET ?? "",
     },
   });
 }

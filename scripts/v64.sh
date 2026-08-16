@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# v64 — REAL VSCode: the durable per-file "open this .py as a Notebook" choice.
+# v64 — REAL VSCode: the durable per-file "Always Open With…" choice.
 #       Two mechanisms verified together (ADR-115): `priority: "option"` keeps an
 #       UNASSOCIATED .py resolving to the text editor without Tithon writing any
-#       Global setting, and `tithon.alwaysOpenAsNotebook` writes ONE
-#       Workspace-scoped `workbench.editorAssociations` key per file. Asserts:
+#       Global setting, and `tithon.alwaysOpenWith` writes ONE Workspace-scoped
+#       `workbench.editorAssociations` key per file. Asserts:
 #       (1) activation writes no Global `*.py` key and does not touch the
 #       workspace associations, (2) an unassociated .py opens as TEXT, (3) the
 #       opt-in adds exactly its own key (a pre-seeded association survives) and
@@ -11,7 +11,10 @@
 #       resolves STRAIGHT to tithon-py with zero file-scheme text documents for
 #       it — the property an open-then-convert heuristic cannot have, (5) another
 #       .py in the same workspace stays text, (6) a diff of two pinned files
-#       stays a TEXT diff, (7) the inverse removes exactly its own key.
+#       stays a TEXT diff, (7) cancel changes nothing, (8) Text Editor is an
+#       explicit durable choice that beats a broad Notebook association, (9) the
+#       hidden legacy inverse remains callable, and (10) Explorer/editor/toolbar
+#       expose one chooser without repeating the Tithon provider name.
 . "$(dirname "$0")/lib.sh"
 fail() { echo "RESULT v64 FAIL $1"; exit 1; }
 trap cleanup_procs EXIT
@@ -78,15 +81,14 @@ raw = open(sys.argv[1]).read()
 doc = json.loads(re.sub(r"^\s*//.*$", "", raw, flags=re.M))
 assoc = doc.get("workbench.editorAssociations", {})
 assert assoc.get("*.bin") == "hexEditor", f"seeded association lost: {assoc}"
-assert "**/pkg/train.py" not in assoc, f"unpinned key still on disk: {assoc}"
-assert assoc.get("**/pkg/train_prev.py") == "tithon-py", f"pinned key missing on disk: {assoc}"
+assert assoc.get("**/pkg/train.py") == "default", f"text choice missing on disk: {assoc}"
+assert "**/pkg/train_prev.py" not in assoc, f"legacy unpin did not land on disk: {assoc}"
 assert "*.py" not in assoc, f"a blanket *.py key was written: {assoc}"
 # The diff companion (ADR-115) exists only above the engines.vscode floor, so its
 # presence is optional — but it must never disagree with the association it guards.
 diff = doc.get("workbench.diffEditorAssociations", {})
-assert "**/pkg/train.py" not in diff, f"unpinned diff key still on disk: {diff}"
-assert diff in ({}, {"**/pkg/train_prev.py": "default"}), f"unexpected diff associations: {diff}"
+assert diff in ({}, {"**/pkg/train.py": "default"}), f"unexpected diff associations: {diff}"
 print("v64: on-disk associations ok:", json.dumps(assoc, sort_keys=True), json.dumps(diff, sort_keys=True))
 PYEOF
 
-echo "RESULT v64 PASS real VSCode host: unassociated .py stays text with no Global write; per-file Workspace key opens it as a notebook with no text document; diff stays text; inverse removes only its own key; $passed_line"
+echo "RESULT v64 PASS real VSCode host: one Always Open With chooser on Explorer/editor/toolbar; Notebook and Text are durable per-file choices; cancel is inert; labels do not repeat Tithon; diff stays text; legacy commands remain callable; $passed_line"
