@@ -38,7 +38,7 @@ export interface CellSink {
    * Needed because an `ipywidgets.Output`'s `clear_output` clears only ITS
    * area, and there is no incremental op for "remove some outputs" — the fold
    * knows the answer, so a clear repaints from it instead of blanking the cell
-   * (RISKS #17). Optional: a sink that never sees a scoped clear may omit it.
+   * Optional: a sink that never sees a scoped clear may omit it.
    */
   repaint?(cellIndex: number, items: OutputItem[]): void;
   /**
@@ -117,15 +117,16 @@ export class LiveOutputSync {
     /** Authoritative folded outputs for an execution. `SessionClient` folds an
      *  event BEFORE invoking our callback, so reading this at flush time gives
      *  the settled state — which is how a widget-scoped clear is honoured
-     *  without this class knowing anything about comm claims (RISKS #17). */
+     *  without this class knowing anything about comm claims. */
     private readonly foldOutputs?: (execId: string) => OutputItem[],
   ) {
     this.refreshCells(cells);
   }
 
   /** True while a flush is scheduled but has not fired yet — the exact
-   *  precondition RISKS #15's dispose() race needs. Exposed so a test can
-   *  wait for a genuinely pending flush instead of guessing at timing. */
+   *  precondition `dispose()`'s post-teardown-flush race needs. Exposed so a
+   *  test can wait for a genuinely pending flush instead of guessing at
+   *  timing. */
   hasPendingFlush(): boolean {
     return this.flushScheduled;
   }
@@ -201,7 +202,7 @@ export class LiveOutputSync {
    * cleanup (`endAll()`) — it would call `sink.status("running")` and recreate
    * an execution with no `done` ever coming, a permanent spinner. Cancels any
    * scheduler timer that has not fired yet AND drops whatever is already
-   * queued (RISKS #15).
+   * queued.
    */
   dispose(): void {
     this.disposed = true;

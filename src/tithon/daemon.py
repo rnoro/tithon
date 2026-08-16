@@ -294,7 +294,7 @@ class Session:
             # Must stay ahead of `_start_tasks()`: this reads the shell channel
             # directly. A re-attached busy kernel takes the separate recovery path
             # below; waiting on kernel_info there would discard the output emitted
-            # while that request sat behind the running cell (RISKS #18).
+            # while that request sat behind the running cell.
             await self._capture_kernel_info()
             await asyncio.sleep(STDIN_SETTLE_S)
             orphaned = self.journal.orphan_inflight()
@@ -726,7 +726,7 @@ class Session:
         only ever saw one execution's own rows could not place it. The same pass
         rebuilds the display registry, so the two can never disagree about who
         owns a display after a restart. Streamed (never ``.fetchall()``) so
-        restart memory stays independent of history length (RISKS #9a).
+        restart memory stays independent of history length.
 
         Then seed the live-artifact reference counter from the rebuilt folds and
         sweep ``.tithon/outputs/`` of any artifact no surviving fold references —
@@ -770,11 +770,11 @@ class Session:
     def _rebuild_mirror(self) -> None:
         """Replay journaled comm messages to restore widget state after restart.
 
-        Streams the journal via a cursor filtered to comm rows in SQL (RISKS
-        #9a) — a long stream/output history is never fetched or parsed here,
-        so restart cost scales with widget traffic, not total history length.
+        Streams the journal via a cursor filtered to comm rows in SQL — a long
+        stream/output history is never fetched or parsed here, so restart cost
+        scales with widget traffic, not total history length.
         `WidgetMirror.apply()` itself never raises on malformed content (it
-        validates and rejects instead — RISKS #14's journal-before-mutate
+        validates and rejects instead, because the journal-before-mutate
         ordering means a malformed row, once journaled, replays on every
         future restart), but the surrounding `_buffers_b64` decode is daemon
         code, not the mirror's — one bad row here must skip and continue, not
@@ -1078,8 +1078,8 @@ class Session:
             target_exec=target if target != exec_id else None,
         )
         # Claim ownership only once the creating row is DURABLE, matching the
-        # journal-before-mutate order the fold and the widget mirror already keep
-        # (RISKS #14). A registry that ran ahead of a failed append would route
+        # journal-before-mutate order the fold and the widget mirror already
+        # keep. A registry that ran ahead of a failed append would route
         # later updates at an owner no restart can re-derive.
         if msg_type == "display_data":
             self._register_display(exec_id, content)
@@ -1129,7 +1129,7 @@ class Session:
 
         Everything folds into its emitter except an `update_display_data` for a
         display_id another execution created — that one belongs to the creator,
-        which is what makes `update_display` reach across cells (RISKS #6). The
+        which is what makes `update_display` reach across cells. The
         registry is only consulted, never used to invent a target: an unknown id,
         or an owner with no fold left, falls back to the emitter so the update
         still fold-no-ops rather than raising.
@@ -1158,7 +1158,7 @@ class Session:
         journal-then-fold order): `would_accept` decides acceptance without
         mutating, so a `journal.append_message` failure propagates before
         `apply()` ever runs — the live mirror can never get ahead of what a
-        restart's `_rebuild_mirror` would derive from the journal (RISKS #14).
+        restart's `_rebuild_mirror` would derive from the journal.
         """
         if not self._mirror.would_accept(msg_type, content):
             return
@@ -1182,10 +1182,10 @@ class Session:
         fold = self._folds.get(exec_id) if exec_id is not None else None
         if fold is not None:
             fold.apply(msg_type, content)
-        # Same builder as the attach-backlog path (ADR-083), so a live and a
-        # resuming client get the identical frame for this row — including any
+        # Same builder as the attach-backlog path, so a live and a resuming
+        # client get the identical frame for this row — including any
         # `_buffers_b64` on `stored`, which event_from_message forwards when
-        # present (RISKS #13). Carrying the comm data is what animates a
+        # present. Carrying the comm data is what animates a
         # tqdm.notebook bar live rather than only on reconnect.
         self._broadcast(event_from_message(seq, exec_id, msg_type, stored))
 
@@ -1846,14 +1846,14 @@ class Daemon:
             s = self._sessions.get(session_id)
         if s is None:
             return False
-        # Acquire the session's OWN restart lock before removing it from the
-        # manager — not after. Popping first (an earlier version of this fix)
-        # left a window, bounded by however long a CONCURRENT restart_kernel()
-        # holds this lock (up to its 120s kernel-ready wait), where the id was
-        # absent from `_sessions` while `s` was still alive and un-killed;
-        # `_get_session()` during that window found nothing and spawned a
-        # SECOND Session on the same session_dir/journal/kernel files
-        # (duplicate pumps, exec_id collisions). Holding the lock FIRST makes
+        # Acquire the session's OWN restart lock BEFORE removing it from the
+        # manager, never after. Popping first opens a window — bounded by
+        # however long a CONCURRENT restart_kernel() holds this lock, up to its
+        # 120s kernel-ready wait — where the id is absent from `_sessions` while
+        # `s` is still alive and un-killed; `_get_session()` during that window
+        # finds nothing and spawns a SECOND Session on the same
+        # session_dir/journal/kernel files (duplicate pumps, exec_id
+        # collisions). Holding the lock FIRST makes
         # "marked `_killed`" and "removed from the manager" atomic from
         # `_get_session()`'s perspective — the id stays visible (and bindable,
         # a pre-existing tolerated race — see `_killed`'s docstring) right up
@@ -2109,9 +2109,9 @@ class Daemon:
                         # see Session._killed. `session` stays bound to this now-
                         # stopped Session for the rest of the connection (bound
                         # once above, never re-resolved), so any FURTHER op sent
-                        # here would queue against a worker that no longer exists
-                        # (Codex ② caught this) — end the connection like the
-                        # session-creation-failure path above does, not `continue`.
+                        # here would queue against a worker that no longer exists.
+                        # End the connection like the session-creation-failure
+                        # path above does, not `continue`.
                         await ws.send(json.dumps(
                             {"op": "error", "message": "session was killed"}))
                         return

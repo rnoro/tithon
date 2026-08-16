@@ -91,9 +91,8 @@ class ExecutionFold:
     claim holds belongs to that widget's area, not to the cell. Crucially
     `Output.clear_output()` wraps itself in `with self:`, so its `clear_output`
     arrives under the claim — folding it as a cell-wide clear destroys the
-    cell's OTHER outputs. That is the whole bug behind RISKS #17: a training
-    loop showing a tqdm bar next to a live plot loses the bar the instant the
-    first frame is drawn.
+    cell's OTHER outputs — a training loop showing a tqdm bar next to a live
+    plot would lose the bar the instant the first frame is drawn.
 
     So each item remembers the area that produced it (`_owner`, a comm_id, or
     absent for the cell itself) and a clear only reaches its own area. Claims
@@ -323,8 +322,8 @@ class ExecutionFold:
         """The renderable snapshot. Bookkeeping keys are `_`-prefixed and never
         cross the wire — `_owner` is fold-internal, and a client seeded from
         this loses it, so a client reconnecting mid-claim cannot scope its own
-        subsequent clears (RISKS #17's client half: the snapshot needs a
-        continuation sidecar before `outputFold.ts` can be scoped too)."""
+        subsequent clears: the snapshot needs a continuation sidecar before
+        `outputFold.ts` can be scoped too."""
         out = []
         for it in self._items:
             if it["output_type"] == "stream":

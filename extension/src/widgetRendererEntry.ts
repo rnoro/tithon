@@ -7,7 +7,7 @@
  * render-before-state race). On any failure it degrades to the §3.3 text fallback.
  *
  * Live updates: the extension host pushes `tithon.widget-update` messages (comm
- * state deltas, optionally carrying binary buffers — RISKS #13) over the renderer
+ * state deltas, optionally carrying binary buffers) over the renderer
  * channel; we apply them to the live model so a tqdm.notebook bar animates, or an
  * Image widget's live-updating pixels stay current. We report the render outcome
  * back so the host (and verify) can confirm html vs fallback.
@@ -72,13 +72,12 @@ export const activate: ActivationFunction = (context) => {
   injectCss();
   // Live managers by output-item id, so a comm update reaches the right widget.
   const managers = new Map<string, HTMLManager>();
-  // Per (output-item, comm_id) promise chain: `set_state()` is async, and a
-  // fire-and-forget call per message let an OLDER update's promise resolve
+  // Per (output-item, comm_id) promise chain: `set_state()` is async, so a
+  // fire-and-forget call per message lets an OLDER update's promise resolve
   // AFTER a newer one — restoring stale state/buffers — whenever two
-  // `tithon.widget-update` messages for the same model arrived close together
-  // (RISKS #13 Codex ② review, finding 1). Chaining off the prior promise for
-  // the SAME (item, comm_id) pair enforces arrival order without blocking
-  // updates to a DIFFERENT model.
+  // `tithon.widget-update` messages for the same model arrive close together.
+  // Chaining off the prior promise for the SAME (item, comm_id) pair enforces
+  // arrival order without blocking updates to a DIFFERENT model.
   const updateChains = new Map<string, Promise<void>>();
 
   context.onDidReceiveMessage?.((msg: unknown) => {
@@ -98,10 +97,9 @@ export const activate: ActivationFunction = (context) => {
           // deserializes only the attributes present in `m.state` (a delta)
           // and calls the model's own set(), which merges just those keys —
           // buffer-bearing or not — leaving every other trait (including
-          // buffers not mentioned in this delta) untouched. Calling
-          // `model.set_state()` directly (the old code) skipped this
-          // deserialize step entirely, so a buffer-bearing update never
-          // reached the model (RISKS #13).
+          // buffers not mentioned in this delta) untouched. Must NOT be
+          // shortcut to `model.set_state()`: that skips the deserialize step,
+          // so a buffer-bearing update never reaches the model.
           mgr.set_state({
             version_major: 2,
             version_minor: 0,

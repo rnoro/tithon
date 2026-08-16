@@ -11,8 +11,8 @@
  *   restoreInto(cells) -> attach those outputs to the document's cells by
  *                         cell_hash (SPEC.md, see cellAttach).
  *
- * Snapshot+delta equivalence (a since-0 attach and a since-N delta replay fold
- * to the same state) is what scripts/v7 checks against a real daemon.
+ * Snapshot+delta equivalence — a since-0 attach and a since-N delta replay must
+ * fold to the same state — is this client's core contract with the daemon.
  */
 import WebSocket from "ws";
 import { homedir } from "os";
@@ -464,7 +464,7 @@ export class SessionClient {
       this.applyWidgetEvent(ev.payload);
       // The fold needs comm too — not for output, but to track which
       // `ipywidgets.Output` area currently claims the cell's msg_id, so a
-      // widget-scoped `clear_output` clears only that area (RISKS #17). Mirrors
+      // widget-scoped `clear_output` clears only that area. Mirrors
       // the daemon's `_handle_comm` feeding `_folds[exec_id]`; an event with no
       // exec_id has no fold to claim against, exactly as on the daemon side.
       // The widget payload's `{comm_id, data}` shape is what the fold reads.
@@ -528,7 +528,7 @@ export class SessionClient {
       // Additive by path (matches the daemon's WidgetMirror._merge_buffers): a
       // partial update only resends the buffers that actually changed, so a
       // path absent from THIS message must keep its previously-set bytes, not
-      // be wiped by a full-array replace (RISKS #13).
+      // be wiped by a full-array replace.
       const delta = decodeBufferEntries(data.buffer_paths, payload?._buffers_b64);
       if (delta.length) entry.buffers = mergeBufferEntries(entry.buffers, delta);
     } else if (payload?.msg_type === "comm_close") {

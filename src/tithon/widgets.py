@@ -23,7 +23,7 @@ import base64
 WIDGET_TARGET = "jupyter.widget"
 #: Public — the single authority for "is this a comm message", shared by
 #: `is_comm()` and `journal.comm_messages_after()`'s SQL filter, so the two
-#: can never silently diverge on a future addition (RISKS #9a Codex review).
+#: can never silently diverge on a future addition.
 COMM_TYPES = ("comm_open", "comm_msg", "comm_close")
 
 
@@ -33,8 +33,8 @@ def _is_state_shaped(data: dict) -> bool:
     exactly what `apply()`'s mutation needs to not raise. A comm message is
     JSON-legal but not schema-legal when a buggy kernel/frontend sends e.g.
     `state: "garbage"`; `would_accept`/`apply` must REJECT that (not crash),
-    or a malformed message journaled by `_handle_comm` (RISKS #14: journal
-    before mutate) would re-raise on every future `_rebuild_mirror` replay —
+    or a malformed message journaled by `_handle_comm` (which journals before
+    it mutates) would re-raise on every future `_rebuild_mirror` replay —
     turning a one-time in-memory failure into a permanent daemon-restart
     crash."""
     state = data.get("state")

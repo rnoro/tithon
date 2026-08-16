@@ -1,6 +1,6 @@
 /**
- * Traceback ANSI cleanup (RISKS #8/T6, comparison doc §4-6) — a pure function so
- * it's unit-testable without a DOM. IPython's own traceback formatter sets
+ * Traceback ANSI cleanup — a pure function so it's unit-testable without a
+ * DOM. IPython's own traceback formatter sets
  * background-color SGR codes in some color schemes (`\x1b[4Xm` / `\x1b[10Xm` /
  * `\x1b[48;5;Nm` / `\x1b[48;2;R;G;Bm`), which VSCode's ANSI renderer applies
  * verbatim — the kernel's chosen background can clash badly with the editor's

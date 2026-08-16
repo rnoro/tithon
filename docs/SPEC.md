@@ -261,7 +261,9 @@ image / widget / text output below it as native notebook rendering. Outputs come
 from the journal and are attached to cells, so the `.py` is never polluted.
 
 `.py` files open as **plain text by default**; Notebook is opt-in (command
-_Open as Notebook_), and you can flip back with _Open as Text Editor_.
+_Open as Notebook_), and you can flip back with _Open as Text Editor_. For a
+durable per-file choice, _Always Open With…_ offers exactly _Text Editor_ and
+_Notebook_ from the Explorer context menu and both editor representations.
 
 - **Byte-exact round-trip is mandatory.** Serialization preserves the user's
   formatting, whitespace, and comments to the byte — no auto-reformat

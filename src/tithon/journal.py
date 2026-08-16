@@ -89,8 +89,8 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
         # _handle_comm only when the message actually carried buffers), so
         # reading it yields the identical payload whether this is called with
         # the raw content or the journaled one — forwarded here whenever
-        # present (RISKS #13: a widget with partly-binary state, e.g. Image,
-        # must not go stale between reconnects). `data.buffer_paths` — which
+        # present, since a widget with partly-binary state (e.g. Image) must
+        # not go stale between reconnects. `data.buffer_paths` — which
         # says WHERE those bytes go — already rides inside `data`, forwarded
         # below unchanged.
         payload = {
@@ -194,7 +194,7 @@ class Journal:
     def all_messages(self) -> sqlite3.Cursor:
         """Every row (msg_seq, ROUTED exec_id, msg_type, content_json) in seq
         order, as a lazily-iterated cursor (no ``.fetchall()`` — a session's whole
-        history must never be materialized at once, RISKS #9a). Routing follows
+        history must never be materialized at once). Routing follows
         `messages_after`. One global-ordered pass is what lets `_rebuild_folds`
         replay rows into a fold OTHER than their emitter's."""
         return self.db.execute(
@@ -209,7 +209,7 @@ class Journal:
         scanning the session's whole history. The `IN` clause is built from
         `COMM_TYPES` (widgets.py) — the SAME authority `is_comm()` uses — so a
         future addition to that tuple cannot silently diverge between live
-        classification and this rebuild query (RISKS #9a)."""
+        classification and this rebuild query."""
         placeholders = ",".join("?" for _ in COMM_TYPES)
         return self.db.execute(
             "SELECT msg_seq, exec_id, msg_type, content_json FROM messages"

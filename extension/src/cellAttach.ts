@@ -120,9 +120,9 @@ function proximity(a: LineRange, b: LineRange): number {
  *      `stale: true`, so it renders with the §3.2 stale badge instead of
  *      masquerading as a fresh successful run.
  *
- * Index-first alone (the old behavior) misattributed on inserts; pure exact-hash
- * (ADR-019) dropped edited cells and collapsed duplicates. Cross-file collapse
- * is prevented separately by uri-scoping the executions (see
+ * All three tiers are load-bearing: index alone misattributes on inserts, and
+ * exact-hash alone drops edited cells and collapses duplicates. Cross-file
+ * collapse is prevented separately by uri-scoping the executions (see
  * {@link SessionClient.restoreInto}). When several executions resolve to the
  * same cell, the later one (array order) wins.
  */
