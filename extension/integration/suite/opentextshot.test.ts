@@ -6,7 +6,7 @@
  * editor so an external screenshot captures the .py as text (the user bug was
  * that this button did nothing). Proof in pixels, not just the data model.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {

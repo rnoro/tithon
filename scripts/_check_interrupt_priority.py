@@ -91,7 +91,7 @@ async def main() -> int:
     live = await request(args.sock, {"op": "status"}, "status_reply", timeout=30)
     if any(s.get("session") == ghost for s in live.get("sessions", [])):
         die("interrupt CREATED a session (and spawned a kernel) for an unknown file")
-    print(f"v60: interrupt on an unknown session: ok=false, no session created")
+    print("v60: interrupt on an unknown session: ok=false, no session created")
 
     # A) Now contend: N kernel spawns in flight, then interrupt the running one.
     t0 = time.monotonic()

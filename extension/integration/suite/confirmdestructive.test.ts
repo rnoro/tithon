@@ -15,7 +15,7 @@
  * ONE command per Extension Host run (`TITHON_CONFIRM_TARGET`); v65.sh drives
  * both halves and owns the daemon-pid assertion.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 import { DaemonClient } from "../../src/daemonClient";
 

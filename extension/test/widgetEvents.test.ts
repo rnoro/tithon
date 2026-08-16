@@ -24,7 +24,7 @@
  * null-exec_id comm on demand, and the point is the client's dispatch, not the
  * kernel's timing.
  */
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SessionClient } from "../src/sessionClient";
 import { fakeDaemon, settle } from "./fakeDaemon";
 
@@ -80,7 +80,7 @@ async function drive(frames: unknown[]): Promise<SessionClient> {
   return c;
 }
 
-function valueOf(c: SessionClient): unknown {
+function widgetValue(c: SessionClient): unknown {
   return (c.widgets()?.state?.[COMM]?.state as Record<string, unknown> | undefined)?.value;
 }
 
@@ -88,7 +88,7 @@ describe("SessionClient — widget comm events reach the mirror", () => {
   it("applies a widget event that carries an exec_id", async () => {
     const c = await drive([commOpen(1, "e1"), commUpdate(2, "e1", 7)]);
     expect(c.widgets()?.state?.[COMM], "the model was created").toBeTruthy();
-    expect(valueOf(c)).toBe(7);
+    expect(widgetValue(c)).toBe(7);
   });
 
   it("applies a widget event with exec_id: null (background-thread update)", async () => {
@@ -96,7 +96,7 @@ describe("SessionClient — widget comm events reach the mirror", () => {
     // the update does not (the thread fired after the barrier popped the mapping).
     const c = await drive([commOpen(1, "e1"), commUpdate(2, null, 8)]);
     expect(c.widgets()?.state?.[COMM], "the model survived").toBeTruthy();
-    expect(valueOf(c), "a post-completion widget update is not dropped").toBe(8);
+    expect(widgetValue(c), "a post-completion widget update is not dropped").toBe(8);
   });
 
   it("applies a widget event whose open ALSO has no exec_id", async () => {
@@ -105,7 +105,7 @@ describe("SessionClient — widget comm events reach the mirror", () => {
       c.widgets()?.state?.[COMM],
       "the model was created without an execution row",
     ).toBeTruthy();
-    expect(valueOf(c)).toBe(4);
+    expect(widgetValue(c)).toBe(4);
   });
 
   it("does NOT mirror a comm delivered under the pre-ADR-083 replay shape", async () => {
@@ -130,6 +130,6 @@ describe("SessionClient — widget comm events reach the mirror", () => {
         },
       },
     ]);
-    expect(valueOf(c), "the wrong wire shape does not advance the mirror").toBe(1);
+    expect(widgetValue(c), "the wrong wire shape does not advance the mirror").toBe(1);
   });
 });

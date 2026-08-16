@@ -10,7 +10,7 @@
  *      until re-run).
  */
 
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import type { Cell } from "./serializer";
 import { cellSource } from "./serializer";
 

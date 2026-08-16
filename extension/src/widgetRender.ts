@@ -18,9 +18,10 @@
 // Import from the submodule, not the package root: the root `index` pulls in
 // `libembed-amd` (a webpack-only AMD/CDN loader using `__webpack_public_path__`
 // and CSS imports) which we don't use — we resolve bundled modules ourselves.
-import { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+
 import * as base from "@jupyter-widgets/base";
 import * as controls from "@jupyter-widgets/controls";
+import { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
 
 export interface WidgetStateSnapshot {
   version_major: number;
@@ -124,7 +125,7 @@ export async function renderWidgetView(
   try {
     await renderWidget(snapshot, outputJson.model_id, host);
     return "html";
-  } catch (err) {
+  } catch {
     renderFallbackText(snapshot, outputJson.model_id, host);
     return "fallback";
   }

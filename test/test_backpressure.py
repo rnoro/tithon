@@ -6,8 +6,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from tithon import daemon as daemon_mod
 from tithon.daemon import Session, Subscriber
 

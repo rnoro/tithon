@@ -11,12 +11,12 @@
  * and ends showing the LATEST frame. Coalescing bounds are unit-verified in
  * test/liveSync.test.ts; here we verify the real in-place render.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 const FRAMES = 12; // 1 display_data + (FRAMES-1) update_display_data

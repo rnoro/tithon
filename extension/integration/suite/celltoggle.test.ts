@@ -10,7 +10,7 @@
  *   (2) "Open as Text" resolves with NO argument via the active notebook editor —
  *       the realistic toolbar path (was scripts/v36.sh / opentext.test.ts).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

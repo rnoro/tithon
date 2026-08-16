@@ -12,9 +12,9 @@
  * round-trip (the fix must not regress the v6 0-byte-diff guarantee for unedited
  * files via a false "edited" detection).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;

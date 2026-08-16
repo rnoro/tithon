@@ -7,11 +7,11 @@
  * onto cell 0 (its content is gone, so it maps back by index), but flagged STALE
  * (the §3.2 badge) and ended NEUTRAL — so a ✓ never implies BETA ran (ADR-047).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { writeFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { writeFileSync } from "fs";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {

@@ -10,7 +10,7 @@
  * the live index is built from the in-memory cell text the daemon actually runs,
  * not from the stale disk file.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

@@ -13,7 +13,7 @@
  * lost-kernel warning strictly by this number, so a SECOND death after that
  * restart would misread as a duplicate of the first and never warn.
  */
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SessionClient } from "../src/sessionClient";
 import { fakeDaemon, settle } from "./fakeDaemon";
 

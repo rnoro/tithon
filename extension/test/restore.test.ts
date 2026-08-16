@@ -14,10 +14,10 @@
  * the shared ~/.tithon socket (see test/liveDaemon.ts); v7.sh fails if this
  * suite reports itself skipped, so the gate cannot hide a regression.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { parse, cellSource } from "../src/serializer";
-import { SessionClient } from "../src/sessionClient";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { computeCellHash, type LineRange } from "../src/cellAttach";
+import { cellSource, parse } from "../src/serializer";
+import { SessionClient } from "../src/sessionClient";
 import { requireLiveDaemon } from "./liveDaemon";
 
 const { sock: SOCK, live } = requireLiveDaemon("v7 restore");

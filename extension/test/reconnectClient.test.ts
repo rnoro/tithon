@@ -10,8 +10,7 @@
  * real kernel needed): it answers an attach with snapshot+sync, then triggers
  * the drop on demand.
  */
-import { describe, it, expect } from "vitest";
-import { type WebSocket as WS } from "ws";
+import { describe, expect, it } from "vitest";
 import { SessionClient } from "../src/sessionClient";
 import { fakeDaemon, fakeDaemonRaw, settle } from "./fakeDaemon";
 

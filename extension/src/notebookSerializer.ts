@@ -8,12 +8,12 @@
  */
 import * as vscode from "vscode";
 import {
-  parse,
-  serialize,
-  cellSource,
-  uncommentMarkdown,
-  resolveCell,
   type Cell,
+  cellSource,
+  parse,
+  resolveCell,
+  serialize,
+  uncommentMarkdown,
 } from "./serializer";
 
 const dec = new TextDecoder();

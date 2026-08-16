@@ -8,7 +8,7 @@
  * channel update the model — the renderer confirms each applied update, which we
  * assert (the bar filling in real time).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const WIDGET_MIME = "application/vnd.tithon.widget+json";

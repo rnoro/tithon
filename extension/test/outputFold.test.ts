@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ExecutionFold, foldMessages, type OutputItem } from "../src/outputFold";
 
 function stream(name: string, text: string) {

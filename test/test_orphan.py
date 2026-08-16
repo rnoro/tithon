@@ -35,6 +35,9 @@ def test_orphan_running_freezes_finished_at_at_last_activity(tmp_path):
     assert n == 1
     row = _row(s, "e1")
     assert row["status"] == "orphaned"
+    # mark_started reports the timestamp it persisted, so a caller measuring a
+    # duration from the return value agrees with the row.
+    assert row["started_at"] == started
     # Frozen at the last journaled activity — a real, > 0 duration, NOT now().
     assert row["finished_at"] == last_ts
     assert row["finished_at"] > row["started_at"]

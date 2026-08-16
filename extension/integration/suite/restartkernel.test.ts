@@ -4,7 +4,7 @@
  * way"). After defining a variable and running, `tithon.restartKernel` must give
  * a fresh namespace: a follow-up cell sees the variable is GONE.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

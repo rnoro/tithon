@@ -18,10 +18,10 @@
  * Kept separate from daemonClient/sessionClient so those stay free of the
  * `vscode` and `child_process` deps (they're imported by plain-node seeders/tests).
  */
-import { spawn } from "child_process";
-import * as net from "net";
-import * as fs from "fs";
-import * as path from "path";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as net from "node:net";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 function canConnect(sockPath: string): Promise<boolean> {
@@ -104,10 +104,11 @@ export async function ensureDaemon(sockPath: string): Promise<void> {
   if (!cfg.get<boolean>("autoStartDaemon", true)) {
     throw new Error(`Tithon daemon is not running at ${sockPath} (tithon.autoStartDaemon is off).`);
   }
-  if (!inFlight)
+  if (!inFlight) {
     inFlight = startAny(sockPath, cfg).finally(() => {
       inFlight = null;
     });
+  }
   await inFlight;
 }
 

@@ -1,16 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as fc from "fast-check";
-import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { describe, expect, it } from "vitest";
 import {
-  parse,
-  serialize,
-  countMarkers,
   bodyLinesFromText,
-  resolveCell,
   cellSource,
-  uncommentMarkdown,
   commentMarkdown,
+  countMarkers,
+  parse,
+  resolveCell,
+  serialize,
+  uncommentMarkdown,
 } from "../src/serializer";
 
 const CORPUS_DIR = join(__dirname, "..", "..", "scripts", "corpus");

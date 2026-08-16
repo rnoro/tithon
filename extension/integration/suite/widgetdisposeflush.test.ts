@@ -22,7 +22,7 @@
  * `widgetUpdatesApplied` could still climb post-dispose is exactly the stale
  * buffered entry this test targets.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const WIDGET_MIME = "application/vnd.tithon.widget+json";

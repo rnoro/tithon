@@ -14,7 +14,7 @@
  * path was always correct (it prefetches then renders synchronously); only the
  * live path stacked out of order.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

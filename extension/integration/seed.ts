@@ -4,10 +4,10 @@
  * source via the verified SessionClient so daemon cell_hash == the extension's
  * computeCellHash(cellSource), and waits until every execution is terminal.
  */
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../src/serializer";
-import { SessionClient } from "../src/sessionClient";
+import { readFileSync } from "node:fs";
 import { computeCellHash } from "../src/cellAttach";
+import { cellSource, parse } from "../src/serializer";
+import { SessionClient } from "../src/sessionClient";
 
 async function main(): Promise<void> {
   const file = process.argv[2];

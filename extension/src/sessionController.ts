@@ -9,29 +9,29 @@
  * thin, API-only glue VSCode needs.
  */
 import * as vscode from "vscode";
-import { SessionClient, type KernelSnapshot } from "./sessionClient";
-import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
-import { ensureDaemon, waitForDaemonStop, listPythonEnvironments } from "./daemonProcess";
-import { parse, type Cell } from "./serializer";
-import type { OutputItem } from "./outputFold";
 import { computeCellHash, docCellsFromParsed } from "./cellAttach";
-import { LiveOutputSync, ThrottleScheduler, type CellSink } from "./liveSync";
+import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
+import { ensureDaemon, listPythonEnvironments, waitForDaemonStop } from "./daemonProcess";
+import { type CellSink, LiveOutputSync, ThrottleScheduler } from "./liveSync";
+import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
+import type { OutputItem } from "./outputFold";
 import {
+  decodeBufferEntries,
   imageOf,
   imageRefsOf,
-  isOutputAreaView,
-  widgetModelIdOf,
-  widgetFallbackText,
-  widgetPayload,
   isDisplayOnlyWidget,
-  TITHON_WIDGET_MIME,
-  decodeBufferEntries,
+  isOutputAreaView,
   mergeBufferEntries,
+  TITHON_WIDGET_MIME,
   type WidgetBufferEntry,
   type WidgetState,
+  widgetFallbackText,
+  widgetModelIdOf,
+  widgetPayload,
 } from "./richOutput";
+import { type Cell, parse } from "./serializer";
+import { type KernelSnapshot, SessionClient } from "./sessionClient";
 import { formatTraceback } from "./tracebackFormatter";
-import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 
 /**
  * Build serializer Cells from the IN-MEMORY notebook (the authoritative cell
@@ -135,8 +135,9 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       }
       // 2) Vector image (text-based) — VSCode renders it natively.
       const svg = data["image/svg+xml"];
-      if (typeof svg === "string")
+      if (typeof svg === "string") {
         return [vscode.NotebookCellOutputItem.text(svg, "image/svg+xml")];
+      }
       // 3) ipywidget (tqdm.notebook etc.): render it for real via the Tithon widget
       //    renderer (html-manager) when the mirror state is known, carrying the
       //    state in the output so the renderer needs no round-trip; keep a text
@@ -1674,7 +1675,7 @@ export class TithonNotebookController {
   ): void {
     const execIds: string[] = [];
     for (const ch of e.cellChanges) {
-      if (!ch.outputs || ch.outputs.length !== 0) continue; // only outputs -> empty
+      if (ch.outputs?.length !== 0) continue; // only outputs -> empty
       const idx = ch.cell.index;
       if (sink.isExecuting(idx)) continue; // our own clearOutput during a run
       // Synchronously, before the round trip below: the cell is ALREADY empty,
@@ -1908,8 +1909,9 @@ export class TithonNotebookController {
     // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
     // so re-present the prompt from the snapshot (the live event won't replay).
     const pi = client.pendingInput();
-    if (pi)
+    if (pi) {
       void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
+    }
     return {
       dispose: () => {
         changeSub.dispose();

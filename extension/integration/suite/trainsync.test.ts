@@ -18,7 +18,7 @@
  * one instant, via `tithon._liveDiag`) and the DOCUMENT, and compares the step
  * number each reports.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const STDOUT_MIME = "application/vnd.code.notebook.stdout";
@@ -87,7 +87,7 @@ function ext(): vscode.Extension<unknown> {
 describe("training-loop live sync (tqdm x3 + Output-widget plot + \\r print)", function () {
   this.timeout(600_000);
 
-  it("keeps the printed step, the plot and the bars on the same instant", async function () {
+  it("keeps the printed step, the plot and the bars on the same instant", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
     const nb = await vscode.workspace.openNotebookDocument(uri);

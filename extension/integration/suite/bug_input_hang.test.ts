@@ -13,7 +13,7 @@
  * Pre-bridge this either hung forever (allow_stdin=True with nobody answering) or
  * errored with StdinNotImplementedError (allow_stdin=False); now it round-trips.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

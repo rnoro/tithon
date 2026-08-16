@@ -16,6 +16,7 @@
  * correctly as more live events arrive.
  */
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the control characters ARE the subject — this buffer exists to give \r, \n and \b their terminal cursor meaning.
 const CTRL = /[\r\n\x08]/g;
 
 /** Line buffer with terminal-ish cursor semantics (\r, \n, \b). */
@@ -28,6 +29,7 @@ class StreamBuf {
     let idx = 0;
     CTRL.lastIndex = 0;
     let m: RegExpExecArray | null;
+    // biome-ignore lint/suspicious/noAssignInExpressions: assigning in the condition is how a /g regex is walked; splitting it needs a second exec call that can drift from this one.
     while ((m = CTRL.exec(text)) !== null) {
       const seg = text.slice(idx, m.index);
       if (seg) this.emit(seg);

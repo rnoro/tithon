@@ -263,13 +263,15 @@ def main(argv=None) -> None:
     )
     sp.set_defaults(fn=cmd_shutdown)
 
+    # TODO: add a "version" command
+
     args = p.parse_args(argv)
     try:
         sys.exit(args.fn(args))
     except (ConnectionRefusedError, FileNotFoundError) as e:
         print(f"tithon: cannot reach daemon at {sock_path()}: {e}", file=sys.stderr)
         sys.exit(2)
-    except (asyncio.TimeoutError, TimeoutError):
+    except TimeoutError:
         print("tithon: timed out", file=sys.stderr)
         sys.exit(3)
     except KeyboardInterrupt:

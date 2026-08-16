@@ -18,6 +18,7 @@
 // reset (`;49`) would then have its reset stripped without ever stripping the
 // set it was resetting — an inconsistency only reachable by MIXING both forms
 // in one stream, which this project's own kernel source never does.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is what an SGR sequence starts with, so this pattern cannot be written without it.
 const SGR = /\x1b\[([0-9;]*)m/g;
 
 function isBackgroundParam(params: string[], i: number): number {

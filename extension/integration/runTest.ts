@@ -12,7 +12,8 @@
  * notebook/LSP guard suites against the insiders build as an early warning, so a
  * breaking change is caught before it reaches users on stable.
  */
-import * as path from "path";
+
+import * as path from "node:path";
 import { runTests } from "@vscode/test-electron";
 
 async function main(): Promise<void> {

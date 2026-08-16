@@ -15,16 +15,17 @@
  * Bundled by esbuild (platform=browser, format=esm) into dist/widgetRenderer.js;
  * the render logic itself is covered under jsdom by test/widget.test.ts.
  */
-import {
-  createManager,
-  renderWidget,
-  renderFallbackText,
-  type WidgetStateSnapshot,
-} from "./widgetRender";
-import type { WidgetBufferEntry } from "./richOutput";
-import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
+import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+import type { WidgetBufferEntry } from "./richOutput";
+import {
+  createManager,
+  renderFallbackText,
+  renderWidget,
+  type WidgetStateSnapshot,
+} from "./widgetRender";
 // Must follow it: re-points the vendored light-theme text colours at the active
 // VSCode theme, winning on document order (see widgetTheme.css).
 import widgetThemeCss from "./widgetTheme.css";
@@ -82,7 +83,7 @@ export const activate: ActivationFunction = (context) => {
 
   context.onDidReceiveMessage?.((msg: unknown) => {
     const m = msg as UpdateMessage;
-    if (!m || m.type !== "tithon.widget-update") return;
+    if (m?.type !== "tithon.widget-update") return;
     for (const [itemId, mgr] of managers) {
       // The patch targets one comm id; managers without it are left alone.
       const withHasModel = mgr as HTMLManager & { has_model(id: string): boolean };

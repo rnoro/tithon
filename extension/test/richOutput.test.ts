@@ -1,16 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { OutputItem } from "../src/outputFold";
 import {
-  WIDGET_VIEW_MIME,
   imageOf,
   imageRefsOf,
   isDisplayOnlyWidget,
   isOutputAreaView,
+  WIDGET_VIEW_MIME,
   type WidgetState,
   widgetFallbackText,
   widgetModelIdOf,
   widgetPayload,
 } from "../src/richOutput";
-import type { OutputItem } from "../src/outputFold";
 
 const ref = (id: string) => ({
   $tithon_artifact: { artifact_id: id, mime: "image/png", rel_path: `p/${id}.png`, sha256: id },

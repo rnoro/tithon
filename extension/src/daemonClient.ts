@@ -3,9 +3,10 @@
  * over its unix domain socket (SPEC.md; the daemon binds a 0600 unix
  * socket, never TCP). Used by the CodeLens "Run Cell" wiring to submit code.
  */
+
+import { homedir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
-import { homedir } from "os";
-import { join } from "path";
 
 export interface ExecOrigin {
   uri: string;

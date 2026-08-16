@@ -7,14 +7,14 @@
  *  - the widget renderer messaging (push mirror snapshots to the renderer).
  * The output<->cell attachment uses the journal's cell_hash (see cellAttach).
  */
-import * as path from "path";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { PercentNotebookSerializer } from "./notebookSerializer";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
 import { ensureDaemon } from "./daemonProcess";
-import { registerRestore, workdirForUri } from "./sessionController";
+import { PercentNotebookSerializer } from "./notebookSerializer";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
+import { registerRestore, workdirForUri } from "./sessionController";
 
 /* ===========================================================================
  * SINGLE-REPRESENTATION INVARIANTS — read this before editing anything below.

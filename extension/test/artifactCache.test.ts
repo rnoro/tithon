@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ArtifactCache } from "../src/artifactCache";
 
 const bytes = (n: number) => ({ bytes: new Uint8Array(n) });

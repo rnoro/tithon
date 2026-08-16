@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "files": {
-    "includes": ["**", "!dist", "!out-int", "!.vscode-test", "!**/*.vsix"]
+    "includes": ["**", "!dist", "!out-int", "!.vscode-test", "!**/*.vsix", "!test/fixtures"]
   },
   "formatter": {
     "enabled": true,
@@ -20,7 +20,7 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "suspicious": {
         "noExplicitAny": "off"
       },

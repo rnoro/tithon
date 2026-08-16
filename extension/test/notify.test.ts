@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { confirmDestructive, notifyInfo, notifyWarn } from "../src/notify";
-import { state, resetVscodeMock } from "./vscodeMock";
+import { resetVscodeMock, state } from "./vscodeMock";
 
 const ASK = {
   message: "Restart the kernel for train.py?",

@@ -26,7 +26,7 @@
  * Unlike the other suites this one runs with ruff+ty ENABLED (the runner uses
  * TITHON_LSP_EXT_DIR instead of --disable-extensions).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 function ext(): vscode.Extension<unknown> {

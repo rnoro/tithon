@@ -8,7 +8,7 @@
  * Flow: run cell 0 (starts live), then insert a new cell and run it, and assert
  * the new cell shows its output WITHOUT any manual restore step.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

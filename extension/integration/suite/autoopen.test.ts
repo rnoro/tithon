@@ -8,12 +8,12 @@
  * command. Auto-open must (a) restore the lines already produced and (b) keep
  * appending new lines as the loop runs.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {

@@ -27,9 +27,9 @@
  * kernel, and both scripts already FAIL if their suite reports itself skipped.
  * What it removes is the third state — running against the *wrong* daemon.
  */
-import { existsSync } from "fs";
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 export interface LiveDaemon {
   /** Socket to drive. Only meaningful when `live`. */

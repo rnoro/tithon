@@ -10,9 +10,9 @@
  * whenever it is not the first cell. This drives a real insert + save and reads
  * the bytes back to assert all three cells survive.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
 import { parse } from "../../src/serializer";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {

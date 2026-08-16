@@ -6,8 +6,8 @@
  * open. The client carries that bit from the attach snapshot so the controller
  * can skip the seed and offer the history back instead of replaying it unasked.
  */
-import { describe, it, expect } from "vitest";
-import { type WebSocket as WS } from "ws";
+import { describe, expect, it } from "vitest";
+import type { WebSocket as WS } from "ws";
 import { SessionClient } from "../src/sessionClient";
 import { fakeDaemonRaw } from "./fakeDaemon";
 

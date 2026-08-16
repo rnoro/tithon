@@ -6,11 +6,12 @@
  * given a one-model state dict with `buffers`) and the shared client-side
  * merge helpers (`decodeBufferEntries`/`mergeBufferEntries`).
  */
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
-import { join } from "path";
-import { createManager } from "../src/widgetRender";
+
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 import { decodeBufferEntries, mergeBufferEntries, type WidgetBufferEntry } from "../src/richOutput";
+import { createManager } from "../src/widgetRender";
 import { activate } from "../src/widgetRendererEntry";
 
 function b64(text: string): string {

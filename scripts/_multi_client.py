@@ -83,7 +83,7 @@ async def main() -> int:
                 return 3
             try:
                 raw = await asyncio.wait_for(ws.recv(), remaining)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 note(f"TIMEOUT (synced={synced} dones={dones}/{a.until_done})")
                 return 3
             except Exception as e:  # connection closed by the daemon

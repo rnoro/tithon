@@ -11,7 +11,7 @@
  * persistent subscriber is attached before submit, and the streamed output lands
  * in the cell. This test asserts the cell shows output with no manual live step.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

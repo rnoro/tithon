@@ -117,7 +117,10 @@ class WidgetMirror:
 
     @staticmethod
     def _merge_buffers(model: dict, buffer_paths, buffers) -> None:
-        for path, buf in zip(buffer_paths, buffers):
+        # Deliberately NOT strict=True: these two lists come off the wire from an
+        # arbitrary kernel, and a length mismatch must degrade to a partly-merged
+        # model rather than raise through the mirror's message handler.
+        for path, buf in zip(buffer_paths, buffers):  # noqa: B905
             model["buffers"][tuple(path)] = bytes(buf)
 
     def snapshot(self) -> dict:

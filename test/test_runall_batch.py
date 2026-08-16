@@ -9,8 +9,6 @@ real kernel) is covered by the real-kernel check + the bug_runall_error probe.
 
 from __future__ import annotations
 
-import json
-
 from tithon.daemon import Session
 
 
@@ -46,7 +44,7 @@ def test_submit_batch_enqueues_one_item_with_all_cells_and_flag(tmp_path):
     assert [e for e, _ in batch] == ids
     assert [code for _, code in batch] == ["a = 1\n", "b = 2\n", "c = 3\n"]
     # Every cell is journaled queued + each carries its own cell_hash.
-    for exec_id, code in batch:
+    for exec_id, _code in batch:
         assert _status(s, exec_id) == "queued"
 
 

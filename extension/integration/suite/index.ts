@@ -1,8 +1,9 @@
 /** Mocha entry that runs inside the VSCode Extension Host. */
-import * as path from "path";
-import * as fs from "fs";
-import * as vscode from "vscode";
+
+import * as fs from "node:fs";
+import * as path from "node:path";
 import Mocha from "mocha";
+import * as vscode from "vscode";
 
 /**
  * Destructive commands (`tithon.restartKernel`, `tithon.restartDaemon`) open a

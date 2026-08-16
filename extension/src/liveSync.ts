@@ -18,9 +18,10 @@
  * controller in production and by an in-memory model in tests, so the coalescing
  * guarantees are unit-verifiable without a DOM.
  */
-import type { Cell } from "./serializer";
-import { computeCellHash, docCellsFromParsed, type DocCell } from "./cellAttach";
+
+import { computeCellHash, type DocCell, docCellsFromParsed } from "./cellAttach";
 import type { OutputItem } from "./outputFold";
+import type { Cell } from "./serializer";
 import type { LiveEvent } from "./sessionClient";
 
 /** Where coalesced output operations are delivered (VSCode or a test model). */
@@ -323,7 +324,7 @@ export class LiveOutputSync {
   private queueStream(idx: number, name: string, text: string): void {
     if (!text) return;
     const ops = this.pending.get(idx);
-    const last = ops && ops.length ? ops[ops.length - 1] : undefined;
+    const last = ops?.length ? ops[ops.length - 1] : undefined;
     if (last && last.t === "stream" && last.name === name) {
       last.text += text;
     } else {
@@ -365,10 +366,6 @@ export class LiveOutputSync {
     }
     ops.push(op);
     this.dirty.add(idx);
-  }
-
-  private dropPending(idx: number): void {
-    this.pending.set(idx, []);
   }
 
   private scheduleFlush(): void {

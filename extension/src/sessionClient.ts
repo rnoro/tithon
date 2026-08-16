@@ -14,20 +14,21 @@
  * Snapshot+delta equivalence — a since-0 attach and a since-N delta replay must
  * fold to the same state — is this client's core contract with the daemon.
  */
+
+import { homedir } from "node:os";
+import { join } from "node:path";
 import WebSocket from "ws";
-import { homedir } from "os";
-import { join } from "path";
-import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
+import { ArtifactCache } from "./artifactCache";
 import {
+  type Attachment,
   attachOutputs,
   docCellsFromParsed,
-  type Attachment,
   type JournalExecution,
   type LineRange,
 } from "./cellAttach";
-import type { Cell } from "./serializer";
+import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
 import { decodeBufferEntries, mergeBufferEntries, type WidgetState } from "./richOutput";
-import { ArtifactCache } from "./artifactCache";
+import type { Cell } from "./serializer";
 
 /** Image bytes resolved from a `$tithon_artifact` reference. */
 export interface ArtifactBytes {
@@ -499,8 +500,9 @@ export class SessionClient {
       // the daemon's `_handle_comm` feeding `_folds[exec_id]`; an event with no
       // exec_id has no fold to claim against, exactly as on the daemon side.
       // The widget payload's `{comm_id, data}` shape is what the fold reads.
-      if (ev.exec_id)
+      if (ev.exec_id) {
         this.ensureExec(ev.exec_id, ev.seq).fold.apply(ev.payload?.msg_type, ev.payload);
+      }
       return;
     }
     if (!ev.exec_id) return;

@@ -9,7 +9,7 @@
  * renderer instantiates the model with no round-trip; it reports back whether it
  * painted "html" vs "fallback", which we assert via the test-only command.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const WIDGET_MIME = "application/vnd.tithon.widget+json";

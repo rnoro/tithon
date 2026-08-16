@@ -20,10 +20,10 @@
  * assertion is about the underlying STATE transition (reconnected — the
  * thing actually under test), not the notification's own fade-out timing.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {

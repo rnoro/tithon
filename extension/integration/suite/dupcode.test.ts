@@ -6,7 +6,7 @@
  * cell index (ADR-026). Here both cells print "SAME"; the assertion is that
  * cell 1 ALSO got output (it would be empty if collapsed onto cell 0).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

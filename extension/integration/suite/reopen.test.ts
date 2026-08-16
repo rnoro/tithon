@@ -10,7 +10,7 @@
  * prints "RUN 2" — proving the cell actually re-executed (not just restored old
  * output) and the per-file kernel persisted across the reopen.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

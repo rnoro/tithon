@@ -8,7 +8,7 @@
  * assert the cells now carry the outputs the daemon journaled (stdout "0\n1\n2\n",
  * execute_result "42", an error with ename ValueError).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

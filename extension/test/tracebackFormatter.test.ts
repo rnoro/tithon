@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { stripAnsiBackground, formatTraceback } from "../src/tracebackFormatter";
+import { describe, expect, it } from "vitest";
+import { formatTraceback, stripAnsiBackground } from "../src/tracebackFormatter";
 
 const ESC = "\x1b";
 

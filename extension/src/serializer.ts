@@ -222,7 +222,7 @@ export function cellSource(cell: Cell): string {
  * normalized so the cell ends with exactly one.
  */
 export function bodyLinesFromText(value: string): PhysicalLine[] {
-  const v = value.endsWith("\n") ? value : value + "\n";
+  const v = value.endsWith("\n") ? value : `${value}\n`;
   const lines = v.split("\n");
   lines.pop(); // drop the trailing "" produced by the final "\n"
   return lines.map((text) => ({ text, terminator: "\n" }));
@@ -241,7 +241,7 @@ export function uncommentMarkdown(src: string): string {
 export function commentMarkdown(value: string): string {
   return value
     .split("\n")
-    .map((l) => (l === "" ? "#" : "# " + l))
+    .map((l) => (l === "" ? "#" : `# ${l}`))
     .join("\n");
 }
 

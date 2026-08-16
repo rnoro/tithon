@@ -15,12 +15,12 @@
  * its output, NOT be in the sink's open-execution set (no spinner), and not be
  * falsely marked successful; and live output must not have dirtied the notebook.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 

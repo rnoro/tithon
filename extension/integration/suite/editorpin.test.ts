@@ -18,8 +18,8 @@
  * separates declarative editor resolution from an ADR-067-style open-then-convert
  * heuristic, which necessarily opens the text editor first.
  */
-import * as assert from "assert";
-import * as path from "path";
+import * as assert from "node:assert";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 const ASSOC = "workbench.editorAssociations";

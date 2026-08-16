@@ -250,7 +250,7 @@ class ExecutionFold:
             )
 
     @classmethod
-    def hydrate(cls, outputs: list[dict], state: dict | None = None) -> "ExecutionFold":
+    def hydrate(cls, outputs: list[dict], state: dict | None = None) -> ExecutionFold:
         """Rebuild a fold from a persisted `outputs()` + `fold_state()` pair.
 
         The inverse of those two, for an execution whose raw messages are NOT in

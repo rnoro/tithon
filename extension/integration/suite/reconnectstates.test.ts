@@ -7,12 +7,12 @@
  * (spinner/clock/check) are only visible in the rendered UI, so this test logs
  * what the API can see and HOLDS the window open for a screenshot.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 function cellText(c: vscode.NotebookCell): string {

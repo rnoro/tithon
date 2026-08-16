@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { parse, cellSource } from "../src/serializer";
+import { describe, expect, it } from "vitest";
 import { computeCellHash } from "../src/cellAttach";
+import { type CellSink, LiveOutputSync, type Scheduler } from "../src/liveSync";
 import { ExecutionFold, type OutputItem } from "../src/outputFold";
-import { LiveOutputSync, type CellSink, type Scheduler } from "../src/liveSync";
+import { cellSource, parse } from "../src/serializer";
 import type { LiveEvent } from "../src/sessionClient";
 
 const DOC = ["# %% a", "a = 1", "# %% b", "b = 2", ""].join("\n");

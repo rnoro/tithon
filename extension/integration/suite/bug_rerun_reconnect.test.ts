@@ -7,10 +7,10 @@
  * for the first time and attaches — the real "reopen over the tunnel" path. We
  * also read tithon._seedTrace to see the actual exec->cell mapping.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {

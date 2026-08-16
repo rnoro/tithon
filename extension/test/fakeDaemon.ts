@@ -9,11 +9,12 @@
  * Extracted from reconnectClient.test.ts when widgetEvents.test.ts needed the
  * same harness (ADR-083).
  */
+
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import { WebSocketServer, type WebSocket as WS } from "ws";
-import * as http from "http";
-import * as os from "os";
-import * as path from "path";
-import * as fs from "fs";
 
 export interface FakeDaemon {
   sock: string;

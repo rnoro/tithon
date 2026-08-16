@@ -9,7 +9,7 @@
  *
  * This RUNS ALL three cells (cell 1 raises) and asserts cell 2 did NOT run.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

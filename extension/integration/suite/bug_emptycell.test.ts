@@ -6,7 +6,7 @@
  * Fixture: cell 0 is comment-only, cell 1 prints. We also INSERT an empty cell
  * in the Cell View and run it (getText() === "") to cover the truly-blank case.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

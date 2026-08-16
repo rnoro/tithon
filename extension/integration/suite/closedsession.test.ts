@@ -20,13 +20,13 @@
  * and still put nothing there — an empty cell alone would also be satisfied by
  * an attach that simply failed.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
-import { DaemonClient } from "../../src/daemonClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { DaemonClient } from "../../src/daemonClient";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 

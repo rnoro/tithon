@@ -18,15 +18,15 @@
  * Assertions are kept as strong as a gate's: if the product does not actually
  * survive, restore and resume, the recorder fails and no demo is written.
  */
-import * as assert from "assert";
-import * as fs from "fs";
-import * as path from "path";
+import * as assert from "node:assert";
+import * as fs from "node:fs";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
+import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
 import { SessionClient } from "../../src/sessionClient";
 import { workdirForUri } from "../../src/sessionController";
-import { computeCellHash } from "../../src/cellAttach";
 
 const dec = new TextDecoder();
 

@@ -10,12 +10,12 @@
  * follows its cell_hash to cell 1 and SECOND's to cell 2 (the inserted cell 0
  * stays empty) — index-first alone used to shift every output down by one.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { writeFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { writeFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
-import { SessionClient } from "../../src/sessionClient";
 import { computeCellHash } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
+import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();
 function cellText(cell: vscode.NotebookCell): string {
@@ -43,7 +43,7 @@ function ext(): vscode.Extension<unknown> {
 }
 
 const TWO_CELL = '# %%\nprint("FIRST", flush=True)\n\n# %%\nprint("SECOND", flush=True)\n';
-const THREE_CELL = '# %%\nprint("INSERTED")\n\n' + TWO_CELL;
+const THREE_CELL = `# %%\nprint("INSERTED")\n\n${TWO_CELL}`;
 
 describe("REGRESSION H4: a top insert + reopen keeps output on the right cells", () => {
   it("after a top insert + reopen, output follows content (INSERTED empty, FIRST/SECOND correct)", async () => {

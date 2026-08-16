@@ -9,10 +9,10 @@
  * markdown cell, saves, and asserts the on-disk body is `# `-prefixed and that
  * it reparses back to a markdown cell whose display text is the original prose.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource, uncommentMarkdown } from "../../src/serializer";
+import { cellSource, parse, uncommentMarkdown } from "../../src/serializer";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
   const deadline = Date.now() + ms;

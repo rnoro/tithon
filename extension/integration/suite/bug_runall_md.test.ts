@@ -6,7 +6,7 @@
  * (its display text "# A Heading / some prose here" would raise SyntaxError if
  * submitted as code), and the two code cells run.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

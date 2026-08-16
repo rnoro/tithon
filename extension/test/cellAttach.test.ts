@@ -1,5 +1,4 @@
-import { describe, it, expect } from "vitest";
-import { parse, cellSource } from "../src/serializer";
+import { describe, expect, it } from "vitest";
 import {
   attachOutputs,
   computeCellHash,
@@ -8,6 +7,7 @@ import {
   type JournalExecution,
   type SnapshotExecution,
 } from "../src/cellAttach";
+import { cellSource, parse } from "../src/serializer";
 
 const SRC = ["# %% a", "x = 1", "# %% b", "y = 2", "# %% c", "z = 3", ""].join("\n");
 

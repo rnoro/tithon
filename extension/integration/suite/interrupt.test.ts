@@ -9,7 +9,7 @@
  * the loop stops; re-run prints "RUN 2", proving the kernel stayed alive and
  * re-execution works.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 from test_clear import make_session
+
 from tithon.folding import ExecutionFold
 
 

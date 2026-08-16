@@ -24,7 +24,7 @@
  * Runs with Pylance ENABLED (the runner uses TITHON_LSP_EXT_DIR); v32 covers the
  * ruff/ty CROSS-file case (Pylance absent there).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 function ext(): vscode.Extension<unknown> {

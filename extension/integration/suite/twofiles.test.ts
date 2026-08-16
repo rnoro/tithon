@@ -5,7 +5,7 @@
  * its own kernel + journal. We run A, then B, then A again, and assert each
  * file shows ONLY its own output and B cannot see A's variable.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

@@ -14,11 +14,11 @@
  * the shared ~/.tithon socket (see test/liveDaemon.ts); v27.sh fails if this
  * suite reports itself skipped, so the gate cannot hide a regression.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { SessionClient } from "../src/sessionClient";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { computeCellHash } from "../src/cellAttach";
-import { imageOf, widgetModelIdOf, widgetFallbackText } from "../src/richOutput";
 import type { OutputItem } from "../src/outputFold";
+import { imageOf, widgetFallbackText, widgetModelIdOf } from "../src/richOutput";
+import { SessionClient } from "../src/sessionClient";
 import { requireLiveDaemon } from "./liveDaemon";
 
 const { sock: SOCK, live } = requireLiveDaemon("v27 rich outputs");

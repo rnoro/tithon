@@ -89,7 +89,7 @@ def comm_state(evs: list[dict], comm_id: str | None = None) -> dict:
         p = e["payload"]
         cid, data = p.get("comm_id"), (p.get("data") or {})
         if p["msg_type"] == "comm_open":
-            models[cid] = dict((data.get("state") or {}))
+            models[cid] = dict(data.get("state") or {})
         elif p["msg_type"] == "comm_msg" and data.get("method") in ("update", "echo_update"):
             models.setdefault(cid, {}).update(data.get("state") or {})
         elif p["msg_type"] == "comm_close":
@@ -184,7 +184,7 @@ def main() -> int:
             f"A has {len(wa)} {sa}, B has {len(wb)} {sb}; "
             f"A-only={sorted(set(sa) - set(sb))} B-only={sorted(set(sb) - set(sa))}"
         )
-    for x, y in zip(wa, wb):
+    for x, y in zip(wa, wb, strict=True):
         if x != y:
             die(
                 f"clients disagree on event seq {x.get('seq')}/{y.get('seq')}: "
@@ -277,7 +277,7 @@ def main() -> int:
             f"live {len(rb)} events {[e['seq'] for e in rb]}, "
             f"replay {len(rr)} events {[e['seq'] for e in rr]}"
         )
-    for x, y in zip(rb, rr):
+    for x, y in zip(rb, rr, strict=True):
         if x != y:
             die(
                 f"replay differs from live at seq {x.get('seq')}: "

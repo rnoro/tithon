@@ -4,10 +4,10 @@
  * (tithon.autoStartDaemon) and stream output — "pip install tithon, then just
  * use it". Also asserts the kernel reports its Python version (label plumbing).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 import { SessionClient } from "../../src/sessionClient";
 
 const dec = new TextDecoder();

@@ -5,11 +5,11 @@
  * per-cell text, the hash the execute path computes vs. the hash the live-sync
  * index computes from the file — then asserts each cell shows ITS OWN output.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
-import { parse, cellSource } from "../../src/serializer";
 import { computeCellHash, docCellsFromParsed } from "../../src/cellAttach";
+import { cellSource, parse } from "../../src/serializer";
 
 const dec = new TextDecoder();
 
@@ -23,7 +23,9 @@ function cellText(cell: vscode.NotebookCell): string {
   return s;
 }
 
-async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {
+// `_label` is unused on purpose: this helper reports by returning early rather
+// than throwing, so the string only documents the call site.
+async function waitFor(pred: () => boolean, ms: number, _label: string): Promise<void> {
   const deadline = Date.now() + ms;
   while (!pred()) {
     if (Date.now() > deadline) return; // diagnostic: don't throw, just report

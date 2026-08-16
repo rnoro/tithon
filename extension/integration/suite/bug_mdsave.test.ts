@@ -10,9 +10,9 @@
  * could rewrite bytes. The control case asserts an unedited save is byte-exact;
  * the edit case asserts an edit persists and the file still parses to two cells.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
+import { readFileSync } from "node:fs";
 import * as vscode from "vscode";
-import { readFileSync } from "fs";
 import { parse } from "../../src/serializer";
 
 async function waitFor(pred: () => boolean, ms: number, label: string): Promise<void> {

@@ -5,7 +5,7 @@
  * window open so an external screenshot can capture the RENDERED output — proof
  * that the pixels appear, not just that cell.outputs is populated.
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

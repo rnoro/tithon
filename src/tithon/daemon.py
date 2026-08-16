@@ -32,12 +32,12 @@ from urllib.request import url2pathname
 
 from websockets.asyncio.server import unix_serve
 
+from . import sidecar
 from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
 from .widgets import WidgetMirror, is_comm
-from . import sidecar
 
 log = logging.getLogger("tithon.daemon")
 
@@ -174,7 +174,7 @@ class Subscriber:
 
     __slots__ = ("queue", "dropped")
 
-    def __init__(self, queue: "asyncio.Queue") -> None:
+    def __init__(self, queue: asyncio.Queue) -> None:
         self.queue = queue
         self.dropped = False
 
@@ -824,7 +824,7 @@ class Session:
             msg_id = self.kc.kernel_info()
             try:
                 reply = await asyncio.wait_for(self.kc.shell_channel.get_msg(), 2.0)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 reply = None
             if (
                 reply is not None
@@ -856,7 +856,7 @@ class Session:
             for _ in range(15):
                 try:
                     reply = await asyncio.wait_for(self.kc.shell_channel.get_msg(), 2.0)
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     continue
                 if (
                     reply["header"]["msg_type"] == "kernel_info_reply"
@@ -891,14 +891,14 @@ class Session:
                 reply = await asyncio.wait_for(asyncio.shield(fut), 10.0)
                 try:
                     await asyncio.wait_for(fence["idle"].wait(), 2.0)
-                except (asyncio.TimeoutError, TimeoutError):
+                except TimeoutError:
                     continue
                 if not fence["busy"]:
                     continue
                 li = (reply.get("content") or {}).get("language_info") or {}
                 self.kernel_pyversion = li.get("version")
                 return
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 continue
             except Exception:
                 if not self.kernel.is_alive():
@@ -1054,7 +1054,7 @@ class Session:
         return fut
 
     def _fail_shell_waiters(self, reason: str) -> None:
-        for msg_id, fut in list(self._shell_waiters.items()):
+        for fut in list(self._shell_waiters.values()):
             if not fut.done():
                 fut.set_exception(ConnectionError(reason))
         self._shell_waiters.clear()
@@ -1401,7 +1401,7 @@ class Session:
                 # `shield` so the poll timeout cancels only this wait, never the
                 # future the pump is still going to resolve.
                 reply = await asyncio.wait_for(asyncio.shield(fut), KERNEL_REPLY_POLL)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if not self.kernel.is_alive():
                     self._emit_kernel_dead(exec_id)
                     return "error", None
@@ -1437,7 +1437,7 @@ class Session:
             try:
                 await asyncio.wait_for(idle.wait(), KERNEL_REPLY_POLL)
                 return
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if not self.kernel.is_alive():
                     log.warning(
                         "[%s] exec %s: kernel died before publishing idle", self.session_id, exec_id
@@ -1755,7 +1755,7 @@ class Session:
         while True:
             try:
                 event = await asyncio.wait_for(sub.queue.get(), SUB_POLL)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 if sub.dropped:
                     return await _notify_overflow(ws)
                 continue
@@ -1765,7 +1765,7 @@ class Session:
                 continue  # already covered by snapshot/delta replay
             try:
                 await asyncio.wait_for(ws.send(json.dumps(event)), SEND_TIMEOUT)
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 # Client stalled accepting data: drop it (host stays healthy).
                 sub.dropped = True
                 log.warning(

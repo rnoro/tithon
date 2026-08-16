@@ -6,7 +6,7 @@
  * dead kernel and errors the cell. This drives it in REAL VSCode and asserts the
  * cell ends with a KernelDied error (not a perpetual spinner).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();

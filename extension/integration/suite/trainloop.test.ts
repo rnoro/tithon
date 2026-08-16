@@ -56,7 +56,7 @@ function ext(): vscode.Extension<unknown> {
 describe("baseline.py training loop (tqdm x3 + Output-widget plot + \\r print)", function () {
   this.timeout(1_500_000); // the setup cells load a 9348-image dataset; mocha's 90s default is far too short
 
-  it("runs cells 0..36 and reports what the loop cell actually renders", async function () {
+  it("runs cells 0..36 and reports what the loop cell actually renders", async () => {
     const uri = vscode.Uri.file(process.env.TITHON_FIXTURE!);
     await ext().activate();
     const nb = await vscode.workspace.openNotebookDocument(uri);

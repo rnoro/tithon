@@ -4,8 +4,8 @@
  * cell; invoking it submits the cell's code to the daemon.
  */
 import * as vscode from "vscode";
-import { parse, cellSource } from "./serializer";
 import { computeCellHash } from "./cellAttach";
+import { cellSource, parse } from "./serializer";
 
 export const RUN_CELL_COMMAND = "tithon.runCell";
 

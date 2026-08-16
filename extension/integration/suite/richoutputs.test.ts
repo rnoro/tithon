@@ -9,7 +9,7 @@
  *  - tqdm.notebook: on RESTORE (fresh attach -> snapshot), the §3.3 text fallback
  *    shows the widget's FINAL bar reconstructed from the mirror (100%, 5/5).
  */
-import * as assert from "assert";
+import * as assert from "node:assert";
 import * as vscode from "vscode";
 
 const dec = new TextDecoder();
