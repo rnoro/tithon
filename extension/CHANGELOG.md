@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.3](https://github.com/rnoro/tithon/compare/vscode-v0.2.2...vscode-v0.2.3) (2026-08-16)
+
+
+### Features
+
+* **extension:** confirm destructive kernel actions; notify outcomes ([73c6d13](https://github.com/rnoro/tithon/commit/73c6d13fcece4630b675cb28d0e5d6e34a317527))
+* **extension:** let "open as Notebook" stick, per file ([08ba8c1](https://github.com/rnoro/tithon/commit/08ba8c157988a027edcdd71ee5be831b703ed48b))
+* **extension:** let "open as Notebook" stick, per file ([d921f52](https://github.com/rnoro/tithon/commit/d921f52e6a0a9f7033adea41b110c5ecc8c10c5f))
+* share cell outputs through the project, not the journal ([1ba9d24](https://github.com/rnoro/tithon/commit/1ba9d24a7612bbc530a40da007517d4315be7651))
+
+
+### Bug Fixes
+
+* clear the lint backlog and undo two formatter regressions ([7cd4e10](https://github.com/rnoro/tithon/commit/7cd4e107269ca735d145cb9e2cf8b6b51346ff68))
+* **extension:** serialize durable editor choice ([376ae78](https://github.com/rnoro/tithon/commit/376ae786c296d71b3473dba9efdc04c637bc9854))
+
 ## [0.2.2](https://github.com/rnoro/tithon/compare/vscode-v0.2.1...vscode-v0.2.2) (2026-08-12)
 
 
