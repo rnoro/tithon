@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.3](https://github.com/rnoro/tithon/compare/v0.2.2...v0.2.3) (2026-08-16)
+
+
+### Features
+
+* **extension:** let "open as Notebook" stick, per file ([08ba8c1](https://github.com/rnoro/tithon/commit/08ba8c157988a027edcdd71ee5be831b703ed48b))
+* share cell outputs through the project, not the journal ([1ba9d24](https://github.com/rnoro/tithon/commit/1ba9d24a7612bbc530a40da007517d4315be7651))
+
+
+### Bug Fixes
+
+* clear the lint backlog and undo two formatter regressions ([7cd4e10](https://github.com/rnoro/tithon/commit/7cd4e107269ca735d145cb9e2cf8b6b51346ff68))
+
+
+### Documentation
+
+* fix guide for Windows in readme ([bd77e14](https://github.com/rnoro/tithon/commit/bd77e14dd4a39c871a476d1139fc5191736c475e))
+* state invariants instead of naming the ledger ([35e4913](https://github.com/rnoro/tithon/commit/35e4913e696817d4bddd67ff8c7861bf54401aea))
+
 ## [0.2.2](https://github.com/rnoro/tithon/compare/v0.2.1...v0.2.2) (2026-08-12)
 
 
