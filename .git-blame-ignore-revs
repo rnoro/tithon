@@ -1,0 +1,9 @@
+# Commits that only reformat. `git blame` skips these so it lands on the
+# commit that last changed the code, not the one that moved the whitespace.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub honours this file automatically.)
+
+# style: format the tree with ruff and biome
+f6c1838afe7dc977d6f08e8b65f548db1f1091d3
