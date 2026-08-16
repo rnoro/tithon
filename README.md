@@ -53,7 +53,8 @@ moves it to the host.
   remote, connect over a Tunnel or Remote-SSH — the notebook then works exactly
   as it does locally.
 
-> Windows is not currently supported.
+> On Windows, we recommend running Tithon inside WSL and connecting with VS Code using the WSL extension.  
+> Native Windows is not currently supported.
 
 ## Install
 
@@ -192,7 +193,7 @@ folded snapshots), with rich outputs written as files under
 ### Sharing a notebook's outputs
 
 A percent-format `.py` holds only code, and the journal above is machine-local
-(binary, unbounded, unmergeable). So alongside it the daemon keeps the *folded*
+(binary, unbounded, unmergeable). So alongside it the daemon keeps the _folded_
 output state as text in your project:
 
 ```
