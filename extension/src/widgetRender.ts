@@ -10,8 +10,8 @@
  *
  * html-manager's stock `loadClass` resolves the bundled `@jupyter-widgets/base`
  * and `controls` modules via webpack-style `require(...)` (plus a CSS require).
- * That doesn't work under an ESM runtime (vite/jsdom — and is the same class of
- * "renderer sandbox" constraint flagged in §3.3 / §4). We override `loadClass`
+ * That doesn't work under an ESM runtime (vite/jsdom — the same class of
+ * renderer-sandbox constraint the notebook webview imposes). We override `loadClass`
  * to resolve those bundled modules through ESM imports instead; the rendering
  * logic itself (ProgressView etc.) is untouched.
  */
@@ -86,7 +86,7 @@ export async function renderWidget(
 }
 
 /**
- * Design §3.3 fallback: if the live renderer fails, show the widget's *final
+ * The text fallback: if the live renderer fails, show the widget's *final
  * state* as text so no information is lost. For progress widgets that is the
  * value/max pair the daemon mirror already holds.
  */

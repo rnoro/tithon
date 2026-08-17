@@ -214,7 +214,7 @@ export class SessionClient {
     return this.closedByUser;
   }
 
-  /** The widget state mirror from the snapshot (for the §3.3 text fallback). */
+  /** The widget state mirror from the snapshot (for the text fallback). */
   widgets(): WidgetState | null {
     return this.widgetState;
   }
@@ -532,7 +532,7 @@ export class SessionClient {
 
   /**
    * Maintain the widget mirror live from comm events so a fresh run's widget can
-   * render (and the §3.3 text fallback be reconstructed) without waiting for a
+   * render (and the text fallback be reconstructed) without waiting for a
    * reconnect snapshot — the comm_open precedes the widget's display_data, so the
    * model is present by the time it's shown. Mirrors the daemon's WidgetMirror.
    */

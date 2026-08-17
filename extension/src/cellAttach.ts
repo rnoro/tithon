@@ -116,7 +116,7 @@ function proximity(a: LineRange, b: LineRange): number {
  *      reopen, and every output is off by one" misattribution.
  *   3. STALE — the index'd cell exists but was EDITED since it ran and the old
  *      code is nowhere else. Attach the old output to that same cell flagged
- *      `stale: true`, so it renders with the §3.2 stale badge instead of
+ *      `stale: true`, so it renders with the stale badge instead of
  *      masquerading as a fresh successful run.
  *
  * All three tiers are load-bearing: index alone misattributes on inserts, and

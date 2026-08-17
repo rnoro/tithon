@@ -1,7 +1,7 @@
 /**
  * Tithon VSCode extension activation.
  *
- * Wires the three §3.2/§3.3 pieces:
+ * Wires the three client-side pieces:
  *  - the percent NotebookSerializer for the `tithon-py` Cell View,
  *  - a "Run Cell" CodeLens on the plain-text view that submits to the daemon,
  *  - the widget renderer messaging (push mirror snapshots to the renderer).

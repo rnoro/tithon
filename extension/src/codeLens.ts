@@ -1,7 +1,8 @@
 /**
- * CodeLens "Run Cell" for the plain-text view of a percent `.py` (SPEC.md,
- * Phase 0 item 3 — minimal connection to the daemon). One lens per `# %%`
- * cell; invoking it submits the cell's code to the daemon.
+ * CodeLens "Run Cell" for the plain-text view of a percent `.py`: one lens per
+ * `# %%` cell, submitting that cell's code to the daemon. The text view shares
+ * the journal but cannot render output inline, so the lens is the only
+ * execution affordance it has.
  */
 import * as vscode from "vscode";
 import { computeCellHash } from "./cellAttach";

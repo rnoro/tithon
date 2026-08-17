@@ -142,7 +142,7 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       //    renderer (html-manager) when the mirror state is known, carrying the
       //    state in the output so the renderer needs no round-trip; keep a text
       //    fallback alongside. Unknown model (fresh live run, state only in the
-      //    snapshot) -> §3.3 text fallback, else the display's own text/plain.
+      //    snapshot) -> the text fallback, else the display's own text/plain.
       const modelId = widgetModelIdOf(o);
       if (modelId) {
         // Interactive controls (sliders, buttons, text boxes...) have no
@@ -234,7 +234,7 @@ function toCellOutputs(
     .filter((o) => !isOutputAreaView(o, ctx?.widgets ?? null))
     .map((o) => {
       const out = new vscode.NotebookCellOutput(toOutputItems(o, ctx));
-      // Surface the §3.2 "stale" badge: the cell was edited since this run.
+      // Surface the "stale" badge: the cell was edited since this run.
       if (stale) out.metadata = { tithonStale: true };
       return out;
     });
@@ -600,7 +600,7 @@ class VSCodeCellSink implements CellSink {
           vscode.NotebookCellOutputItem.text(item.text, mime),
         ]);
         // The cell was edited since this output was produced — flag it so the
-        // §3.2 stale badge shows instead of passing old output off as fresh.
+        // the stale badge shows instead of passing old output off as fresh.
         if (stale) out.metadata = { tithonStale: true };
         this.streamOut.set(`${idx}:${item.name}`, out);
         void e.appendOutput(out);

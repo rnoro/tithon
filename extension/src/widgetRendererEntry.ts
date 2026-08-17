@@ -1,10 +1,10 @@
 /**
  * VSCode notebook renderer entrypoint for {@link TITHON_WIDGET_MIME}
- * (`application/vnd.tithon.widget+json`) — the §3.3 ipywidget renderer that runs
+ * (`application/vnd.tithon.widget+json`) — the ipywidget renderer that runs
  * inside the notebook webview. The output item is self-contained: it carries the
  * view's `model_id` AND the daemon mirror's widget state, so html-manager can
  * instantiate the model/view with no extension-host round-trip (avoids the
- * render-before-state race). On any failure it degrades to the §3.3 text fallback.
+ * render-before-state race). On any failure it degrades to the text fallback.
  *
  * Live updates: the extension host pushes `tithon.widget-update` messages (comm
  * state deltas, optionally carrying binary buffers) over the renderer

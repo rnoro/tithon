@@ -159,7 +159,7 @@ export class LiveOutputSync {
    *      another cell now (a cell was inserted/removed above, shifting indices):
    *      follow the content, not the stale index.
    *   3. STALE — the index'd cell was edited and the old code is nowhere else:
-   *      attach to that same cell but flag it stale (the §3.2 stale badge).
+   *      attach to that same cell but flag it stale (the stale badge).
    * Returns undefined when there is no index match and no hash match.
    */
   private resolveCell(
