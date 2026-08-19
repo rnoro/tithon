@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.4](https://github.com/rnoro/tithon/compare/v0.2.3...v0.2.4) (2026-08-19)
+
+
+### Documentation
+
+* add a contributing guide, CI, and issue templates ([5c8300d](https://github.com/rnoro/tithon/commit/5c8300deb3708a0c3c81dfb3b12c75b1d6015b5c))
+* remove unused document ([0e316fd](https://github.com/rnoro/tithon/commit/0e316fd07af46c8ccdfad30f2a0d37d2bb1391c5))
+
 ## [0.2.3](https://github.com/rnoro/tithon/compare/v0.2.2...v0.2.3) (2026-08-16)
 
 
