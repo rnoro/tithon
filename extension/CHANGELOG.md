@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/rnoro/tithon/compare/vscode-v0.2.3...vscode-v0.2.4) (2026-09-29)
+
+
+### Bug Fixes
+
+* **extension:** handshake when probing daemon readiness ([#17](https://github.com/rnoro/tithon/issues/17)) ([bed2d8e](https://github.com/rnoro/tithon/commit/bed2d8ec95836cb836d55659f9a5fd124ed4fd98))
+
 ## [0.2.3](https://github.com/rnoro/tithon/compare/vscode-v0.2.2...vscode-v0.2.3) (2026-08-16)
 
 
