@@ -30,6 +30,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
+import psutil
 from websockets.asyncio.server import unix_serve
 
 from . import sidecar
@@ -1809,10 +1810,10 @@ class Daemon:
         try:
             pid = int(self.pid_file.read_text().strip())
             os.kill(pid, 0)
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode()
+            cmdline = " ".join(psutil.Process(pid).cmdline())
             if "tithon" in cmdline:
                 raise SystemExit(f"tithon daemon already running (pid {pid})")
-        except (OSError, ValueError):
+        except (OSError, ValueError, psutil.Error):
             pass  # stale or absent pid file
         self.sock_path.unlink(missing_ok=True)
 
@@ -1984,7 +1985,7 @@ class Daemon:
     def _liveness_sweep(self) -> None:
         """One watchdog pass over the loaded sessions (factored out for tests).
 
-        Each session is isolated: a ``/proc`` read failing for one file must not
+        Each session is isolated: a process query failing for one file must not
         stop the watchdog from reporting every other file's dead kernel.
         """
         for sid, s in list(self._sessions.items()):

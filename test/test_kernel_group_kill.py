@@ -201,7 +201,7 @@ def test_group_members_ignores_zombies(handle):
     os.kill(leader, signal.SIGKILL)  # leader is our child -> unreaped zombie
     time.sleep(0.2)
 
-    # The leader is still listed by /proc, so a killpg(0) probe would say the
+    # The leader still exists as a zombie, so a killpg(0) probe would say the
     # group is populated; only the state check makes the group read as empty.
     assert leader not in h._group_members(leader)
 

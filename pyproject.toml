@@ -33,6 +33,7 @@ requires-python = ">=3.11"
 dependencies = [
     "jupyter_client>=8",
     "ipykernel>=6",
+    "psutil>=5.9",
     "websockets>=12",
 ]
 

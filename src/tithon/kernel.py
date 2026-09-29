@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
 from jupyter_client.asynchronous import AsyncKernelClient
 from jupyter_client.connect import write_connection_file
 
@@ -61,18 +62,17 @@ class KernelHandle:
         an unattached process group is ours.
         """
         try:
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode().replace("\0", " ")
-        except OSError:
+            cmdline = " ".join(psutil.Process(pid).cmdline())
+        except (OSError, psutil.Error):
             return False
         return "ipykernel_launcher" in cmdline and str(self.conn_file) in cmdline
 
     def is_alive(self) -> bool:
         """True iff our kernel process is still running.
 
-        Uses the same pid-file + ``/proc`` cmdline check as :meth:`_alive_pid`,
-        so a DEAD-but-unreaped kernel (a zombie, whose ``/proc/<pid>/cmdline`` is
-        empty) reads as not-alive — ``os.kill(pid, 0)`` alone would wrongly
-        succeed for a zombie. Used by the exec worker to detect a kernel that
+        Uses the same pid-file + process cmdline check as :meth:`_alive_pid`.
+        A dead-but-unreaped kernel (zombie) reads as not-alive, whereas
+        ``os.kill(pid, 0)`` alone would wrongly succeed. Used to detect a kernel that
         died mid-execution (crash / OOM-kill / ``os._exit``) so the cell errors
         out instead of waiting forever for an ``execute_reply`` that never comes.
         """
@@ -143,7 +143,7 @@ class KernelHandle:
         its own ``setsid`` / ``start_new_session=True`` — is out of reach, by the
         same mechanism that keeps the kernel itself alive across a daemon death.
 
-        Liveness is checked via ``_alive_pid`` (``/proc`` cmdline), not
+        Liveness is checked via ``_alive_pid`` (process cmdline), not
         ``os.kill(pid, 0)``: a dead-but-unreaped child is a ZOMBIE whose pid
         ``os.kill(.., 0)`` still answers, which would spin the full
         TERM→KILL→"did not exit" path on every crash and leave the zombie behind.
@@ -198,7 +198,7 @@ class KernelHandle:
 
     @staticmethod
     def _group_members(pgid: int) -> list[int]:
-        """Live (non-zombie) pids in ``pgid``, read from ``/proc``.
+        """Live (non-zombie) pids in ``pgid``.
 
         ``os.killpg(pgid, 0)`` cannot answer this on its own: it succeeds for a
         ZOMBIE member too, and a killed kernel is a zombie until it is reaped
@@ -206,26 +206,19 @@ class KernelHandle:
         would read as "the workers are still there" and spin the escalation.
         """
         members: list[int] = []
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit():
-                continue
+        for proc in psutil.process_iter():
             try:
-                stat = Path(f"/proc/{entry}/stat").read_text()
-                # comm can contain spaces/parens, so split after the LAST ')':
-                # then fields are state, ppid, pgrp, ...
-                fields = stat.rsplit(") ", 1)[1].split()
-                state, pgrp = fields[0], int(fields[2])
-            except (OSError, IndexError, ValueError):
-                continue  # exited mid-scan, or an unparsable entry
-            if pgrp == pgid and state != "Z":
-                members.append(int(entry))
+                if os.getpgid(proc.pid) == pgid and proc.status() != psutil.STATUS_ZOMBIE:
+                    members.append(proc.pid)
+            except (OSError, psutil.Error):
+                continue  # exited mid-scan or inaccessible
         return members
 
     def _group_alive(self, pgid: int) -> bool:
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
-            return False  # empty group; skip the /proc scan
+            return False  # empty group; skip the process scan
         except OSError:
             pass  # e.g. EPERM: members exist, we merely may not signal them
         return bool(self._group_members(pgid))
@@ -249,7 +242,7 @@ class KernelHandle:
             except OSError:
                 return
             # Coarser than the leader's own poll: each check can cost a full
-            # /proc scan, and nothing is waiting on this latency (callers run
+            # process scan, and nothing is waiting on this latency (callers run
             # `kill` off the event loop).
             for _ in range(10):  # up to ~1s to exit between TERM and KILL
                 if not self._group_alive(pgid):
@@ -304,7 +297,7 @@ class KernelHandle:
         reaped (``waitpid`` raises ``ChildProcessError``).
 
         ``waitpid(WNOHANG)`` can return 0 (not yet waitable) in the brief window
-        between the process emptying its ``/proc`` cmdline — which is what made
+        between the process losing its cmdline — which is what made
         :meth:`kill` consider it gone — and the kernel delivering SIGCHLD, so a
         single non-blocking call could leave a zombie behind. Retry the
         non-blocking reap for a short bounded window; it never blocks (WNOHANG),
