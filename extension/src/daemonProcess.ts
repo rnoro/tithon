@@ -20,20 +20,23 @@
  */
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import WebSocket from "ws";
 
+/** Probe the WebSocket endpoint, not just the socket: a raw connect/close makes
+ * websockets log an InvalidMessage traceback for every readiness check. */
 function canConnect(sockPath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const s = net.connect(sockPath);
-    const done = (ok: boolean) => {
-      s.removeAllListeners();
-      s.destroy();
-      resolve(ok);
-    };
-    s.once("connect", () => done(true));
-    s.once("error", () => done(false));
+    const ws = new WebSocket(`ws+unix://${sockPath}:/`, { handshakeTimeout: 2000 });
+    ws.once("open", () => {
+      ws.close();
+      resolve(true);
+    });
+    ws.once("error", () => {
+      ws.terminate();
+      resolve(false);
+    });
   });
 }
 
