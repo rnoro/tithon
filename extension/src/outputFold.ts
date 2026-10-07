@@ -22,8 +22,9 @@ const CTRL = /[\r\n\x08]/g;
 /** Line buffer with terminal-ish cursor semantics (\r, \n, \b). */
 class StreamBuf {
   private lines: string[] = [];
-  private cur = "";
-  private pos = 0;
+  // Cursor offsets must use Python code points, including astral Unicode characters.
+  private cur: string[] = [];
+  pos = 0;
 
   write(text: string): void {
     let idx = 0;
@@ -35,8 +36,8 @@ class StreamBuf {
       if (seg) this.emit(seg);
       const c = m[0];
       if (c === "\n") {
-        this.lines.push(this.cur);
-        this.cur = "";
+        this.lines.push(this.cur.join(""));
+        this.cur = [];
         this.pos = 0;
       } else if (c === "\r") {
         this.pos = 0;
@@ -51,15 +52,16 @@ class StreamBuf {
   }
 
   private emit(seg: string): void {
-    const end = this.pos + seg.length;
-    this.cur = this.cur.slice(0, this.pos) + seg + this.cur.slice(end);
+    const chars = Array.from(seg);
+    const end = this.pos + chars.length;
+    this.cur = [...this.cur.slice(0, this.pos), ...chars, ...this.cur.slice(end)];
     this.pos = end;
   }
 
   get text(): string {
     let out = this.lines.join("\n");
     if (this.lines.length) out += "\n";
-    return out + this.cur;
+    return out + this.cur.join("");
   }
 }
 
@@ -101,6 +103,7 @@ const COMM = ["comm_open", "comm_msg", "comm_close"];
 export interface FoldState {
   /** Owner per item, index-aligned with `outputs()`; null = the cell itself. */
   owners?: (string | null)[];
+  stream_cursors?: (number | null)[];
   claims?: string[];
   pending_clear?: boolean;
   pending_owner_clear?: string[];
@@ -125,6 +128,8 @@ export class ExecutionFold {
       if (o.output_type === "stream") {
         const buf = new StreamBuf();
         buf.write(o.text);
+        const cursor = state?.stream_cursors?.[i];
+        if (cursor != null) buf.pos = cursor;
         this.items.push({ output_type: "stream", name: o.name, buf, owner });
       } else {
         this.items.push({ ...o, owner });
@@ -280,6 +285,9 @@ export class ExecutionFold {
   state(): FoldState {
     return {
       owners: this.items.map((it) => it.owner ?? null),
+      stream_cursors: this.items.map((it) =>
+        it.output_type === "stream" ? (it as StreamSlot).buf.pos : null,
+      ),
       claims: [...this.claims],
       pending_clear: this.pendingClear,
       pending_owner_clear: [...this.pendingOwnerClear],

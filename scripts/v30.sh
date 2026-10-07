@@ -25,7 +25,7 @@ start_daemon || fail "daemon start failed"
 echo "v30: daemon up (pid $(daemon_pid)); real VSCode will render+animate a live ipywidget (xvfb)"
 export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK" TITHON_SUITE="widgetlive"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -40
 passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"

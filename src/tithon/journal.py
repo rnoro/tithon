@@ -182,7 +182,9 @@ class Journal:
         return cur.lastrowid
 
     def max_seq(self) -> int:
-        return self.db.execute("SELECT COALESCE(MAX(msg_seq),0) FROM messages").fetchone()[0]
+        return self.db.execute(
+            "SELECT MAX(COALESCE((SELECT MAX(msg_seq) FROM messages),0), COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0))"
+        ).fetchone()[0]
 
     def messages_after(self, seq: int) -> list[tuple]:
         """Rows (msg_seq, ROUTED exec_id, msg_type, content_json) with msg_seq > seq.

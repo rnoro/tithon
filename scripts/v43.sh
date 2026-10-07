@@ -20,10 +20,10 @@ trap cleanup_procs EXIT
 EXT="$ROOT/extension"
 ensure_extension_build || fail "extension build failed"
 
-EXTROOT="$HOME/.vscode-server/extensions"
-TY_DIR="$(ls -d "$EXTROOT"/astral-sh.ty-* 2>/dev/null | head -1)"
-PY_DIR="$(ls -d "$EXTROOT"/ms-python.python-* 2>/dev/null | head -1)"
-DBG_DIR="$(ls -d "$EXTROOT"/ms-python.debugpy-* 2>/dev/null | head -1)"
+EXTROOT="host-compatible installed desktop/server extensions"
+TY_DIR="$(installed_extension astral-sh.ty)"
+PY_DIR="$(installed_extension ms-python.python)"
+DBG_DIR="$(installed_extension ms-python.debugpy)"
 [ -n "$TY_DIR" ] || fail "ty extension not found under $EXTROOT"
 [ -n "$PY_DIR" ] || fail "ms-python.python (ty dependency) not found under $EXTROOT"
 
@@ -95,7 +95,7 @@ echo "v43: daemon up (pid $(daemon_pid)); ty=$(basename "$TY_DIR")"
 export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK"
 export TITHON_SUITE="lspinlay" TITHON_LSP_EXT_DIR="$LSP_EXT_DIR"
 OUT="$(mktemp)"
-(cd "$EXT" && env -u ELECTRON_RUN_AS_NODE xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode env -u ELECTRON_RUN_AS_NODE node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -60
 passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"
@@ -104,7 +104,8 @@ rm -f "$OUT"
 # Scan the REAL ty output-channel log (ty ignores `ty.logFile`).
 SIG="document not found|controller not available|isn't open|didn't exist"
 echo "v43: ty server log scan ------------------------------------------------"
-mapfile -t TY_LOGS < <(find "$TITHON_HOME/vscode-user/logs" -name '*ty Language Server*.log' 2>/dev/null)
+TY_LOGS=()
+while IFS= read -r logfile; do TY_LOGS+=("$logfile"); done < <(find "$TITHON_HOME/vscode-user/logs" -name '*ty Language Server*.log' 2>/dev/null)
 [ -f "$TY_LOG" ] && TY_LOGS+=("$TY_LOG")
 if [ "${#TY_LOGS[@]}" -eq 0 ]; then
   echo "  ty: (no ty server log found — cannot verify the desync signature)"

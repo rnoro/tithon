@@ -106,9 +106,20 @@ is in each.
 3. The language gates for the side you touched: `ruff check` / `ruff format
    --check` for Python, `npm run lint` / `npm run build` for the extension.
 
-`make -C scripts vscode` drives a real VSCode instance and needs a display
-(xvfb) plus network, so it is a nice-to-have rather than a requirement — just
-say in the PR whether you could run it.
+`make -C scripts vscode` drives a real VSCode instance. Linux keeps the existing
+Xvfb display and `/proc` checks; macOS uses its native window server and process
+APIs. On macOS install GNU coreutils (`brew install coreutils`) for `timeout`
+and nanosecond `date`. The runner prefers the installed stable macOS VSCode;
+`TITHON_VSCODE_EXECUTABLE` selects a specific executable, while
+`TITHON_VSCODE_VERSION` selects a downloaded release/Insiders build when no
+executable override is set. LSP suites use compatible installed desktop/server
+extensions (`TITHON_LSP_EXT_ROOT` overrides their search root).
+
+Every editor test uses a temporary profile and `VSCODE_CLI_DATA_DIR` under its
+`TITHON_HOME`, separating its Tunnel CLI state from the developer's active
+Tunnel. This is not complete host isolation. Version downloads need network;
+report the tested OS/version and any suites you could not run. Screenshot/demo
+scripts still require X11. The full `vscode` bundle remains a nice-to-have.
 
 New behavior should arrive with a test. If the behavior is cross-process, that
 means a script in `scripts/` and an entry in its bundle; if it is pure logic, a

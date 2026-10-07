@@ -54,7 +54,10 @@ echo "v5: widget comm event dispatch --------------------------------------"
   || fail "(4) widget comm event dispatch failed"
 
 # Document the integration-test environment limitation in the RESULT detail.
-have_display="no-display(xvfb absent)"
-command -v xvfb-run >/dev/null 2>&1 && have_display="xvfb-present"
+have_display="native-macOS"
+if [ "$TITHON_TEST_HOST" = Linux ]; then
+  have_display="no-display(xvfb absent)"
+  command -v xvfb-run >/dev/null 2>&1 && have_display="xvfb-present"
+fi
 
 echo "RESULT v5 PASS mirror 50k FloatProgress value==max==total ($MODELS models) + jsdom html-manager render + mirror unit tests + client comm-event dispatch (exec_id null / wrong replay shape); vscode-electron integration: $have_display -> jsdom alternative (see DECISIONS ADR-012)"

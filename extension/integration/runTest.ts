@@ -13,8 +13,9 @@
  * breaking change is caught before it reaches users on stable.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
-import { runTests } from "@vscode/test-electron";
+import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
 
 async function main(): Promise<void> {
   // When this harness runs inside a VSCode server/tunnel, the inherited env has
@@ -35,7 +36,10 @@ async function main(): Promise<void> {
   // suite's editors (whose fixture files were already deleted), corrupting
   // activeNotebookEditor and making batch runs fail though each passes alone.
   const home = process.env.TITHON_HOME;
-  const userDataDir = home ? path.join(home, "vscode-user") : undefined;
+  if (!home) throw new Error("TITHON_HOME not set");
+  const userDataDir = path.resolve(home, "vscode-user");
+  // The editor profile does not isolate the tunnel singleton used by its CLI.
+  process.env.VSCODE_CLI_DATA_DIR = path.resolve(home, "vscode-cli");
 
   // Most suites run hermetically with --disable-extensions (only our dev
   // extension loads). The LSP suite (v32) instead needs real notebook-aware
@@ -52,8 +56,28 @@ async function main(): Promise<void> {
     console.log(`[tithon] integration host: VSCode ${version}`);
   }
 
+  let vscodeExecutablePath = process.env.TITHON_VSCODE_EXECUTABLE || undefined;
+  if (vscodeExecutablePath && !fs.existsSync(vscodeExecutablePath)) {
+    throw new Error(`VSCode executable not found: ${vscodeExecutablePath}`);
+  }
+  if (!vscodeExecutablePath && process.platform === "darwin" && version === "stable") {
+    const installed = "/Applications/Visual Studio Code.app/Contents/MacOS/Code";
+    if (fs.existsSync(installed)) vscodeExecutablePath = installed;
+  }
+  if (!vscodeExecutablePath && process.platform === "darwin") {
+    const downloaded = await downloadAndUnzipVSCode(version);
+    const nativeCode = path.join(path.dirname(downloaded), "Code");
+    // Recent macOS builds name the native executable Code. Older builds retain Electron.
+    vscodeExecutablePath = fs.existsSync(downloaded)
+      ? downloaded
+      : fs.existsSync(nativeCode)
+        ? nativeCode
+        : downloaded;
+  }
+
   await runTests({
     version,
+    vscodeExecutablePath,
     extensionDevelopmentPath,
     extensionTestsPath,
     launchArgs: [

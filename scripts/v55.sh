@@ -58,8 +58,7 @@ grep -q CELL_B_DONE "$TITHON_HOME/b.out" || fail "cell B did not complete"
 timeout 30 "$TITHON" attach --since "$K" --once >"$TITHON_HOME/delta.ndjson" 2>&1 \
   || fail "attach --since $K failed"
 
-read -r a_exec b_exec a_text b_items row_exec row_target replay_exec ctrl_items ctrl_text \
-  < <("$PY" - "$DB" "$TITHON_HOME/delta.ndjson" <<'PY'
+"$PY" - "$DB" "$TITHON_HOME/delta.ndjson" >"$TITHON_HOME/assertions.txt" <<'PY' || fail "cannot read journal and replay assertions"
 import json, sqlite3, sys
 
 db = sqlite3.connect(sys.argv[1])
@@ -104,7 +103,7 @@ with open(sys.argv[2]) as f:
 print(a_exec, b_exec, plain(a_out, "tid"), len(displays(b_out)), row[0], row[1] or "NULL",
       replay_exec, len(displays(a_out)), plain(a_out, "own"))
 PY
-)
+read -r a_exec b_exec a_text b_items row_exec row_target replay_exec ctrl_items ctrl_text < "$TITHON_HOME/assertions.txt"
 
 echo "v55: A=$a_exec B=$b_exec | A.tid='$a_text' A.displays=$ctrl_items A.own='$ctrl_text' | B.displays=$b_items"
 echo "v55: journal row exec_id=$row_exec target_exec=$row_target | replay exec_id=$replay_exec"
@@ -135,7 +134,7 @@ timeout 30 "$TITHON" status --session default >/dev/null 2>&1 \
 # `_rebuild_folds` produced — not the cached folded_json column.
 timeout 30 "$TITHON" attach --since 0 --once >"$TITHON_HOME/snap.ndjson" 2>&1 \
   || fail "post-restart snapshot attach failed"
-rebuilt="$("$PY" - "$TITHON_HOME/snap.ndjson" "$a_exec" <<'PY'
+"$PY" - "$TITHON_HOME/snap.ndjson" "$a_exec" >"$TITHON_HOME/rebuilt.txt" <<'PY' || fail "cannot read rebuilt snapshot"
 import json, sys
 want = sys.argv[2]
 for line in open(sys.argv[1]):
@@ -153,7 +152,7 @@ for line in open(sys.argv[1]):
                     sys.exit(0)
 print("MISSING")
 PY
-)"
+rebuilt="$(cat "$TITHON_HOME/rebuilt.txt")"
 echo "v55: after daemon restart -> A.tid='$rebuilt'"
 [ "$rebuilt" = "v1" ] || fail "the rebuilt fold lost the cross-cell update (got '$rebuilt')"
 

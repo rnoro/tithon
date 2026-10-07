@@ -302,10 +302,10 @@ export function resolveCell(
 function baseCell(value: string, isMarkup: boolean, stored: Cell | undefined): Cell {
   if (!stored) return synthesizeCell(value, isMarkup);
   const raw = cellSource(stored);
-  const display = stored.kind === "markdown" ? uncommentMarkdown(raw) : raw;
+  const display = stored.kind !== "code" ? uncommentMarkdown(raw) : raw;
   if (value === display) return stored; // unedited -> byte-exact
   // Edited: keep the marker line + kind, rebuild the body from the new text.
-  const bodyText = stored.kind === "markdown" ? commentMarkdown(value) : value;
+  const bodyText = stored.kind !== "code" ? commentMarkdown(value) : value;
   return {
     kind: stored.kind,
     hasMarker: stored.hasMarker,

@@ -33,7 +33,7 @@ from urllib.request import url2pathname
 import psutil
 from websockets.asyncio.server import unix_serve
 
-from . import sidecar
+from . import notebook, retention, sidecar
 from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
@@ -187,8 +187,17 @@ class Session:
     a dict of these, keyed by session id (the file uri).
     """
 
-    def __init__(self, session_id: str, session_dir: Path, workdir: Path):
+    def __init__(
+        self,
+        session_id: str,
+        session_dir: Path,
+        workdir: Path,
+        history_retention_days: float = 0,
+        history_target_mib: float = 0,
+    ):
         self.session_id = session_id
+        self.history_retention_days = retention.nonnegative(history_retention_days)
+        self.history_target_mib = retention.nonnegative(history_target_mib)
         self.session_dir = session_dir
         session_dir.mkdir(parents=True, exist_ok=True)
         # Persist the human-readable session id (file uri) + project workdir next
@@ -318,6 +327,7 @@ class Session:
         self._rebuild_mirror()
         self._exec_counter = self.journal.max_exec_seq()
         self._classify_kernel_generation()
+        retention.compact(self)
         self._recovery_gate = asyncio.Event()
         if not recovery:
             self._recovery_gate.set()
@@ -697,6 +707,7 @@ class Session:
         dropped = self.journal.drop_imported()
         imported = sidecar.import_into(self.journal, self.artifacts.workdir, doc)
         self.journal.set_meta("sidecar_sha", sha)
+        self.journal.set_meta("imported_widgets", json.dumps(doc.get("widgets") or {}))
         log.info(
             "[%s] imported %d shared execution(s), replacing %d", self.session_id, imported, dropped
         )
@@ -720,6 +731,7 @@ class Session:
         if self.sidecar_path is None:
             return True  # nothing shared, so nothing can be left inconsistent
         doc = sidecar.build(self._execution_snapshots())
+        doc["widgets"] = self._mirror.snapshot()
         try:
             sidecar.write(self.sidecar_path, doc)
         except OSError as e:
@@ -752,7 +764,8 @@ class Session:
         # render the shared cell blank and make the sweep at the end of this
         # function delete the image files the import just brought in.
         self._imported = self.journal.imported_exec_ids()
-        for exec_id, _seq, _code, _status, _count, folded_json, *_ in self.journal.executions():
+        execution_rows = self.journal.executions()
+        for exec_id, _seq, _code, _status, _count, folded_json, *_ in execution_rows:
             if exec_id in self._imported:
                 self._folds[exec_id] = ExecutionFold.hydrate(
                     json.loads(folded_json) if folded_json else []
@@ -760,7 +773,16 @@ class Session:
             else:
                 self._folds[exec_id] = ExecutionFold()
         self._display_registry.clear()
+        seed = json.loads(self.journal.get_meta("output_seed") or "null")
+        boundary = seed["seq"] if seed else 0
+        if seed:
+            for exec_id, saved in seed["folds"].items():
+                if exec_id in self._folds:
+                    self._folds[exec_id] = ExecutionFold.hydrate(saved["outputs"], saved["state"])
+            self._display_registry.update(seed["display_registry"])
         for _seq, exec_id, msg_type, content_json in self.journal.all_messages():
+            if _seq <= boundary:
+                continue
             if msg_type.startswith("tithon."):
                 continue
             # A row with no execution (a comm from a background thread after the
@@ -793,6 +815,10 @@ class Session:
         code, not the mirror's — one bad row here must skip and continue, not
         abort every OTHER widget's rebuild.
         """
+        try:
+            self._mirror.hydrate(json.loads(self.journal.get_meta("imported_widgets") or "{}"))
+        except ValueError:
+            log.exception("[%s] skipping malformed imported widget state", self.session_id)
         for seq, _exec_id, msg_type, content_json in self.journal.comm_messages_after(0):
             try:
                 content = json.loads(content_json)
@@ -1707,6 +1733,7 @@ class Session:
             # A cell blocked on input()/getpass() at attach time, so a reconnecting
             # client re-presents the prompt (None when nothing is waiting).
             "pending_input": self._pending_input,
+            "history_floor": int(self.journal.get_meta("history_floor") or 0),
         }
 
     def status(self) -> dict:
@@ -1722,6 +1749,7 @@ class Session:
             "max_seq": self.journal.max_seq(),
             "executions": len(self.journal.executions()),
             "widget_models": len(self._mirror),
+            "storage": retention.storage(self),
             # Lifetime info for `tithon status` and the extension's kernel picker:
             # who is watching, and how long since this kernel last did anything.
             "clients": len(self._subs),
@@ -1792,7 +1820,14 @@ async def _notify_overflow(ws) -> None:
 class Daemon:
     """Owns the unix socket server and a lazily-populated dict of sessions."""
 
-    def __init__(self, home: Path, workdir: Path, idle_timeout: float | None = None):
+    def __init__(
+        self,
+        home: Path,
+        workdir: Path,
+        idle_timeout: float | None = None,
+        history_retention_days: float = 0,
+        history_target_mib: float = 0,
+    ):
         self.home = home
         self.workdir = workdir
         self.sock_path = home / "daemon.sock"
@@ -1800,6 +1835,8 @@ class Daemon:
         # Kernel lifetime policy: reap a session idle longer than this (seconds);
         # <=0 disables. Constructor arg (CLI --idle-timeout) wins over the env.
         self.idle_timeout = KERNEL_IDLE_TIMEOUT if idle_timeout is None else idle_timeout
+        self.history_retention_days = retention.nonnegative(history_retention_days)
+        self.history_target_mib = retention.nonnegative(history_target_mib)
         self._sessions: dict[str, Session] = {}
         self._sessions_lock = asyncio.Lock()
         self._stop = asyncio.Event()
@@ -1831,7 +1868,13 @@ class Daemon:
                 session_dir, workdir = _session_layout(
                     self.home, session_id, workdir_hint, self.workdir
                 )
-                s = Session(session_id, session_dir, workdir)
+                s = Session(
+                    session_id,
+                    session_dir,
+                    workdir,
+                    self.history_retention_days,
+                    self.history_target_mib,
+                )
                 await s.start()
                 self._sessions[session_id] = s
             return s
@@ -1854,6 +1897,8 @@ class Daemon:
                 self.sock_path,
             )
             bg: list[asyncio.Task] = []
+            if self.history_retention_days or self.history_target_mib:
+                bg.append(asyncio.create_task(self._history_loop(), name="output-retention"))
             if self.idle_timeout > 0:
                 bg.append(asyncio.create_task(self._gc_loop(), name="idle-gc"))
                 log.info("idle-GC on: timeout=%.0fs poll=%.0fs", self.idle_timeout, GC_POLL)
@@ -1889,6 +1934,15 @@ class Daemon:
         self.pid_file.unlink(missing_ok=True)
         self.sock_path.unlink(missing_ok=True)
         log.info("daemon stopped")
+
+    async def _history_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            for session in list(self._sessions.values()):
+                try:
+                    retention.compact(session)
+                except Exception:
+                    log.exception("[%s] output retention failed", session.session_id)
 
     def _global_status(self) -> dict:
         return {
@@ -2044,6 +2098,34 @@ class Daemon:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 op = msg.get("op")
+                if op in ("import_notebook", "export_notebook"):
+                    try:
+                        source = Path(msg["source"])
+                        destination = Path(msg["destination"])
+                        root = Path(msg["workdir"])
+                        if op == "import_notebook":
+                            result = notebook.import_notebook(source, destination, root)
+                        else:
+                            live_session = self._sessions.get(source.absolute().as_uri())
+                            if live_session is None:
+                                canonical = source.resolve()
+                                matches = [
+                                    s
+                                    for sid, s in self._sessions.items()
+                                    if (path := _uri_to_path(sid)) is not None
+                                    and path.resolve() == canonical
+                                ]
+                                if len(matches) > 1:
+                                    raise ValueError(
+                                        "Multiple live sessions refer to this file; export using its original path"
+                                    )
+                                live_session = matches[0] if matches else None
+                            snapshot = live_session.snapshot() if live_session else None
+                            result = notebook.export_notebook(source, destination, root, snapshot)
+                        await ws.send(json.dumps({"op": "notebook_converted", **result}))
+                    except Exception as error:
+                        await ws.send(json.dumps({"op": "error", "message": str(error)}))
+                    continue
                 # Global status (no session): list every live session.
                 if op == "status" and "session" not in msg:
                     await ws.send(json.dumps(self._global_status()))
@@ -2121,7 +2203,9 @@ class Daemon:
                     # NOTE: no await between subscribing and computing the
                     # backlog/cutoff — atomicity within the event loop is what
                     # makes snapshot+delta gapless.
-                    if last == 0:
+                    if last == 0 or (
+                        last > 0 and last < int(session.journal.get_meta("history_floor") or 0)
+                    ):
                         backlog = [{"op": "snapshot", **session.snapshot()}]
                         cutoff = backlog[0]["max_seq"]
                     elif last < 0:  # live-only attach

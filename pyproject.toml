@@ -35,6 +35,7 @@ dependencies = [
     "ipykernel>=6",
     "psutil>=5.9",
     "websockets>=12",
+    "nbformat>=5.10,<6",
 ]
 
 [project.urls]

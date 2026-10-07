@@ -36,11 +36,24 @@ def _work():
 p = mp.Process(target=_work)
 p.start()
 print("PIDS", os.getpid(), p.pid, flush=True)'
+# This test intentionally exercises inherited workers. macOS defaults to spawn,
+# so select fork there to test the same process-group contract as Linux.
+if [ "$TITHON_TEST_HOST" = Darwin ]; then
+  WORKER_CELL="${WORKER_CELL/mp.Process/mp.get_context(\"fork\").Process}"
+fi
 
 pgid_of() { # $1 = pid -> its process group id ('' if the pid is gone)
-  # /proc/<pid>/stat: comm can contain spaces and parens, so read the fields
-  # AFTER the last ')': state, ppid, pgrp.
-  sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $3}'
+  if [ "$TITHON_TEST_HOST" = Linux ]; then
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $3}'
+    return
+  fi
+  "$PY" - "$1" <<'PY_PGID'
+import os, sys
+try:
+    print(os.getpgid(int(sys.argv[1])))
+except ProcessLookupError:
+    pass
+PY_PGID
 }
 
 run_worker_cell() { # $1 = session -> "<kernel pid> <worker pid>"

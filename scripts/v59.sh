@@ -90,7 +90,7 @@ export TITHON_FIXTURE="$FIX"
 export TITHON_WORKSPACE="$WORK"
 export TITHON_SUITE="trainsync"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -60
 summary="$(grep -E '\[trainsync\] SUMMARY' "$OUT" | tail -1 | sed 's/^.*SUMMARY //')"

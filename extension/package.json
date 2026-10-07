@@ -27,7 +27,7 @@
     "url": "https://github.com/rnoro/tithon/issues"
   },
   "homepage": "https://github.com/rnoro/tithon#readme",
-  "description": "Tithon VSCode extension — percent-format notebook + matplotlib/tqdm output + output restore",
+  "description": "Tithon VSCode extension \u2014 percent-format notebook + matplotlib/tqdm output + output restore",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -102,7 +102,7 @@
       },
       {
         "command": "tithon.alwaysOpenWith",
-        "title": "Always Open With…",
+        "title": "Always Open With\u2026",
         "category": "Tithon",
         "icon": "$(settings-gear)"
       },
@@ -119,7 +119,7 @@
       },
       {
         "command": "tithon.killKernel",
-        "title": "Terminate Kernel…",
+        "title": "Terminate Kernel\u2026",
         "category": "Tithon",
         "icon": "$(trash)"
       },
@@ -128,6 +128,26 @@
         "title": "Restore Previous Outputs",
         "category": "Tithon",
         "icon": "$(history)"
+      },
+      {
+        "command": "tithon.importNotebook",
+        "title": "Import Jupyter Notebook\u2026",
+        "category": "Tithon"
+      },
+      {
+        "command": "tithon.exportNotebook",
+        "title": "Export to Jupyter Notebook\u2026",
+        "category": "Tithon"
+      },
+      {
+        "command": "tithon.showStorage",
+        "title": "Show Session Storage",
+        "category": "Tithon"
+      },
+      {
+        "command": "tithon.retryRestore",
+        "title": "Retry Output Restore",
+        "category": "Tithon"
       }
     ],
     "configuration": {
@@ -158,6 +178,18 @@
           "default": 0,
           "minimum": 0,
           "description": "Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. 0 = never (default). Applied when the extension (re)starts the daemon."
+        },
+        "tithon.historyRetentionDays": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Remove output events older than this many days after safely saving current outputs. 0 disables age retention. Applied when the daemon is started; restart required for changes."
+        },
+        "tithon.historyTargetMiB": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Logical storage target in MiB. Current outputs and widget/kernel records are preserved, so this is not a hard limit. 0 disables size retention. Applied when the daemon is started; restart required for changes."
         }
       }
     },

@@ -144,6 +144,36 @@ class WidgetMirror:
             }
         return {"version_major": 2, "version_minor": 0, "state": state}
 
+    def hydrate(self, snapshot: dict) -> None:
+        """Seed display-only models imported with a notebook's saved outputs."""
+        staged = WidgetMirror()
+        try:
+            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("state", {}), dict):
+                raise ValueError("Widget state must be an object")
+            for comm_id, model in snapshot.get("state", {}).items():
+                if not isinstance(comm_id, str) or not isinstance(model, dict):
+                    raise ValueError("Invalid widget model")
+                state = model["state"]
+                if not isinstance(state, dict):
+                    raise ValueError("Widget model state must be an object")
+                saved_buffers = model.get("buffers", [])
+                if any(b.get("encoding") != "base64" for b in saved_buffers):
+                    raise ValueError("Unsupported widget buffer encoding")
+                data = {
+                    "state": state,
+                    "buffer_paths": [b["path"] for b in saved_buffers],
+                }
+                buffers = [base64.b64decode(b["data"], validate=True) for b in saved_buffers]
+                if not staged.apply(
+                    "comm_open",
+                    {"comm_id": comm_id, "target_name": WIDGET_TARGET, "data": data},
+                    buffers,
+                ):
+                    raise ValueError("Invalid widget state or buffer paths")
+        except (KeyError, TypeError, AttributeError, ValueError) as error:
+            raise ValueError(f"Invalid saved widget state: {error}") from error
+        self._models.update(staged._models)
+
     def __len__(self) -> int:
         return len(self._models)
 

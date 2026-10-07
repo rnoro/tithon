@@ -266,6 +266,9 @@ class ExecutionFold:
             if item.get("output_type") == "stream":
                 buf = StreamBuf()
                 buf.write(item.get("text", ""))
+                cursors = (state or {}).get("stream_cursors") or []
+                if len(cursors) > i and cursors[i] is not None:
+                    buf.pos = cursors[i]
                 it = {"output_type": "stream", "name": item.get("name", "stdout"), "_buf": buf}
             else:
                 it = dict(item)
@@ -285,6 +288,9 @@ class ExecutionFold:
         `outputs()`: both walk `_items` in order."""
         return {
             "owners": [it.get("_owner") for it in self._items],
+            "stream_cursors": [
+                it["_buf"].pos if it["output_type"] == "stream" else None for it in self._items
+            ],
             "claims": list(self._claims),
             "pending_clear": self._pending_clear,
             "pending_owner_clear": sorted(self._pending_owner_clear),

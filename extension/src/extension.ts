@@ -377,6 +377,110 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Also owns the executeHandler so the native cell play button works.
   const notebookCtrl = registerRestore(context);
 
+  const storageView = vscode.window.createOutputChannel("Tithon Storage");
+  context.subscriptions.push(
+    storageView,
+    vscode.commands.registerCommand("tithon.showStorage", async () => {
+      try {
+        await ensureDaemon(defaultSocketPath());
+        const status = await client.status();
+        const cfg = vscode.workspace.getConfiguration("tithon");
+        storageView.clear();
+        for (const session of status.sessions ?? []) {
+          const storage = session.storage;
+          storageView.appendLine(session.session);
+          if (!storage) {
+            storageView.appendLine("Storage information unavailable: update the daemon.");
+            continue;
+          }
+          const size = (n: number | null) =>
+            n == null ? "unavailable" : `${(n / 1048576).toFixed(3)} MiB`;
+          storageView.appendLine(
+            `Database: ${size(storage.physical_bytes.db)}, WAL: ${size(storage.physical_bytes.wal)}, SHM: ${size(storage.physical_bytes.shm)}`,
+          );
+          storageView.appendLine(
+            `Logical data: ${size(storage.logical_bytes)}; referenced images: ${size(storage.referenced_image_bytes)} (shared images may be counted in multiple sessions)`,
+          );
+          storageView.appendLine(
+            `Effective retention: ${storage.policy.retention_days} days; target: ${storage.policy.target_mib} MiB (0 = disabled)`,
+          );
+          const needsRestart =
+            storage.policy.retention_days !== cfg.get("historyRetentionDays", 0) ||
+            storage.policy.target_mib !== cfg.get("historyTargetMiB", 0);
+          if (needsRestart)
+            storageView.appendLine(
+              "Settings differ from the running daemon. Restart the daemon to apply them.",
+            );
+          if (storage.target_exceeded)
+            storageView.appendLine(`Storage target exceeded. ${storage.limit_kind}`);
+          if (storage.last_cleanup)
+            storageView.appendLine(
+              `Last cleanup: ${new Date(storage.last_cleanup.at * 1000).toISOString()}, removed ${storage.last_cleanup.deleted_messages} messages`,
+            );
+          storageView.appendLine("");
+        }
+        if (!status.sessions?.length)
+          storageView.appendLine("No loaded sessions. Open a Tithon notebook to see its storage.");
+        storageView.show(true);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Tithon storage: ${String(error)}`);
+      }
+    }),
+    ...(["import", "export"] as const).map((direction) =>
+      vscode.commands.registerCommand(
+        `tithon.${direction}Notebook`,
+        async (sourceArg?: vscode.Uri, destinationArg?: vscode.Uri) => {
+          try {
+            let source = sourceArg;
+            if (!source && direction === "export") source = resolveTargetUri(undefined);
+            if (!source)
+              source = (
+                await vscode.window.showOpenDialog({
+                  canSelectMany: false,
+                  filters:
+                    direction === "import" ? { "Jupyter Notebook": ["ipynb"] } : { Python: ["py"] },
+                })
+              )?.[0];
+            if (!source) return;
+            const expected = direction === "import" ? ".ipynb" : ".py";
+            if (!source.path.toLowerCase().endsWith(expected))
+              throw new Error(`Choose a ${expected} source file.`);
+            if (direction === "export") {
+              const nb = findNotebook(source);
+              if (nb?.isDirty && !(await nb.save())) return;
+              const text = vscode.workspace.textDocuments.find(
+                (d) => d.uri.toString() === source!.toString(),
+              );
+              if (text?.isDirty && !(await text.save())) return;
+            }
+            const extension = direction === "import" ? "py" : "ipynb";
+            const destination =
+              destinationArg ??
+              (await vscode.window.showSaveDialog({
+                defaultUri: source.with({
+                  path: `${source.path.slice(0, -expected.length)}.${extension}`,
+                }),
+                filters: { [extension]: [extension] },
+              }));
+            if (!destination) return;
+            await ensureDaemon(defaultSocketPath());
+            const root =
+              workdirForUri(direction === "import" ? destination : source) ??
+              path.dirname((direction === "import" ? destination : source).fsPath);
+            await client.convertNotebook(direction, source.fsPath, destination.fsPath, root);
+            if (direction === "import")
+              await vscode.commands.executeCommand("tithon.openAsNotebook", destination);
+            notifyInfo(
+              `Tithon: ${direction === "import" ? "imported" : "exported"} ${path.basename(destination.fsPath)}`,
+            );
+          } catch (error) {
+            vscode.window.showErrorMessage(`Tithon notebook conversion: ${String(error)}`);
+          }
+        },
+      ),
+    ),
+  );
+
   // Auto-restore + live sync is driven by the controller's kernel-selection
   // event (see TithonNotebookController): when the Tithon kernel becomes the
   // notebook's selected kernel — which VSCode does automatically on reopen by

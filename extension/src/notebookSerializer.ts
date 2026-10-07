@@ -26,7 +26,7 @@ export class PercentNotebookSerializer implements vscode.NotebookSerializer {
     const text = dec.decode(content);
     const nb = parse(text);
     const cells = nb.cells.map((cell) => {
-      const isMarkup = cell.kind === "markdown";
+      const isMarkup = cell.kind !== "code";
       const kind = isMarkup ? vscode.NotebookCellKind.Markup : vscode.NotebookCellKind.Code;
       const raw = cellSource(cell);
       const value = isMarkup ? uncommentMarkdown(raw) : raw;

@@ -134,7 +134,8 @@ clients a consistent view. It is a single `asyncio` process; source lives in
 
 ### 3.2 Message journal — the source of truth
 
-Each session journals to its own **SQLite database in WAL mode**, append-only.
+Each session journals to its own **SQLite database in WAL mode**. It preserves
+all raw messages by default; opt-in output-history retention below is the exception.
 Schema outline:
 
 ```sql
@@ -165,6 +166,42 @@ artifacts(artifact_id, sha256, mime, rel_path, bytes_len)
   a reference. Files are **deduplicated by sha256**. Benefits: the journal DB
   stays small, output images are real files you can open and reuse, and `.py`
   files stay free of the base64-diff bloat that plagues `.ipynb`.
+
+#### Optional output-history retention and storage reporting
+
+`--history-retention-days` / `TITHON_HISTORY_RETENTION_DAYS` and
+`--history-target-mib` / `TITHON_HISTORY_TARGET_MIB` accept finite nonnegative
+numbers; both default to zero (disabled). The extension exposes
+`tithon.historyRetentionDays` and `tithon.historyTargetMiB` for daemon autostart.
+Changing settings does not reconfigure an already running daemon: Storage Usage
+shows its effective policy and tells the user when a restart is needed.
+
+Compaction runs after session loading and every 60 seconds for loaded sessions.
+It creates no sessions/kernels, and refuses running/queued work, recovery,
+restart, killed sessions, and pending stdin. It removes only `stream`,
+`display_data`, `update_display_data`, `execute_result`, `error`, and
+`clear_output` messages: aged messages first, then the oldest remaining output
+messages when above the soft size target. Executions, current displayed outputs,
+comm/widget messages, status, and daemon lifecycle events are retained.
+
+One SQLite transaction commits an immutable full fold seed (outputs, area/claim/
+pending-clear state, stream cursors and display routing) at boundary B, deletion
+of selected rows through B, and `history_floor`, the maximum sequence actually
+deleted across all cleanups. A failure rolls back all three. Rebuilding folds
+hydrates that seed and applies only rows after B; widgets/lifecycle still replay
+their complete histories. Positive reconnect cursors below `history_floor`
+receive a full snapshot. Allocated message sequences never regress or get reused.
+
+Status reports physical DB/WAL/SHM bytes separately from logical UTF-8 content
+bytes (messages, execution code/folds and metadata), referenced image bytes and
+shared-output sidecar bytes, plus the effective policy and cleanup counts. The
+soft target covers logical data and referenced images, not physical SQLite
+pages. Current outputs and retained control history can exceed it. SQLite reuses
+freed pages without automatic VACUUM; physical files need not shrink. Shared
+images can appear in several sessions' totals; unavailable image sizes are
+reported as unknown. Enabling retention relinquishes the full raw-output audit
+trail. A daemon version lacking seed support cannot safely read a compacted
+journal; keep a backup before downgrading.
 
 ### 3.3 Folding (materialized view)
 
@@ -245,11 +282,11 @@ case.
 
 The daemon binds to a **unix domain socket only** and speaks JSON over
 WebSocket frames (`websockets.asyncio.server.unix_serve`). A connection is bound
-to one session, fixed on its first op. Four ops take no bind at all:
+to one session, fixed on its first op. Six ops take no bind at all:
 
 | Op                        | Payload             | Reply / effect                                                            |
 | ------------------------- | ------------------- | ------------------------------------------------------------------------- |
-| `status` _(no `session`)_ | —                   | Live status of every session                                              |
+| `status` _(no `session`)_ | —                   | Live status and storage of every session                                              |
 | `interrupt`               | `{ session }`       | SIGINT the running cell                                                   |
 | `kill_kernel`             | `{ target }`        | Terminate that session's kernel (process group) and drop it; journal kept |
 | `shutdown`                | `{ kill_kernels? }` | Stop the daemon; kernels stay detached unless `kill_kernels`              |
@@ -267,6 +304,10 @@ The rest bind the connection to a session:
 | `get_artifact`            | `{ session, artifact_id, req_id? }`                  | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
 | `status`                  | `{ session }`                                        | One session's status                                                      |
 
+`import_notebook` and `export_notebook` also bypass session binding. Both take
+`source`, `destination`, and `workdir` paths and return `notebook_converted`
+with cell count/destination, or `error`; neither creates a session/kernel.
+
 The bind-free group is not an optimization but a correctness rule: the
 **stop button** must outrank everything. Binding a session takes a lock held
 across a kernel spawn, so answering `interrupt` after the bind would make a stop
@@ -278,7 +319,8 @@ one long-lived connection instead of a socket per image.
 `attach` semantics by `last_seen_seq`:
 
 - `0` → full **snapshot** of every execution (folded outputs), then live.
-- `> 0` → **delta**: journal messages after that seq, then live.
+- `> 0` → **delta**: journal messages after that seq, then live; below a
+  compacted journal's `history_floor`, send a full snapshot instead.
 - `< 0` → **live-only**: no backlog, just future events.
 
 Server → client events carry a monotonic `seq` and a `kind` derived from the
@@ -477,17 +519,54 @@ drives the same daemon over the socket:
 | ------------------ | ------------------------------------------------------------------------------- |
 | `tithon daemon`    | Run the daemon (foreground); `--log-level`, `--idle-timeout`                    |
 | `tithon run`       | Execute code in a session; `-c`, `--no-wait`, `--timeout`                       |
+| `tithon import`    | Import a Python nbformat 4 notebook as percent source and saved outputs         |
+| `tithon export`    | Export saved source plus current/saved outputs as nbformat 4 without execution  |
 | `tithon attach`    | Attach and stream events as NDJSON; `--since`, `--once`, `--until-done`         |
 | `tithon status`    | Daemon status (all sessions, or one with `--session`)                           |
 | `tithon restart`   | Restart a session's kernel (fresh namespace)                                    |
 | `tithon interrupt` | Interrupt the running cell (SIGINT)                                             |
 | `tithon kill`      | Terminate one session's kernel and drop the session; its journal is kept        |
 | `tithon shutdown`  | Stop the daemon (kernels stay detached unless `--kill-kernels`)                 |
+| `tithon version`   | Print the installed Tithon package version                                     |
 
 Session-scoped commands take `--session` (the file uri), defaulting to
 `default` — the CLI's own session. `tithon kill` is the exception: it requires
 an explicit `--session`, because terminating a kernel by accident is not
 something a default should be able to do.
+
+---
+
+### 5.1 Notebook interchange and restore guidance
+
+`tithon import source.ipynb destination.py [--workdir PROJECT]` and
+`tithon export source.py destination.ipynb [--workdir PROJECT]` convert Python
+nbformat 4 notebooks without executing code or overwriting destination files.
+The VSCode commands are **Tithon: Import Jupyter Notebook…**, **Export to Jupyter Notebook…**, and
+**Show Session Storage**. Export uses a loaded session's current snapshot when available,
+and otherwise the saved shared-output sidecar; it never starts a kernel.
+
+Import writes code, markdown and raw cells as percent `.py`, the existing
+`.tithon/cells/` output sidecar, and `.tithon/notebooks/<relative.py>.json` for
+source fidelity, cell IDs/metadata, attachments and notebook metadata. Images
+are real hashed files under `.tithon/outputs/`; export embeds them only in the
+external `.ipynb`. Unchanged cells preserve their original source (including
+line endings), metadata and attachments. Changed/new cells use their saved
+percent source. Edited cells retain positional metadata/attachments when the
+cell count and type match and that original cell has not moved elsewhere;
+unmatched cell metadata is omitted. Attachment/metadata images use separate
+files from output images so clearing a fold cannot delete an attachment. Stale output matches carry
+`metadata.tithon.stale_outputs=true`. Saved widget state is display-only and
+uses the existing mirror/rendering restrictions; importing does not reconstruct
+kernel objects or interactive callbacks. Non-Python/older formats, ambiguous
+percent boundaries, malformed image/widget data, and missing image files fail
+explicitly. Import validates before publishing the `.py` last.
+
+An active notebook shows connecting, restoring, connected, retrying or failed
+state. Connected means image prefetch and queued Notebook API application have
+completed. Failure reasons are retained in the status tooltip; click it or run
+**Tithon: Retry Output Restore** to retry. Closing/deselecting a notebook cancels its
+pending connection and clears its restore status. No restore-duration metrics
+or success-rate telemetry are collected.
 
 ---
 
@@ -509,7 +588,10 @@ $TITHON_HOME (default ~/.tithon)/          # machine-local; never in a repo
 <workdir>/.tithon/             # the document's output state; shareable
   outputs/                     # rich-output files, sha256-deduplicated
     e{N}_{idx}_{sha8}.png
+    notebook_<sha256>.png       # imported output cache
+    notebook_asset_<sha256>.png # persistent attachment/metadata image
   cells/<relpath>.json         # folded snapshot per source file
+  notebooks/<relpath>.json     # imported notebook source/metadata/attachments
 ```
 
 The session directory is named rather than hashed so a human debugging finds a
@@ -633,6 +715,9 @@ does not have.
 
 **Working today**
 
+- Storage reporting, opt-in output-history retention, per-notebook restore
+  readiness/error/retry state, and Python nbformat 4 import/export through CLI
+  and VSCode commands.
 - Daemon + CLI: kernel persistence (detached spawn + re-attach), WAL journal,
   folding over output areas, snapshot+delta reconnect, rich-output artifacts
   with fold-driven GC, widget mirror (binary buffers included), per-session FIFO
@@ -705,7 +790,7 @@ make vscode      # every real-VSCode test (needs network + xvfb; one shared buil
 make all         # fast + vscode
 
 # topic bundles — run the one covering the area you touched
-make core        # v1–v4 v47 v49 v50 v57  journal / fold / artifacts / daemon-crash survival
+make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
 make widgets     # v5 v29 v30             ipywidget mirror + render + live animation
@@ -713,7 +798,7 @@ make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan,
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65  per-file kernels + lifecycle
 make richoutputs # v27 v28 v31 v34 v35 v54 v55  matplotlib/tqdm images, live-plot GC, clear, storage, display_id
-make notebook    # v32 v39 v41–v44 v64    text <-> Notebook, durable association, ruff/ty/Pylance LSP
+make notebook    # v32 v39 v41–v44 v64 v67    text <-> Notebook, durable association, ruff/ty/Pylance LSP
 make test        # daemon unit tests (pytest)
 
 # advisory, not a gate: the notebook/LSP suites re-run on VSCode Insiders,
@@ -727,7 +812,7 @@ Capability → what it guarantees → how it is verified:
 | ------------------------ | --------------------------------------------------- | -------------------------------------------------- |
 | Kernel persistence       | Kernel survives daemon crash/restart                | `v4` (`kill -9` daemon; PID + variable continuity) |
 | In-flight crash recovery | Accepted cell output resumes after daemon restart   | `v57` (durable busy, delta + snapshot + next cell) |
-| Loss-free journal        | Every iopub message preserved + folded snapshot     | `v1` (seq integrity), `v2` (50k messages)          |
+| Loss-free journal        | Every iopub preserved by default + folded snapshot     | `v1` (seq integrity), `v2` (50k messages)          |
 | Reconnect sync           | Snapshot + monotonic-seq delta                      | `v1`, `v2` (client stream == journal)              |
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
@@ -750,6 +835,10 @@ Capability → what it guarantees → how it is verified:
 | Stop-button priority     | An interrupt is answered during unrelated spawns    | `v60`                                              |
 | Destructive-action gate  | Restart/Terminate touch nothing until confirmed     | `v65` (real VSCode modal)                          |
 | Durable editor choice    | "Always Open With…" survives close/reopen           | `v64` (real VSCode)                                |
+| Output retention         | Atomic seed/deletion/watermark, gap-safe restart    | `v66`, `test_retention.py`                         |
+| Notebook interchange     | No execution/overwrite; rich and moved-cell outputs | `v66`, `v67`, `test_notebook.py`                    |
+| Restore readiness        | Applied outputs/images before connected; retry     | `v67` (missing-image recovery and rerun restore)    |
+| Verification portability | Linux Xvfb and native macOS; separate Tunnel state  | `v68`, real macOS topic bundles                    |
 | LSP coexistence          | Go-to-def + inlay hints survive a text↔cell round trip | `v41`–`v44` (real VSCode + ty/Pylance)          |
 
 `make vscode` downloads VSCode and needs system libraries (Debian/Ubuntu):
@@ -769,9 +858,9 @@ apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \
    so `ipykernel` is reused. The daemon↔kernel interface is fixed to the Jupyter
    wire protocol, leaving room to swap in an `ipykernel` subclass later if
    kernel-side features are ever needed.
-2. **No `.ipynb`; an execution-history model.** Percent `.py` is the only source.
-   This sidesteps stable-cell-ID sync entirely; output is owned by the journal,
-   not the document.
+2. **Percent source and an execution-history model.** Percent `.py` is the
+   working source; `.ipynb` is an import/export format. Output is owned by the
+   journal and shared folded sidecar, not by a live notebook document.
 3. **Event sourcing + materialized view.** Loss-free guarantees and fast
    reconnect at the same time.
 4. **Reuse the VSCode Notebook API.** Don't rebuild rendering — except the widget

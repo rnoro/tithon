@@ -36,7 +36,7 @@ export TITHON_CONFIRM_DESTRUCTIVE=1
 run_host() { # $1 = kernel|daemon -> echoes the "N passing" line, returns rc
   local out rc
   out="$(mktemp)"
-  (cd "$EXT" && TITHON_CONFIRM_TARGET="$1" xvfb-run -a node out-int/integration/runTest.js) >"$out" 2>&1
+  (cd "$EXT" && TITHON_CONFIRM_TARGET="$1" run_vscode node out-int/integration/runTest.js) >"$out" 2>&1
   rc=$?
   grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$out" | tail -25
   passed_line="$(grep -E '[0-9]+ passing' "$out" | tail -1 | sed 's/^[[:space:]]*//')"
