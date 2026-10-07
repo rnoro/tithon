@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 
@@ -337,6 +338,9 @@ def main(argv=None) -> None:
         sp.add_argument("destination")
         sp.add_argument("--workdir", help="project root; defaults to the Python file's directory")
         sp.set_defaults(fn=fn)
+
+    sp = sub.add_parser("version", help="print the Tithon package version")
+    sp.set_defaults(fn=lambda args: print(version("tithon")))
 
     args = p.parse_args(argv)
     try:

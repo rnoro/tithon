@@ -527,6 +527,7 @@ drives the same daemon over the socket:
 | `tithon interrupt` | Interrupt the running cell (SIGINT)                                             |
 | `tithon kill`      | Terminate one session's kernel and drop the session; its journal is kept        |
 | `tithon shutdown`  | Stop the daemon (kernels stay detached unless `--kill-kernels`)                 |
+| `tithon version`   | Print the installed Tithon package version                                     |
 
 Session-scoped commands take `--session` (the file uri), defaulting to
 `default` — the CLI's own session. `tithon kill` is the exception: it requires
