@@ -246,7 +246,7 @@ function toCellOutputs(
  * Stream deltas are appended (not resent) so a long loop stays cheap; `\r`
  * collapsing is left to the stdout renderer.
  */
-class VSCodeCellSink implements CellSink {
+export class VSCodeCellSink implements CellSink {
   // Per cell: the proxy execution and whether we've called start() on it yet.
   // A created-but-not-started execution renders as PENDING (the queued clock);
   // start() switches it to RUNNING (spinner); end() to done (✓) / error (✗).
@@ -310,12 +310,18 @@ class VSCodeCellSink implements CellSink {
     };
   }
 
-  /** Serialize async work per cell so image appends and the final end stay ordered. */
+  private restoreFailure: unknown;
+
+  /** Execution ownership and output writes must share the same cell order. */
   private chain(idx: number, work: () => Promise<void>): void {
     this.queued += 1;
     const next = (this.tail.get(idx) ?? Promise.resolve())
-      .then(work)
-      .catch(() => undefined)
+      .then(() => {
+        if (!this.disposed) return work();
+      })
+      .catch((error) => {
+        this.restoreFailure = error;
+      })
       .then(() => {
         this.queued -= 1;
       });
@@ -323,6 +329,11 @@ class VSCodeCellSink implements CellSink {
   }
 
   /** Ops accepted but not yet applied to the document (see {@link queued}). */
+  async settled(): Promise<void> {
+    await Promise.all([...this.tail.values()]);
+    if (this.restoreFailure) throw this.restoreFailure;
+  }
+
   backlog(): number {
     return this.queued;
   }
@@ -539,8 +550,6 @@ class VSCodeCellSink implements CellSink {
   }
 
   appendStream(idx: number, name: string, text: string): void {
-    const e = this.ensureStarted(idx);
-    if (!e) return;
     const mime = name === "stderr" ? STDERR_MIME : STDOUT_MIME;
     const key = `${idx}:${name}`;
     // Queue on the cell's chain so a stream delta stays ordered relative to an
@@ -549,6 +558,8 @@ class VSCodeCellSink implements CellSink {
     // `display(fig); print("done")` rendered the print ABOVE the figure (a live
     // matplotlib loss-plot + log line — the ADR-038 scenario).
     this.chain(idx, async () => {
+      const e = this.ensureStarted(idx);
+      if (!e) return;
       const item = vscode.NotebookCellOutputItem.text(text, mime);
       const out = this.streamOut.get(key);
       if (!out) {
@@ -579,10 +590,6 @@ class VSCodeCellSink implements CellSink {
     endMs?: number,
     stale = false,
   ): void {
-    if (state === "queued") {
-      this.create(idx); // pending clock, no output
-      return;
-    }
     // An "orphaned" execution was in-flight when the daemon/kernel restarted, so
     // it will NEVER receive a `done` event. Render its captured output as a
     // finished, NEUTRAL cell (no ✓/✗) and DO NOT leave a live spinner — but keep
@@ -590,51 +597,55 @@ class VSCodeCellSink implements CellSink {
     // journaled activity, so the cell shows e.g. "12.4s" frozen, not a spinner
     // ticking from the ancient start ("26667s", the bug the user first saw).
     const orphaned = state === "orphaned";
-    const e = this.ensureStarted(idx, startMs);
-    if (!e) return;
-    for (const item of items) {
-      if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) continue;
-      if (item.output_type === "stream") {
-        const mime = item.name === "stderr" ? STDERR_MIME : STDOUT_MIME;
-        const out = new vscode.NotebookCellOutput([
-          vscode.NotebookCellOutputItem.text(item.text, mime),
-        ]);
-        // The cell was edited since this output was produced — flag it so the
-        // the stale badge shows instead of passing old output off as fresh.
-        if (stale) out.metadata = { tithonStale: true };
-        this.streamOut.set(`${idx}:${item.name}`, out);
-        void e.appendOutput(out);
-      } else {
-        // Image bytes were prefetched by startLive before seeding, so ctx() resolves.
-        const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
-        if (stale) out.metadata = { tithonStale: true };
-        this.registerDisplay(idx, item, out); // a live update after reconnect replaces in place
-        void e.appendOutput(out);
+    this.chain(idx, async () => {
+      if (state === "queued") {
+        this.create(idx);
+        return;
       }
-    }
-    if (state === "done" || state === "error" || orphaned) {
-      // orphaned -> NEUTRAL success (it never formally completed); done/error ->
-      // the real success flag. A STALE restore (the cell was edited since the run)
-      // also ends NEUTRAL so a ✓ never implies the edited code was run. Either way
-      // keep the REAL finish time so the cell shows its actual (frozen) duration.
-      // For an orphan with no recorded finish (an old journal predating the
-      // freeze), end at the start (0s) — never Date.now(), which would re-inflate
-      // to wall-clock-since-then.
-      const success = orphaned || stale ? undefined : state === "done";
-      const fallback = orphaned ? (startMs ?? Date.now()) : Date.now();
-      e.end(success, endMs ?? fallback);
-      this.execs.delete(idx);
-      this.forgetStreams(idx);
-      // The display registrations above deliberately SURVIVE this end: a
-      // reconnect is exactly when another cell's pending update_display_data for
-      // one of them replays (see `updateDisplay`).
-    }
+      const e = this.ensureStarted(idx, startMs);
+      if (!e) return;
+      for (const item of items) {
+        if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) continue;
+        if (item.output_type === "stream") {
+          const mime = item.name === "stderr" ? STDERR_MIME : STDOUT_MIME;
+          const out = new vscode.NotebookCellOutput([
+            vscode.NotebookCellOutputItem.text(item.text, mime),
+          ]);
+          // The cell was edited since this output was produced — flag it so the
+          // the stale badge shows instead of passing old output off as fresh.
+          if (stale) out.metadata = { tithonStale: true };
+          this.streamOut.set(`${idx}:${item.name}`, out);
+          await e.appendOutput(out);
+        } else {
+          // Image bytes were prefetched by startLive before seeding, so ctx() resolves.
+          const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
+          if (stale) out.metadata = { tithonStale: true };
+          this.registerDisplay(idx, item, out); // a live update after reconnect replaces in place
+          await e.appendOutput(out);
+        }
+      }
+      if (state === "done" || state === "error" || orphaned) {
+        // orphaned -> NEUTRAL success (it never formally completed); done/error ->
+        // the real success flag. A STALE restore (the cell was edited since the run)
+        // also ends NEUTRAL so a ✓ never implies the edited code was run. Either way
+        // keep the REAL finish time so the cell shows its actual (frozen) duration.
+        // For an orphan with no recorded finish (an old journal predating the
+        // freeze), end at the start (0s) — never Date.now(), which would re-inflate
+        // to wall-clock-since-then.
+        const success = orphaned || stale ? undefined : state === "done";
+        const fallback = orphaned ? (startMs ?? Date.now()) : Date.now();
+        e.end(success, endMs ?? fallback);
+        this.execs.delete(idx);
+        this.forgetStreams(idx);
+        // The display registrations above deliberately SURVIVE this end: a
+        // reconnect is exactly when another cell's pending update_display_data for
+        // one of them replays (see `updateDisplay`).
+      }
+    });
     // a "running" cell stays started until its live `done` event arrives.
   }
 
   appendOutput(idx: number, item: OutputItem): void {
-    const e = this.ensureStarted(idx);
-    if (!e) return;
     const pending = imageRefsOf(item)
       .map((r) => r.artifact_id)
       .filter((id) => this.client.cachedArtifact(id) === undefined);
@@ -646,6 +657,8 @@ class VSCodeCellSink implements CellSink {
     // renders as three blocks in order, not the two prints merged above the fig).
     if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) return;
     this.chain(idx, async () => {
+      const e = this.ensureStarted(idx);
+      if (!e) return;
       if (pending.length) await this.client.prefetchArtifacts(pending);
       const out = new vscode.NotebookCellOutput(toOutputItems(item, this.ctx()));
       this.registerDisplay(idx, item, out);
@@ -674,7 +687,6 @@ class VSCodeCellSink implements CellSink {
    */
   updateDisplay(idx: number, displayId: string, item: OutputItem): void {
     if (this.disposed) return;
-    const rec = this.execs.get(idx);
     const pending = imageRefsOf(item)
       .map((r) => r.artifact_id)
       .filter((id) => this.client.cachedArtifact(id) === undefined);
@@ -682,16 +694,6 @@ class VSCodeCellSink implements CellSink {
     // (appendOutput) on the same display_id registers from its own chained
     // closure, and a repaint replaces every handle from its own — reading them
     // here would target output that no longer exists by the time we write.
-    if (rec?.started) {
-      const e = this.ensureStarted(idx)!;
-      this.chain(idx, async () => {
-        if (pending.length) await this.client.prefetchArtifacts(pending);
-        for (const out of this.displays.get(displayId)?.outs ?? []) {
-          await e.replaceOutputItems(toOutputItems(item, this.ctx()), out);
-        }
-      });
-      return;
-    }
     this.chain(idx, async () => {
       if (pending.length) await this.client.prefetchArtifacts(pending);
       // Re-checked inside the chain for the same reason as repaint(): `chain`
@@ -700,6 +702,13 @@ class VSCodeCellSink implements CellSink {
       const outs = this.displays.get(displayId)?.outs ?? [];
       const c = outs.length ? this.cell(idx) : undefined;
       if (!c) return; // nothing to edit — and a cell with no execution is never grown
+      const rec = this.execs.get(idx);
+      if (rec?.started) {
+        for (const out of outs)
+          await rec.exec.replaceOutputItems(toOutputItems(item, this.ctx()), out);
+        return;
+      }
+      if (rec) return;
       const exec = this.controller.createNotebookCellExecution(c);
       exec.start(Date.now());
       try {
@@ -732,7 +741,6 @@ class VSCodeCellSink implements CellSink {
    */
   repaint(idx: number, items: OutputItem[]): void {
     if (this.disposed) return;
-    const rec = this.execs.get(idx);
     const paint = async (e: vscode.NotebookCellExecution) => {
       // Popped when the paint STARTS, not when it was queued: a repaint arriving
       // from here on must queue behind this one, not mutate the list being painted.
@@ -755,34 +763,18 @@ class VSCodeCellSink implements CellSink {
         else this.refreshDisplay(idx, item, outs[i]);
       });
     };
-    if (rec?.started) {
-      if (this.supersedeRepaint(idx, items)) return;
-      this.chain(idx, () => paint(rec.exec));
-      return;
-    }
-    const c = this.cell(idx);
-    if (!c) return;
-    // Nothing to show and nothing showing: a momentary execution here would be
-    // pure UI churn on a cell that is already correct (mirrors clear()'s own
-    // outputs.length guard, which stops our own clear echoing back as a flash).
-    // The tracked displays still have to be invalidated — the cell holding no
-    // outputs is exactly what makes their handles dead — on the chain so it
-    // lands after, not before, any op already queued for this cell.
-    if (!items.length && c.outputs.length === 0) {
-      this.chain(idx, async () => this.invalidateDisplays(idx));
-      return;
-    }
     if (this.supersedeRepaint(idx, items)) return;
     this.chain(idx, async () => {
-      // Re-checked INSIDE the chain: `chain` defers, so a flush that passed the
-      // guard above can still land after endAll()/dispose(). Opening a proxy
-      // execution then would leave a spinner teardown can no longer end
-      // at all. `end()` is in a `finally` for the same reason — a throw in
-      // paint() must not strand a started execution the chain then swallows.
-      if (this.disposed) {
-        // Only paint() pops the queued entry, so drop it here or a repaint that
-        // never runs would keep absorbing every later one for this cell.
+      const rec = this.execs.get(idx);
+      if (rec?.started) {
+        await paint(rec.exec);
+        return;
+      }
+      const c = this.cell(idx);
+      const latest = this.pendingRepaint.get(idx)?.items ?? items;
+      if (!c || rec || (!latest.length && c.outputs.length === 0)) {
         this.pendingRepaint.delete(idx);
+        this.invalidateDisplays(idx);
         return;
       }
       const exec = this.controller.createNotebookCellExecution(c);
@@ -796,75 +788,52 @@ class VSCodeCellSink implements CellSink {
   }
 
   clear(idx: number): void {
-    const rec = this.execs.get(idx);
-    if (rec?.started) {
-      // A kernel-driven clear_output WHILE the cell is running: clear via the live
-      // execution, keeping its spinner. Queue on the chain so it lands after any
-      // in-flight append (e.g. a figure still fetching) rather than racing ahead.
-      this.chain(idx, async () => {
+    this.chain(idx, async () => {
+      const rec = this.execs.get(idx);
+      if (rec?.started) {
         await rec.exec.clearOutput();
-      });
-    } else {
-      // No live execution for this cell — e.g. the daemon echoing back a user's
-      // own "Clear Outputs" (a tombstone broadcast), or another window's clear.
-      // Do NOT ensureStarted() here: that leaves a phantom execution whose spinner
-      // never ends (no matching `done` event), the "clearing a cell leaves it
-      // stuck running" bug. Guard on outputs.length so our OWN clear (which already
-      // emptied the cell before the echo round-trips back) does nothing — no flash,
-      // no edit→change feedback loop. Only when output actually survives (another
-      // window cleared it) do we clear, via a momentary execution that ends
-      // IMMEDIATELY (VSCode exposes no output-only edit, so this is the only path).
-      const c = this.cell(idx);
-      if (c && c.outputs.length > 0) {
-        const exec = this.controller.createNotebookCellExecution(c);
-        exec.start(Date.now());
-        void exec.clearOutput();
-        exec.end(undefined, Date.now());
+      } else if (!rec) {
+        const c = this.cell(idx);
+        if (c && c.outputs.length > 0) {
+          const exec = this.controller.createNotebookCellExecution(c);
+          exec.start(Date.now());
+          try {
+            await exec.clearOutput();
+          } finally {
+            exec.end(undefined, Date.now());
+          }
+        }
       }
-    }
-    this.forgetStreams(idx);
-    this.invalidateDisplays(idx);
+      this.forgetStreams(idx);
+      this.invalidateDisplays(idx);
+    });
   }
 
   status(idx: number, status: string, tsMs?: number): void {
-    if (status === "queued") {
-      this.create(idx); // pending clock
-      return;
-    }
-    if (status === "running") {
-      this.ensureStarted(idx, tsMs);
-      return;
-    }
-    // done / error: must be started before it can be ended. Queue the end on the
-    // cell's chain so any in-flight image append (fetched async) lands first.
-    const rec = this.execs.get(idx);
-    if (rec) {
-      this.execs.delete(idx);
+    this.chain(idx, async () => {
+      if (status === "queued") {
+        this.create(idx);
+        return;
+      }
+      if (status === "running") {
+        this.ensureStarted(idx, tsMs);
+        return;
+      }
+      const rec = this.execs.get(idx);
+      if (!rec) return;
       const endMs = tsMs ?? Date.now();
-      this.chain(idx, async () => {
-        try {
-          if (!rec.started) {
-            rec.exec.start(endMs);
-            rec.started = true;
-          }
-          // Before the end, not after: an ended execution can no longer edit
-          // output, and this is the last chance to leave every live widget's
-          // bootstrap snapshot equal to its final state (see refreshWidgetOutputs).
-          await this.refreshWidgetOutputs(idx, rec.exec);
-          rec.exec.end(status === "done", endMs);
-        } finally {
-          // Forget the stream map ON THE CHAIN, not synchronously at the call
-          // site: appendStream resolves it INSIDE its own chained closure, so a
-          // wipe from the call site jumps the queue and the still-pending op no
-          // longer finds its output block. `finally`, because an exec.end() throw
-          // (VSCode rejects a disposed/ended execution) must not leak the map
-          // into the next run, where appendOutputItems would then target a dead
-          // NotebookCellOutput. Displays are NOT forgotten here — see
-          // `displays`; the next run's opening clearOutput invalidates them.
-          this.forgetStreams(idx);
+      try {
+        if (!rec.started) {
+          rec.exec.start(endMs);
+          rec.started = true;
         }
-      });
-    }
+        await this.refreshWidgetOutputs(idx, rec.exec);
+        if (!this.disposed) rec.exec.end(status === "done", endMs);
+      } finally {
+        this.execs.delete(idx);
+        this.forgetStreams(idx);
+      }
+    });
   }
 
   /**
@@ -1000,7 +969,42 @@ export class TithonNotebookController {
     }
   >();
 
+  private readonly restoreStates = new Map<string, { state: string; reason?: string }>();
+  private readonly restoreBar = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    90,
+  );
+  private readonly activeNotebookSub: vscode.Disposable;
+
+  restoreState(uri: vscode.Uri): { state: string; reason?: string } | undefined {
+    return this.restoreStates.get(uri.toString());
+  }
+
+  private showRestoreState(): void {
+    const uri = vscode.window.activeNotebookEditor?.notebook.uri;
+    const current = uri ? this.restoreStates.get(uri.toString()) : undefined;
+    if (!current) {
+      this.restoreBar.hide();
+      return;
+    }
+    this.restoreBar.text = `Tithon: ${current.state}`;
+    this.restoreBar.tooltip = current.reason ?? "Output connection status";
+    this.restoreBar.command =
+      current.state === "failed" || current.state === "retrying"
+        ? "tithon.retryRestore"
+        : undefined;
+    this.restoreBar.show();
+  }
+
+  private setRestoreState(key: string, state: string, reason?: string): void {
+    this.restoreStates.set(key, { state, reason });
+    this.showRestoreState();
+  }
+
   constructor(sockPath?: string) {
+    this.activeNotebookSub = vscode.window.onDidChangeActiveNotebookEditor(() =>
+      this.showRestoreState(),
+    );
     this.sockPath = sockPath ?? defaultSocketPath();
     // Renderer channel: the widget renderer reports whether it painted html vs the
     // text fallback (surfaced for verification), and we push live comm deltas to it.
@@ -1386,11 +1390,15 @@ export class TithonNotebookController {
 
   dispose(): void {
     this.selectionSub.dispose();
+    this.activeNotebookSub.dispose();
+    this.restoreBar.dispose();
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
     for (const t of this.reconnectTimers.values()) clearTimeout(t);
     this.reconnectTimers.clear();
     for (const key of [...this.reconnectProgress.keys()])
       this.finishReconnectProgress(key, "cancelled");
+    for (const pending of this.pendingLive.values()) pending.abort.abort();
+    this.pendingLive.clear();
     this.wantLive.clear();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
@@ -1401,21 +1409,55 @@ export class TithonNotebookController {
    * Ensure live output sync is running for this notebook. Idempotent: if sync
    * is already active for the notebook URI, this is a no-op.
    */
+  private readonly pendingLive = new Map<
+    string,
+    { promise: Promise<void>; abort: AbortController }
+  >();
+
   async ensureLive(notebook: vscode.NotebookDocument): Promise<void> {
+    const key = notebook.uri.toString();
+    this.wantLive.add(key);
+    if (this.liveSessions.has(key)) return;
+    const pending = this.pendingLive.get(key);
+    if (pending) return pending.promise;
+    const abort = new AbortController();
+    const promise = this.connectLive(notebook, abort.signal);
+    this.pendingLive.set(key, { promise, abort });
+    try {
+      await promise;
+    } finally {
+      if (this.pendingLive.get(key)?.promise === promise) this.pendingLive.delete(key);
+    }
+  }
+
+  private async connectLive(notebook: vscode.NotebookDocument, signal: AbortSignal): Promise<void> {
     const key = notebook.uri.toString();
     this.wantLive.add(key); // record intent so an unexpected drop auto-reconnects
     if (this.liveSessions.has(key)) return;
-    const session = await this.startLive(notebook);
+    this.setRestoreState(key, "connecting");
+    let session: Awaited<ReturnType<TithonNotebookController["startLive"]>>;
+    try {
+      session = await this.startLive(notebook, signal);
+    } catch (error) {
+      if (this.wantLive.has(key) && !signal.aborted) {
+        this.setRestoreState(key, "failed", `${String(error)}. Click to retry.`);
+        this.scheduleReconnect(notebook, String(error));
+      }
+      throw error;
+    }
     // A concurrent ensureLive (e.g. auto-open + executeHandler racing) may have
     // populated the map while we awaited startLive — keep the first, drop ours.
     // An explicit disposeLive (close/deselect) during the SAME await clears
     // wantLive — the user already left, so the freshly-started session must
     // be torn down here too, not resurrected.
-    if (this.liveSessions.has(key) || !this.wantLive.has(key)) {
+    if (signal.aborted || this.liveSessions.has(key) || !this.wantLive.has(key)) {
       session.dispose();
       return;
     }
     this.liveSessions.set(key, session);
+    this.setRestoreState(key, "connected");
+    this.reconnectAttempts.delete(key);
+    this.finishReconnectProgress(key, "connected");
   }
 
   /**
@@ -1428,6 +1470,10 @@ export class TithonNotebookController {
     // An explicit dispose (deselect / close / restart) is user intent to stop —
     // cancel any in-flight auto-reconnect so we don't resurrect the session.
     this.wantLive.delete(key);
+    this.pendingLive.get(key)?.abort.abort();
+    this.pendingLive.delete(key);
+    this.restoreStates.delete(key);
+    this.showRestoreState();
     const t = this.reconnectTimers.get(key);
     if (t) {
       clearTimeout(t);
@@ -1496,6 +1542,7 @@ export class TithonNotebookController {
     console.log(
       `[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`,
     );
+    this.setRestoreState(key, "retrying", `${reason}. Click to retry now.`);
     this.reportReconnectProgress(notebook, reason, attempt, delay);
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(key);
@@ -1516,7 +1563,7 @@ export class TithonNotebookController {
           // resolved the progress entry as "cancelled"; reporting "connected"
           // here too would show a stale "reconnected" toast after the user
           // already closed the notebook.
-          if (this.wantLive.has(key)) this.finishReconnectProgress(key, "connected");
+          if (this.liveSessions.has(key)) this.finishReconnectProgress(key, "connected");
         },
         () => this.scheduleReconnect(nb, "retry"), // daemon still down: back off
       );
@@ -1734,7 +1781,10 @@ export class TithonNotebookController {
    * by {@link LiveOutputSync}). Returns a handle with `dispose` (stops the
    * session) and `refresh` (rebuilds the cell-hash index from current cells).
    */
-  async startLive(notebook: vscode.NotebookDocument): Promise<{
+  async startLive(
+    notebook: vscode.NotebookDocument,
+    signal?: AbortSignal,
+  ): Promise<{
     dispose: () => void;
     refresh: () => void;
     activeCells: () => number[];
@@ -1747,209 +1797,244 @@ export class TithonNotebookController {
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
     );
-    await client.attach(0); // catch up on any prior state, then stream live
-    // Register the reconnect handler with NO await between attach resolving and
-    // here, so a drop during the seed/prefetch below cannot slip past an
-    // unregistered callback. The daemon dropping us (backpressure / restart /
-    // crash, ADR-018) would otherwise freeze the live view forever; reconnect +
-    // resync from a fresh folded snapshot instead. A clean attach resets the
-    // backoff so a later, independent drop reconnects promptly.
-    client.onDisconnect((reason) => this.scheduleReconnect(notebook, reason));
-    this.reconnectAttempts.delete(notebook.uri.toString());
-    this.finishReconnectProgress(notebook.uri.toString(), "connected");
-    // Surface the kernel's Python version on the controller (the picker/indicator
-    // showed only "Tithon"; now "Tithon · Python 3.11.5").
-    this.applyKernelLabel(client.kernelInfo()?.python ?? null);
-    this.warnIfStateLost(notebook.uri, client.kernelInfo());
-    // The kernel may have died out-of-band while nobody was connected: the live
-    // event fired into the void and `onEvent` (wired below, after attach) never
-    // replays the backlog, so the SNAPSHOT is the only thing carrying that death
-    // to a client opening or reconnecting now.
-    this.warnKernelDied(notebook.uri, client);
-    const sink = new VSCodeCellSink(this.controller, notebook, client);
-    const live = new LiveOutputSync(
-      cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
-      sink,
-      new ThrottleScheduler(50),
-      (execId) => client.outputsOf(execId),
-    );
-    const execs = client.executions();
-    live.seed(
-      execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })),
-    );
-    // Prefetch image bytes for the snapshot so seedCell renders matplotlib
-    // figures synchronously below (and not as a "<Figure ...>" placeholder).
-    // Events arriving during this await are captured by outputsOf() at seed time
-    // and live events are wired only afterwards — no gap, no duplication FOR
-    // EXECUTIONS ALREADY IN `execs` (that claim covers output bytes on a
-    // known execution growing mid-prefetch, not a BRAND NEW execution).
-    await sink.prefetch(execs.flatMap((e) => client.outputsOf(e.execId)));
-    // A concurrent client (another window, or the CLI) can submit a NEW
-    // execution on this SHARED session while the prefetch above was
-    // awaiting: client.executions() already reflects it (SessionClient's own
-    // message handling runs independently of whether onEvent is wired below),
-    // but the `execs` snapshot taken before the await, and the seed/prefetch
-    // already done, do not. Without this, that execution's live events would
-    // arrive with nothing seeded to route them to and be silently dropped —
-    // the cell never shows the run at all. One re-check
-    // pass, not a loop-until-stable — narrows the window to "another
-    // execution arrives during THIS second prefetch too", vanishingly
-    // unlikely relative to the window this closes.
-    const seenExecIds = new Set(execs.map((e) => e.execId));
-    const lateExecs = client.executions().filter((e) => !seenExecIds.has(e.execId));
-    if (lateExecs.length) {
-      live.seed(
-        lateExecs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })),
+    let cleanup = () => client.close();
+    const cancel = () => cleanup();
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      if (signal?.aborted) throw new Error("Output restoration cancelled");
+      await client.attach(0); // catch up on any prior state, then stream live
+      // Register the reconnect handler with NO await between attach resolving and
+      // here, so a drop during the seed/prefetch below cannot slip past an
+      // unregistered callback. The daemon dropping us (backpressure / restart /
+      // crash, ADR-018) would otherwise freeze the live view forever; reconnect +
+      // resync from a fresh folded snapshot instead. A clean attach resets the
+      // backoff so a later, independent drop reconnects promptly.
+      client.onDisconnect((reason) => this.scheduleReconnect(notebook, reason));
+      this.setRestoreState(notebook.uri.toString(), "restoring");
+      // Surface the kernel's Python version on the controller (the picker/indicator
+      // showed only "Tithon"; now "Tithon · Python 3.11.5").
+      this.applyKernelLabel(client.kernelInfo()?.python ?? null);
+      this.warnIfStateLost(notebook.uri, client.kernelInfo());
+      // The kernel may have died out-of-band while nobody was connected: the live
+      // event fired into the void and `onEvent` (wired below, after attach) never
+      // replays the backlog, so the SNAPSHOT is the only thing carrying that death
+      // to a client opening or reconnecting now.
+      this.warnKernelDied(notebook.uri, client);
+      const sink = new VSCodeCellSink(this.controller, notebook, client);
+      const live = new LiveOutputSync(
+        cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
+        sink,
+        new ThrottleScheduler(50),
+        (execId) => client.outputsOf(execId),
       );
-      await sink.prefetch(lateExecs.flatMap((e) => client.outputsOf(e.execId)));
-      execs.push(...lateExecs);
-    }
-    // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
-    // STATE+timing into the cell NOW, before wiring live events — a done cell
-    // shows ✓ with its real duration, a running cell shows the spinner started at
-    // the real time (so it keeps counting up) plus its prior output, and a queued
-    // cell shows the pending clock (ADR-023/025). This runs synchronously after
-    // attach() resolved, so no live event can slip in between capturing the
-    // snapshot and wiring onEvent — no gap, no duplication.
-    const toMs = (s: number | null) => (s != null ? s * 1000 : undefined);
-    const trace: Array<{
-      execId: string;
-      originIndex: number | null | undefined;
-      cellHash: string | null;
-      mappedCell: number | undefined;
-      staleMap: boolean;
-      status: string;
-    }> = [];
-    for (const ex of execs)
-      trace.push({
-        execId: ex.execId,
-        originIndex: ex.origin?.index,
-        cellHash: ex.cellHash,
-        mappedCell: live.cellOf(ex.execId),
-        staleMap: live.staleOf(ex.execId),
-        status: ex.status,
-      });
-    this.lastSeedTrace.set(notebook.uri.toString(), trace);
-    // ...unless the user ENDED this session rather than losing it. Restoring is
-    // what makes a crash, a reboot or a dropped tunnel invisible; replaying the
-    // same outputs after a deliberate "Kill Kernel" instead contradicts what the
-    // user just did, on this open and every open after it. The history is not
-    // gone: `tithon.restoreOutputs` (and the prompt below) still seed it.
-    // Only the SEED is skipped: live sync below still runs, so the next cell the
-    // user executes streams into the notebook normally.
-    const closed = client.isClosedByUser();
-    if (closed && execs.length) this.offerClosedSessionRestore(notebook, execs.length);
-    for (const ex of closed ? [] : execs) {
-      const idx = live.cellOf(ex.execId);
-      if (idx === undefined) continue;
-      // "skipped": a Run-All cell that never ran (the run stopped on an earlier
-      // error). Leave the cell blank — nothing to restore.
-      if (ex.status === "skipped") continue;
-      const state =
-        ex.status === "done"
-          ? "done"
-          : ex.status === "error"
-            ? "error"
-            : ex.status === "queued"
-              ? "queued"
-              : // "orphaned": in-flight at a daemon/kernel restart, no `done` is coming —
-                // render output without a perpetual spinner (the "26667s running" bug).
-                ex.status === "orphaned"
-                ? "orphaned"
-                : "running";
-      // staleOf: the cell was edited since this run (mapped by index, code gone) —
-      // restore the old output flagged stale, ending neutral (ADR-047).
-      sink.seedCell(
-        idx,
-        client.outputsOf(ex.execId),
-        state,
-        toMs(ex.startedAt),
-        toMs(ex.finishedAt),
-        live.staleOf(ex.execId),
-      );
-    }
-    const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
-    // Keep the index current as cells are added/edited after live started
-    // (ADR-022) — otherwise a new cell's execution maps to nothing.
-    const changeSub = vscode.workspace.onDidChangeNotebookDocument((e) => {
-      if (e.notebook.uri.toString() !== notebook.uri.toString()) return;
-      refresh();
-      this.propagateUserClears(e, sink, live, client);
-    });
-    client.onEvent((ev) => {
-      live.onEvent(ev);
-      // Comm deltas drive live widget animation: forward state patches to the
-      // renderer (the display_data already rendered the widget; this just updates
-      // the model so e.g. a tqdm.notebook bar fills in real time). The daemon can
-      // still deliver a few more events during ws.close()'s handshake window (data
-      // already in flight when disposeLive() ran) — `invalidateWidgetUpdatesFor`
-      // only purges what's ALREADY buffered at that instant, so a late arrival
-      // must be rejected at the SOURCE too, not just cleaned up after queuing.
-      // `disposeLive()` deletes from `liveSessions` synchronously as its last
-      // step, so this reads the CURRENT state, not a snapshot from when onEvent
-      // was registered. Owner-tagging the buffered entries alone is not
-      // enough — that only cleans up what was already queued.
-      if (ev.kind === "widget" && this.liveSessions.has(notebook.uri.toString())) {
-        this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
-      }
-      // The daemon's watchdog observed this kernel die out-of-band (no cell was
-      // running, so nothing else would ever tell the user).
-      if (ev.kind === "kernel" && ev.payload?.status === "dead") {
-        this.warnKernelDied(notebook.uri, client);
-      }
-      // A cell hit input()/getpass(): present an input box and answer the daemon
-      // so the blocked cell continues (the stdin bridge).
-      if (ev.kind === "input_request") {
-        void this.promptForInput(notebook, client, {
-          prompt: ev.payload?.prompt ?? "",
-          password: !!ev.payload?.password,
-        });
-      }
-    });
-    // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
-    // so re-present the prompt from the snapshot (the live event won't replay).
-    const pi = client.pendingInput();
-    if (pi) {
-      void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
-    }
-    return {
-      dispose: () => {
-        changeSub.dispose();
-        // Cancel any in-flight ThrottleScheduler window BEFORE endAll() closes
-        // the sink's open executions — else a pending flush firing after this
-        // point could call sink.status("running") and recreate a proxy
-        // execution with no `done` ever coming.
+      cleanup = () => {
         live.dispose();
         client.close();
-        sink.endAll(); // don't leave cells spinning after we detach
-      },
-      refresh,
-      activeCells: () => sink.activeCells(),
-      hasPendingFlush: () => live.hasPendingFlush(),
-      diag: () => ({
-        syncSeq: client.syncSeq,
-        backlog: sink.backlog(),
-        execs: client.executions().map((e) => {
-          const items = client.outputsOf(e.execId);
-          const widgets = client.widgets();
-          return {
+        sink.endAll();
+      };
+      const execs = client.executions();
+      live.seed(
+        execs.map((e) => ({ execId: e.execId, cellHash: e.cellHash, index: e.origin?.index })),
+      );
+      // Prefetch image bytes for the snapshot so seedCell renders matplotlib
+      // figures synchronously below (and not as a "<Figure ...>" placeholder).
+      // Events arriving during this await are captured by outputsOf() at seed time
+      // and live events are wired only afterwards — no gap, no duplication FOR
+      // EXECUTIONS ALREADY IN `execs` (that claim covers output bytes on a
+      // known execution growing mid-prefetch, not a BRAND NEW execution).
+      await sink.prefetch(execs.flatMap((e) => client.outputsOf(e.execId)));
+      // A concurrent client (another window, or the CLI) can submit a NEW
+      // execution on this SHARED session while the prefetch above was
+      // awaiting: client.executions() already reflects it (SessionClient's own
+      // message handling runs independently of whether onEvent is wired below),
+      // but the `execs` snapshot taken before the await, and the seed/prefetch
+      // already done, do not. Without this, that execution's live events would
+      // arrive with nothing seeded to route them to and be silently dropped —
+      // the cell never shows the run at all. One re-check
+      // pass, not a loop-until-stable — narrows the window to "another
+      // execution arrives during THIS second prefetch too", vanishingly
+      // unlikely relative to the window this closes.
+      const seenExecIds = new Set(execs.map((e) => e.execId));
+      const lateExecs = client.executions().filter((e) => !seenExecIds.has(e.execId));
+      if (lateExecs.length) {
+        live.seed(
+          lateExecs.map((e) => ({
             execId: e.execId,
-            cell: live.cellOf(e.execId),
-            status: e.status,
-            stream: items
-              .filter((o) => o.output_type === "stream")
-              .map((o) => (o as { text: string }).text)
-              .join("")
-              .slice(-200),
-            images: items.filter((o) => imageRefsOf(o).length > 0).length,
-            widgets: items
-              .map((o) => widgetModelIdOf(o))
-              .filter((id): id is string => !!id)
-              .map((id) => widgetFallbackText(id, widgets) ?? `[${id}]`),
-          };
+            cellHash: e.cellHash,
+            index: e.origin?.index,
+          })),
+        );
+        await sink.prefetch(lateExecs.flatMap((e) => client.outputsOf(e.execId)));
+        execs.push(...lateExecs);
+      }
+      // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
+      // STATE+timing into the cell NOW, before wiring live events — a done cell
+      // shows ✓ with its real duration, a running cell shows the spinner started at
+      // the real time (so it keeps counting up) plus its prior output, and a queued
+      // cell shows the pending clock (ADR-023/025). This runs synchronously after
+      // attach() resolved, so no live event can slip in between capturing the
+      // snapshot and wiring onEvent — no gap, no duplication.
+      const toMs = (s: number | null) => (s != null ? s * 1000 : undefined);
+      const trace: Array<{
+        execId: string;
+        originIndex: number | null | undefined;
+        cellHash: string | null;
+        mappedCell: number | undefined;
+        staleMap: boolean;
+        status: string;
+      }> = [];
+      for (const ex of execs)
+        trace.push({
+          execId: ex.execId,
+          originIndex: ex.origin?.index,
+          cellHash: ex.cellHash,
+          mappedCell: live.cellOf(ex.execId),
+          staleMap: live.staleOf(ex.execId),
+          status: ex.status,
+        });
+      this.lastSeedTrace.set(notebook.uri.toString(), trace);
+      // ...unless the user ENDED this session rather than losing it. Restoring is
+      // what makes a crash, a reboot or a dropped tunnel invisible; replaying the
+      // same outputs after a deliberate "Kill Kernel" instead contradicts what the
+      // user just did, on this open and every open after it. The history is not
+      // gone: `tithon.restoreOutputs` (and the prompt below) still seed it.
+      // Only the SEED is skipped: live sync below still runs, so the next cell the
+      // user executes streams into the notebook normally.
+      const closed = client.isClosedByUser();
+      if (closed && execs.length) this.offerClosedSessionRestore(notebook, execs.length);
+      for (const ex of closed ? [] : execs) {
+        const idx = live.cellOf(ex.execId);
+        if (idx === undefined) continue;
+        // "skipped": a Run-All cell that never ran (the run stopped on an earlier
+        // error). Leave the cell blank — nothing to restore.
+        if (ex.status === "skipped") continue;
+        const state =
+          ex.status === "done"
+            ? "done"
+            : ex.status === "error"
+              ? "error"
+              : ex.status === "queued"
+                ? "queued"
+                : // "orphaned": in-flight at a daemon/kernel restart, no `done` is coming —
+                  // render output without a perpetual spinner (the "26667s running" bug).
+                  ex.status === "orphaned"
+                  ? "orphaned"
+                  : "running";
+        // staleOf: the cell was edited since this run (mapped by index, code gone) —
+        // restore the old output flagged stale, ending neutral (ADR-047).
+        sink.seedCell(
+          idx,
+          client.outputsOf(ex.execId),
+          state,
+          toMs(ex.startedAt),
+          toMs(ex.finishedAt),
+          live.staleOf(ex.execId),
+        );
+      }
+      const refresh = () => live.refreshCells(cellsFromNotebook(notebook));
+      // Keep the index current as cells are added/edited after live started
+      // (ADR-022) — otherwise a new cell's execution maps to nothing.
+      const changeSub = vscode.workspace.onDidChangeNotebookDocument((e) => {
+        if (e.notebook.uri.toString() !== notebook.uri.toString()) return;
+        refresh();
+        this.propagateUserClears(e, sink, live, client);
+      });
+      const baseCleanup = cleanup;
+      cleanup = () => {
+        changeSub.dispose();
+        baseCleanup();
+      };
+      client.onEvent((ev) => {
+        live.onEvent(ev);
+        // Comm deltas drive live widget animation: forward state patches to the
+        // renderer (the display_data already rendered the widget; this just updates
+        // the model so e.g. a tqdm.notebook bar fills in real time). The daemon can
+        // still deliver a few more events during ws.close()'s handshake window (data
+        // already in flight when disposeLive() ran) — `invalidateWidgetUpdatesFor`
+        // only purges what's ALREADY buffered at that instant, so a late arrival
+        // must be rejected at the SOURCE too, not just cleaned up after queuing.
+        // `disposeLive()` deletes from `liveSessions` synchronously as its last
+        // step, so this reads the CURRENT state, not a snapshot from when onEvent
+        // was registered. Owner-tagging the buffered entries alone is not
+        // enough — that only cleans up what was already queued.
+        if (ev.kind === "widget" && this.liveSessions.has(notebook.uri.toString())) {
+          this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
+        }
+        // The daemon's watchdog observed this kernel die out-of-band (no cell was
+        // running, so nothing else would ever tell the user).
+        if (ev.kind === "kernel" && ev.payload?.status === "dead") {
+          this.warnKernelDied(notebook.uri, client);
+        }
+        // A cell hit input()/getpass(): present an input box and answer the daemon
+        // so the blocked cell continues (the stdin bridge).
+        if (ev.kind === "input_request") {
+          void this.promptForInput(notebook, client, {
+            prompt: ev.payload?.prompt ?? "",
+            password: !!ev.payload?.password,
+          });
+        }
+      });
+      // Mid-prompt reconnect: a cell was already blocked on input() at attach time,
+      // so re-present the prompt from the snapshot (the live event won't replay).
+      const pi = client.pendingInput();
+      if (pi) {
+        void this.promptForInput(notebook, client, { prompt: pi.prompt, password: pi.password });
+      }
+      await sink.settled();
+      if (signal?.aborted) throw new Error("Output restoration cancelled");
+      if (!client.isConnected()) throw new Error("Connection lost during output restoration");
+      const missingImages = execs
+        .flatMap((e) => client.outputsOf(e.execId))
+        .flatMap((o) => imageRefsOf(o))
+        .filter((ref) => client.cachedArtifact(ref.artifact_id) == null);
+      if (missingImages.length)
+        throw new Error(
+          `${missingImages.length} image(s) could not be restored; retry to fetch them again`,
+        );
+      return {
+        dispose: () => {
+          changeSub.dispose();
+          // Cancel any in-flight ThrottleScheduler window BEFORE endAll() closes
+          // the sink's open executions — else a pending flush firing after this
+          // point could call sink.status("running") and recreate a proxy
+          // execution with no `done` ever coming.
+          live.dispose();
+          client.close();
+          sink.endAll(); // don't leave cells spinning after we detach
+        },
+        refresh,
+        activeCells: () => sink.activeCells(),
+        hasPendingFlush: () => live.hasPendingFlush(),
+        diag: () => ({
+          syncSeq: client.syncSeq,
+          backlog: sink.backlog(),
+          execs: client.executions().map((e) => {
+            const items = client.outputsOf(e.execId);
+            const widgets = client.widgets();
+            return {
+              execId: e.execId,
+              cell: live.cellOf(e.execId),
+              status: e.status,
+              stream: items
+                .filter((o) => o.output_type === "stream")
+                .map((o) => (o as { text: string }).text)
+                .join("")
+                .slice(-200),
+              images: items.filter((o) => imageRefsOf(o).length > 0).length,
+              widgets: items
+                .map((o) => widgetModelIdOf(o))
+                .filter((id): id is string => !!id)
+                .map((id) => widgetFallbackText(id, widgets) ?? `[${id}]`),
+            };
+          }),
         }),
-      }),
-    };
+      };
+    } catch (error) {
+      cleanup();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", cancel);
+    }
   }
 
   /** Cell indices with an open proxy execution for a notebook (regression e2e:
@@ -2026,6 +2111,20 @@ export function registerRestore(context: vscode.ExtensionContext): TithonNoteboo
   const controller = new TithonNotebookController();
   context.subscriptions.push(
     controller,
+    vscode.commands.registerCommand("tithon.retryRestore", async () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      if (nb?.notebookType !== "tithon-py") return;
+      controller.disposeLive(nb.uri);
+      try {
+        await controller.ensureLive(nb);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Tithon restore: ${String(error)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon._restoreState", () => {
+      const nb = vscode.window.activeNotebookEditor?.notebook;
+      return nb ? controller.restoreState(nb.uri) : undefined;
+    }),
     vscode.commands.registerCommand("tithon.selectInterpreter", async () => {
       try {
         await controller.selectInterpreter();

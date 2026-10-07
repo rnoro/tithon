@@ -24,6 +24,31 @@ describe("client output fold (mirrors daemon folding.py)", () => {
     expect(out).toEqual([{ output_type: "stream", name: "stdout", text: "100%" }]);
   });
 
+  it("resumes stream overwrites at the saved cursor", () => {
+    const original = new ExecutionFold();
+    original.apply("stream", { name: "stdout", text: "abcdef\rXY" });
+    const restored = new ExecutionFold();
+    restored.seed(original.outputs(), original.state());
+    original.apply("stream", { name: "stdout", text: "Z\bQ" });
+    restored.apply("stream", { name: "stdout", text: "Z\bQ" });
+    expect(restored.outputs()).toEqual(original.outputs());
+    expect(restored.outputs()[0].text).toBe("XYQdef");
+  });
+
+  it("uses Python code-point cursor units for emoji snapshots and backspace", () => {
+    const fold = new ExecutionFold();
+    fold.seed([{ output_type: "stream", name: "stdout", text: "😀" }], {
+      owners: [null],
+      claims: [],
+      pending_clear: false,
+      pending_owner_clear: [],
+      stream_cursors: [1],
+    });
+    fold.apply("stream", { name: "stdout", text: "X\b😀" });
+    expect(fold.outputs()[0].text).toBe("😀😀");
+    expect(fold.state().stream_cursors).toEqual([2]);
+  });
+
   it("honors \\b backspace within the current line", () => {
     const out = foldMessages([stream("stdout", "abc\b\bX")]);
     expect(out).toEqual([{ output_type: "stream", name: "stdout", text: "aXc" }]);

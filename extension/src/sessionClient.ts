@@ -171,6 +171,10 @@ export class SessionClient {
     private readonly workdir?: string,
   ) {}
 
+  isConnected(): boolean {
+    return !this.disconnected && !this.closing && this.ws?.readyState === WebSocket.OPEN;
+  }
+
   onChange(cb: () => void): void {
     this.onChangeCb = cb;
   }

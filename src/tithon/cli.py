@@ -42,7 +42,15 @@ def cmd_daemon(args) -> int:
     root.addHandler(sh)
     from .daemon import Daemon
 
-    asyncio.run(Daemon(home, Path.cwd(), idle_timeout=args.idle_timeout).run())
+    asyncio.run(
+        Daemon(
+            home,
+            Path.cwd(),
+            idle_timeout=args.idle_timeout,
+            history_retention_days=args.history_retention_days,
+            history_target_mib=args.history_target_mib,
+        ).run()
+    )
     return 0
 
 
@@ -201,6 +209,52 @@ def cmd_shutdown(args) -> int:
     return asyncio.run(_shutdown(args.kill_kernels))
 
 
+def cmd_import(args) -> int:
+    from .notebook import import_notebook
+
+    print(
+        json.dumps(
+            import_notebook(
+                Path(args.source),
+                Path(args.destination),
+                Path(args.workdir) if args.workdir else None,
+            ),
+            indent=2,
+        )
+    )
+    return 0
+
+
+async def _export(args) -> int:
+    from .notebook import export_notebook
+
+    source = Path(args.source).absolute()
+    root = Path(args.workdir).resolve() if args.workdir else source.parent
+    try:
+        async with await _connect() as ws:
+            await ws.send(
+                json.dumps(
+                    {
+                        "op": "export_notebook",
+                        "source": str(source),
+                        "destination": str(Path(args.destination).resolve()),
+                        "workdir": str(root),
+                    }
+                )
+            )
+            result = json.loads(await ws.recv())
+            if result.get("op") == "error":
+                raise ValueError(result["message"])
+    except (ConnectionRefusedError, FileNotFoundError):
+        result = export_notebook(source, Path(args.destination), root)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_export(args) -> int:
+    return asyncio.run(_export(args))
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="tithon")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -220,6 +274,18 @@ def main(argv=None) -> None:
         help="reap a kernel idle this long (no attached client, nothing running/queued); "
         "outputs stay restorable from the journal. 0/omitted = never "
         "(env: TITHON_KERNEL_IDLE_TIMEOUT)",
+    )
+    from .retention import nonnegative
+
+    sp.add_argument(
+        "--history-retention-days",
+        type=nonnegative,
+        default=os.environ.get("TITHON_HISTORY_RETENTION_DAYS", "0"),
+    )
+    sp.add_argument(
+        "--history-target-mib",
+        type=nonnegative,
+        default=os.environ.get("TITHON_HISTORY_TARGET_MIB", "0"),
     )
     sp.set_defaults(fn=cmd_daemon)
 
@@ -263,7 +329,14 @@ def main(argv=None) -> None:
     )
     sp.set_defaults(fn=cmd_shutdown)
 
-    # TODO: add a "version" command
+    for name, fn in (("import", cmd_import), ("export", cmd_export)):
+        sp = sub.add_parser(
+            name, help=f"{name} a Python nbformat 4 notebook without executing code"
+        )
+        sp.add_argument("source")
+        sp.add_argument("destination")
+        sp.add_argument("--workdir", help="project root; defaults to the Python file's directory")
+        sp.set_defaults(fn=fn)
 
     args = p.parse_args(argv)
     try:
@@ -274,5 +347,8 @@ def main(argv=None) -> None:
     except TimeoutError:
         print("tithon: timed out", file=sys.stderr)
         sys.exit(3)
+    except (ValueError, OSError) as e:
+        print(f"tithon: {e}", file=sys.stderr)
+        sys.exit(2)
     except KeyboardInterrupt:
         sys.exit(130)

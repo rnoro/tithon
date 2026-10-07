@@ -200,6 +200,21 @@ export class DaemonClient {
     }
   }
 
+  async convertNotebook(
+    direction: "import" | "export",
+    source: string,
+    destination: string,
+    workdir: string,
+  ): Promise<any> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: `${direction}_notebook`, source, destination, workdir }));
+      return await this.waitFor(ws, (m) => m.op === "notebook_converted", 60000);
+    } finally {
+      ws.close();
+    }
+  }
+
   async status(): Promise<any> {
     const ws = await this.open();
     try {
