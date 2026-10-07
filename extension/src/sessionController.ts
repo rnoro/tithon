@@ -23,6 +23,7 @@ import {
   isOutputAreaView,
   mergeBufferEntries,
   TITHON_WIDGET_MIME,
+  WIDGET_VIEW_MIME,
   type WidgetBufferEntry,
   type WidgetState,
   widgetFallbackText,
@@ -904,6 +905,7 @@ export class TithonNotebookController {
       activeCells: () => number[];
       hasPendingFlush: () => boolean;
       diag: () => LiveDiag;
+      widgets: () => WidgetState | null;
     }
   >();
 
@@ -1013,6 +1015,8 @@ export class TithonNotebookController {
       const m = e.message as { type?: string; model_id?: string; mode?: string; comm_id?: string };
       if (m?.type === "tithon.widget-rendered") {
         this.widgetRenders.push({ model_id: m.model_id, mode: m.mode });
+        if (m.mode === "html" && m.model_id)
+          this.resyncWidget(e.editor.notebook.uri.toString(), m.model_id);
         console.log(`[tithon] widget rendered: ${m.mode} (${m.model_id})`);
       } else if (m?.type === "tithon.widget-updated") {
         this.widgetUpdatesApplied += 1;
@@ -1111,6 +1115,26 @@ export class TithonNotebookController {
     }
   }
 
+  /** A mounted renderer may have missed deltas while building its models. */
+  private resyncWidget(owner: string, modelId: string): void {
+    const payload = widgetPayload(
+      { output_type: "display_data", data: { [WIDGET_VIEW_MIME]: { model_id: modelId } } },
+      this.liveSessions.get(owner)?.widgets(),
+    );
+    for (const [commId, model] of Object.entries(payload?.state.state ?? {})) {
+      this.queueWidgetUpdate(owner, {
+        msg_type: "comm_msg",
+        comm_id: commId,
+        data: {
+          method: "update",
+          state: model.state,
+          buffer_paths: model.buffers?.map((buffer) => buffer.path),
+        },
+        _buffers_b64: model.buffers?.map((buffer) => buffer.data),
+      });
+    }
+  }
+
   /** Drop a disposed live session's own pending widget deltas out of the shared
    * buffer, so its already-scheduled flush can't `postMessage` a stale update
    * after detach/restart. The buffer and its timer are global across
@@ -1124,7 +1148,9 @@ export class TithonNotebookController {
   /** Push the coalesced widget deltas to the renderer so live widgets animate. */
   private flushWidgetUpdates(): void {
     this.widgetFlushTimer = null;
-    for (const { commId: comm_id, state, buffers } of this.widgetUpdateBuf.values()) {
+    for (const [key, { owner, commId: comm_id, state, buffers }] of this.widgetUpdateBuf) {
+      // Restore-time deltas stay coalesced until output seeding finishes.
+      if (!this.liveSessions.has(owner)) continue;
       // Omit `buffers` entirely (not `[]`) when there's nothing to carry —
       // symmetric with the daemon's own wire choice (event_from_message omits
       // `_buffers_b64` when absent) and keeps the overwhelmingly common
@@ -1137,8 +1163,8 @@ export class TithonNotebookController {
       } = { type: "tithon.widget-update", comm_id, state };
       if (buffers.length) msg.buffers = buffers;
       void this.widgetMessaging.postMessage(msg);
+      this.widgetUpdateBuf.delete(key);
     }
-    this.widgetUpdateBuf.clear();
   }
 
   /**
@@ -1455,6 +1481,7 @@ export class TithonNotebookController {
       return;
     }
     this.liveSessions.set(key, session);
+    if (!this.widgetFlushTimer) this.flushWidgetUpdates();
     this.setRestoreState(key, "connected");
     this.reconnectAttempts.delete(key);
     this.finishReconnectProgress(key, "connected");
@@ -1790,19 +1817,29 @@ export class TithonNotebookController {
     activeCells: () => number[];
     hasPendingFlush: () => boolean;
     diag: () => LiveDiag;
+    widgets: () => WidgetState | null;
   }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
+    if (signal?.aborted) throw new Error("Output restoration cancelled");
     const client = new SessionClient(
       undefined,
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
     );
-    let cleanup = () => client.close();
+    let teardown = () => client.close();
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      this.invalidateWidgetUpdatesFor(notebook.uri.toString());
+      teardown();
+    };
     const cancel = () => cleanup();
     signal?.addEventListener("abort", cancel, { once: true });
     try {
       if (signal?.aborted) throw new Error("Output restoration cancelled");
       await client.attach(0); // catch up on any prior state, then stream live
+      if (signal?.aborted) throw new Error("Output restoration cancelled");
       // Register the reconnect handler with NO await between attach resolving and
       // here, so a drop during the seed/prefetch below cannot slip past an
       // unregistered callback. The daemon dropping us (backpressure / restart /
@@ -1827,7 +1864,7 @@ export class TithonNotebookController {
         new ThrottleScheduler(50),
         (execId) => client.outputsOf(execId),
       );
-      cleanup = () => {
+      teardown = () => {
         live.dispose();
         client.close();
         sink.endAll();
@@ -1867,6 +1904,7 @@ export class TithonNotebookController {
         await sink.prefetch(lateExecs.flatMap((e) => client.outputsOf(e.execId)));
         execs.push(...lateExecs);
       }
+      if (signal?.aborted) throw new Error("Output restoration cancelled");
       // Mid-run reconnect: restore each mapped execution's OUTPUT *and* its
       // STATE+timing into the cell NOW, before wiring live events — a done cell
       // shows ✓ with its real duration, a running cell shows the spinner started at
@@ -1939,25 +1977,16 @@ export class TithonNotebookController {
         refresh();
         this.propagateUserClears(e, sink, live, client);
       });
-      const baseCleanup = cleanup;
-      cleanup = () => {
+      const baseTeardown = teardown;
+      teardown = () => {
         changeSub.dispose();
-        baseCleanup();
+        baseTeardown();
       };
       client.onEvent((ev) => {
         live.onEvent(ev);
-        // Comm deltas drive live widget animation: forward state patches to the
-        // renderer (the display_data already rendered the widget; this just updates
-        // the model so e.g. a tqdm.notebook bar fills in real time). The daemon can
-        // still deliver a few more events during ws.close()'s handshake window (data
-        // already in flight when disposeLive() ran) — `invalidateWidgetUpdatesFor`
-        // only purges what's ALREADY buffered at that instant, so a late arrival
-        // must be rejected at the SOURCE too, not just cleaned up after queuing.
-        // `disposeLive()` deletes from `liveSessions` synchronously as its last
-        // step, so this reads the CURRENT state, not a snapshot from when onEvent
-        // was registered. Owner-tagging the buffered entries alone is not
-        // enough — that only cleans up what was already queued.
-        if (ev.kind === "widget" && this.liveSessions.has(notebook.uri.toString())) {
+        // Keep deltas through restoration, but reject arrivals after teardown
+        // closes the client (see flushWidgetUpdates).
+        if (ev.kind === "widget" && client.isConnected() && !signal?.aborted) {
           this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
         }
         // The daemon's watchdog observed this kernel die out-of-band (no cell was
@@ -1992,18 +2021,10 @@ export class TithonNotebookController {
           `${missingImages.length} image(s) could not be restored; retry to fetch them again`,
         );
       return {
-        dispose: () => {
-          changeSub.dispose();
-          // Cancel any in-flight ThrottleScheduler window BEFORE endAll() closes
-          // the sink's open executions — else a pending flush firing after this
-          // point could call sink.status("running") and recreate a proxy
-          // execution with no `done` ever coming.
-          live.dispose();
-          client.close();
-          sink.endAll(); // don't leave cells spinning after we detach
-        },
+        dispose: () => cleanup(),
         refresh,
         activeCells: () => sink.activeCells(),
+        widgets: () => client.widgets(),
         hasPendingFlush: () => live.hasPendingFlush(),
         diag: () => ({
           syncSeq: client.syncSeq,
