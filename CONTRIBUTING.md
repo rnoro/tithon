@@ -199,6 +199,23 @@ verbatim in a release note.
 - `main` is the release branch — base your work on `develop` unless the issue
   says otherwise, and tidy up "fix typo" commits before asking for review.
 
+## Release assets
+
+Merging a release PR into `main` lets release-please create the component tags
+and GitHub releases. The same workflow calls `release-assets.yml` for each newly
+released component: `vX.Y.Z` receives a wheel and sdist, and `vscode-vX.Y.Z`
+receives a bundled VSIX. Ubuntu runners check out the exact tag and verify its
+package version before building. Uploads use the workflow's `GITHUB_TOKEN`;
+no additional publishing secret is required.
+
+To retry an asset job after a failure, run **release assets** from the Actions
+tab using `workflow_dispatch`, supplying the existing Python and/or extension
+release tag. Leave the other tag empty to skip that component. Matching asset
+names are replaced, so a retry repairs a partially completed upload. Dispatch
+from `main` to use the current workflow while building the selected release tag.
+This workflow attaches GitHub release assets; PyPI and Marketplace publishing
+remain separate operations.
+
 ## Using AI tools
 
 You are welcome to use them. If you point an agent at this repo, give it this

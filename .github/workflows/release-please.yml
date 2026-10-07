@@ -13,6 +13,9 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      python-tag: ${{ steps.release.outputs.release_created == 'true' && steps.release.outputs.tag_name || '' }}
+      vscode-tag: ${{ steps.release.outputs['extension--release_created'] == 'true' && steps.release.outputs['extension--tag_name'] || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +51,10 @@ jobs:
             }
 
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          # Uses the default GITHUB_TOKEN (release PR + GitHub release only).
-          # NOTE: releases created with GITHUB_TOKEN do NOT trigger other workflows.
-          # If you later add a PyPI / VS Code Marketplace publish workflow that should
-          # fire on release, create a PAT and pass it here as `token: ${{ secrets.... }}`.
 
       - name: Keep release notes visible
         if: ${{ always() }}
@@ -95,3 +95,13 @@ jobs:
                 });
               }
             }
+
+  release-assets:
+    needs: release-please
+    if: ${{ !cancelled() && (needs.release-please.outputs.python-tag != '' || needs.release-please.outputs.vscode-tag != '') }}
+    uses: ./.github/workflows/release-assets.yml
+    permissions:
+      contents: write
+    with:
+      python-tag: ${{ needs.release-please.outputs.python-tag }}
+      vscode-tag: ${{ needs.release-please.outputs.vscode-tag }}

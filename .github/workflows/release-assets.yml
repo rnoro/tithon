@@ -1,0 +1,110 @@
+name: release assets
+
+on:
+  workflow_call:
+    inputs:
+      python-tag:
+        type: string
+        default: ""
+      vscode-tag:
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      python-tag:
+        description: "Existing Python release tag (for example v0.2.5); leave empty to skip"
+        type: string
+        default: ""
+      vscode-tag:
+        description: "Existing extension release tag (for example vscode-v0.2.5); leave empty to skip"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  python:
+    if: ${{ inputs.python-tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: release-assets-python-${{ inputs.python-tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.python-tag }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ inputs.python-tag }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert os.environ["RELEASE_TAG"] == f"v{version}", "Release tag/version mismatch"
+          PY
+
+      - name: Build wheel and sdist
+        run: uv build --out-dir release-dist
+
+      - name: Attach Python distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.python-tag }}
+        run: gh release upload "$RELEASE_TAG" release-dist/*.whl release-dist/*.tar.gz --clobber
+
+  vscode:
+    if: ${{ inputs.vscode-tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: release-assets-vscode-${{ inputs.vscode-tag }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.vscode-tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ inputs.vscode-tag }}
+        run: |
+          node - <<'JS'
+          const assert = require('node:assert/strict');
+          const {version} = require('./package.json');
+          assert.equal(process.env.RELEASE_TAG, `vscode-v${version}`, 'Release tag/version mismatch');
+          JS
+
+      - run: npm ci
+
+      # vsce invokes vscode:prepublish to build both esbuild bundles.
+      - name: Package VSIX
+        run: npx --no-install vsce package --out tithon.vsix
+
+      - name: Attach VSIX
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.vscode-tag }}
+        run: gh release upload "$RELEASE_TAG" tithon.vsix --clobber
