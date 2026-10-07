@@ -34,7 +34,7 @@ export TITHON_FIXTURE="$FIX"
 export TITHON_WORKSPACE="$WORK"
 export TITHON_SUITE="reconnectstates"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -E '^\[v16\]|[0-9]+ passing|failing|AssertionError|timed out' "$OUT" | tail -40
 passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"

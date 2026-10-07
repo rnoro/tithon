@@ -30,9 +30,10 @@
 #       bisect a specific release.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+. "$ROOT/scripts/lib.sh"
 
 # --- topic bundles -----------------------------------------------------------
-core_s="v1 v2 v3 v4 v47 v49 v50 v57"
+core_s="v1 v2 v3 v4 v47 v49 v50 v57 v68"
 serializer_s="v6"
 backpressure_s="v9"
 widgets_s="v5 v29 v30"
@@ -43,7 +44,7 @@ richoutputs_s="v27 v28 v31 v34 v35 v54 v55"
 notebook_s="v32 v39 v41 v42 v43 v44 v64"
 
 # --- meta bundles ------------------------------------------------------------
-fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v55 v57 v58 v60 v61 v62"   # every hermetic test
+fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v55 v57 v58 v60 v61 v62 v68"   # every hermetic test
 vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v63 v64 v65"
 
 bundle="${1:-fast}"
@@ -80,7 +81,6 @@ for s in $scripts; do case "$ELECTRON" in *" $s "*) need_build=1 ;; esac; done
 if [ "$need_build" -eq 1 ]; then
   echo "===== shared extension build (once for the whole $label bundle) ====="
   # shellcheck source=scripts/lib.sh
-  . "$ROOT/scripts/lib.sh"
   ensure_extension_build || { echo "shared extension build failed; aborting $label" >&2; exit 1; }
   export TITHON_SKIP_BUILD=1
 fi

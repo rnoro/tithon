@@ -22,7 +22,7 @@ export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK" TITHON_SUITE="autostart"
 # Interpreter path (Jupyter-style): venv python, no activation, tithon NOT on PATH.
 export TITHON_PYTHON="$PY"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -40
 passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"

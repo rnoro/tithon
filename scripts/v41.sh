@@ -23,9 +23,9 @@ EXT="$ROOT/extension"
 ensure_extension_build || fail "extension build failed"
 
 # Curate an extensions dir with Pylance + its host ms-python.python.
-EXTROOT="$HOME/.vscode-server/extensions"
-PYLANCE_DIR="$(ls -d "$EXTROOT"/ms-python.vscode-pylance-* 2>/dev/null | sort | tail -1)"
-PY_DIR="$(ls -d "$EXTROOT"/ms-python.python-* 2>/dev/null | head -1)"
+EXTROOT="host-compatible installed desktop/server extensions"
+PYLANCE_DIR="$(installed_extension ms-python.vscode-pylance)"
+PY_DIR="$(installed_extension ms-python.python)"
 [ -n "$PYLANCE_DIR" ] || fail "Pylance (ms-python.vscode-pylance) not found under $EXTROOT"
 [ -n "$PY_DIR" ]      || fail "ms-python.python (Pylance host) not found under $EXTROOT"
 
@@ -65,7 +65,7 @@ export TITHON_FIXTURE="$FIX" TITHON_WORKSPACE="$WORK"
 export TITHON_SUITE="lspdef" TITHON_LSP_EXT_DIR="$LSP_EXT_DIR"
 OUT="$(mktemp)"
 # Unset ELECTRON_RUN_AS_NODE (inherited as 1 inside a VSCode server/tunnel).
-(cd "$EXT" && env -u ELECTRON_RUN_AS_NODE xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode env -u ELECTRON_RUN_AS_NODE node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -50
 passed_line="$(grep -E '[0-9]+ passing' "$OUT" | tail -1 | sed 's/^[[:space:]]*//')"

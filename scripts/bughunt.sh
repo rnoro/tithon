@@ -22,7 +22,7 @@ echo ">>> [$SUITE] daemon up (pid $(daemon_pid)); driving real VSCode under xvfb
 
 export TITHON_FIXTURE="$FIX" TITHON_HELPER="$HELP" TITHON_WORKSPACE="$WORK" TITHON_SUITE="$SUITE"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 # Show the test's own console (findings) + mocha result, drop xvfb/gpu noise.
 grep -E "BUGHUNT|\[H[0-9]|FINDING|passing|failing|Error:|AssertionError|✓|✗|[0-9]+\) " "$OUT" | grep -vE "Gtk|dbus|GPU|libva|MESA|gbm_|vulkan|DevTools|ContextResult|Fontconfig" | sed 's/^[[:space:]]*//'

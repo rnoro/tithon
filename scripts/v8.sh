@@ -51,7 +51,7 @@ export TITHON_WORKSPACE="$WORK"
 export TITHON_SUITE="restore"
 echo "v8: launching VSCode (@vscode/test-electron) under xvfb ----------------"
 OUT="$(mktemp)"
-(cd "$EXT" && xvfb-run -a node out-int/integration/runTest.js) >"$OUT" 2>&1
+(cd "$EXT" && run_vscode node out-int/integration/runTest.js) >"$OUT" 2>&1
 rc=$?
 # Show the in-host mocha output (filter electron's noisy GPU/dbus warnings).
 grep -vE "Gtk-WARNING|dbus|GPU|Failed to connect|libva|Fontconfig|MESA|gbm_|vulkan|DevTools|ContextResult" "$OUT" | tail -40
