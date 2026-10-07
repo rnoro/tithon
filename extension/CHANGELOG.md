@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/rnoro/tithon/compare/vscode-v0.2.4...vscode-v0.2.5) (2026-10-07)
+
+
+### Features
+
+* add storage policies and notebook interchange ([#19](https://github.com/rnoro/tithon/issues/19)) ([c9f3cae](https://github.com/rnoro/tithon/commit/c9f3caee040e32a81f0034deee529c62352670b3))
+
 ## [0.2.4](https://github.com/rnoro/tithon/compare/vscode-v0.2.3...vscode-v0.2.4) (2026-09-29)
 
 

@@ -1,7 +1,7 @@
 {
   "name": "tithon",
   "displayName": "Tithon",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "publisher": "rnoro",
   "license": "MIT",
@@ -27,7 +27,7 @@
     "url": "https://github.com/rnoro/tithon/issues"
   },
   "homepage": "https://github.com/rnoro/tithon#readme",
-  "description": "Tithon VSCode extension \u2014 percent-format notebook + matplotlib/tqdm output + output restore",
+  "description": "Tithon VSCode extension — percent-format notebook + matplotlib/tqdm output + output restore",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -102,7 +102,7 @@
       },
       {
         "command": "tithon.alwaysOpenWith",
-        "title": "Always Open With\u2026",
+        "title": "Always Open With…",
         "category": "Tithon",
         "icon": "$(settings-gear)"
       },
@@ -119,7 +119,7 @@
       },
       {
         "command": "tithon.killKernel",
-        "title": "Terminate Kernel\u2026",
+        "title": "Terminate Kernel…",
         "category": "Tithon",
         "icon": "$(trash)"
       },
@@ -131,12 +131,12 @@
       },
       {
         "command": "tithon.importNotebook",
-        "title": "Import Jupyter Notebook\u2026",
+        "title": "Import Jupyter Notebook…",
         "category": "Tithon"
       },
       {
         "command": "tithon.exportNotebook",
-        "title": "Export to Jupyter Notebook\u2026",
+        "title": "Export to Jupyter Notebook…",
         "category": "Tithon"
       },
       {
