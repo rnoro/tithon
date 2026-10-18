@@ -15,8 +15,6 @@
  * fold to the same state — is this client's core contract with the daemon.
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import WebSocket from "ws";
 import { ArtifactCache } from "./artifactCache";
 import {
@@ -26,19 +24,17 @@ import {
   type JournalExecution,
   type LineRange,
 } from "./cellAttach";
+import { defaultSocketPath } from "./daemonHome";
 import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
 import { decodeBufferEntries, mergeBufferEntries, type WidgetState } from "./richOutput";
 import type { Cell } from "./serializer";
+
+export { defaultSocketPath } from "./daemonHome";
 
 /** Image bytes resolved from a `$tithon_artifact` reference. */
 export interface ArtifactBytes {
   mime: string;
   bytes: Uint8Array;
-}
-
-export function defaultSocketPath(): string {
-  const home = process.env.TITHON_HOME ?? join(homedir(), ".tithon");
-  return join(home, "daemon.sock");
 }
 
 function unixWsUrl(sockPath: string): string {

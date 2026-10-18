@@ -153,6 +153,19 @@
     "configuration": {
       "title": "Tithon",
       "properties": {
+        "tithon.homePath": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "Daemon home directory on the extension host. Use an absolute path or ~/. Empty uses TITHON_HOME, then ~/.tithon. Applies to this window after Reload Window; previous journals and kernels are kept. Show Session Storage displays the active directory."
+        },
+        "tithon.reconnectMaxAttempts": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "scope": "window",
+          "description": "Maximum automatic reconnect attempts per notebook after a failed connection or disconnect. The first automatic retry counts as attempt 1; the initial connection does not count. 0 retries indefinitely. Success or manual Retry resets the count. Cancel in the reconnect notification stops retries without stopping the daemon or kernel."
+        },
         "tithon.autoStartDaemon": {
           "type": "boolean",
           "default": true,

@@ -1028,7 +1028,7 @@ export class TithonNotebookController {
     this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
     this.controller.supportedLanguages = ["python"];
     this.controller.supportsExecutionOrder = false;
-    this.daemon = new DaemonClient(sockPath);
+    this.daemon = new DaemonClient(this.sockPath);
     // Native cell play button: start live sync then submit each cell to the daemon.
     this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
     // Cell STOP button (and the toolbar Interrupt VSCode draws once this handler
@@ -1451,6 +1451,12 @@ export class TithonNotebookController {
     this.pendingLive.set(key, { promise, abort });
     try {
       await promise;
+    } catch (error) {
+      if (this.pendingLive.get(key)?.promise === promise) this.pendingLive.delete(key);
+      if (this.wantLive.has(key) && !abort.signal.aborted) {
+        this.scheduleReconnect(notebook, String(error));
+      }
+      throw error;
     } finally {
       if (this.pendingLive.get(key)?.promise === promise) this.pendingLive.delete(key);
     }
@@ -1467,7 +1473,6 @@ export class TithonNotebookController {
     } catch (error) {
       if (this.wantLive.has(key) && !signal.aborted) {
         this.setRestoreState(key, "failed", `${String(error)}. Click to retry.`);
-        this.scheduleReconnect(notebook, String(error));
       }
       throw error;
     }
@@ -1483,6 +1488,9 @@ export class TithonNotebookController {
     this.liveSessions.set(key, session);
     if (!this.widgetFlushTimer) this.flushWidgetUpdates();
     this.setRestoreState(key, "connected");
+    const timer = this.reconnectTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.reconnectTimers.delete(key);
     this.reconnectAttempts.delete(key);
     this.finishReconnectProgress(key, "connected");
   }
@@ -1556,15 +1564,38 @@ export class TithonNotebookController {
    * resyncing from a fresh folded snapshot so the live view does not freeze
    * (ADR-018). Capped exponential backoff (1s,2s,4s…30s) avoids hammering a
    * still-down daemon or thrashing under a sustained high-output burst; a clean
-   * reconnect resets the backoff (startLive clears reconnectAttempts). An explicit
+   * reconnect resets the backoff (connectLive clears reconnectAttempts). An explicit
    * disposeLive (deselect/close) clears wantLive and cancels the cycle.
    */
   private scheduleReconnect(notebook: vscode.NotebookDocument, reason: string): void {
     const key = notebook.uri.toString();
     if (!this.wantLive.has(key)) return; // user stopped wanting this live
+    if (this.pendingLive.has(key)) return; // ensureLive retries after restoration settles
     if (this.reconnectTimers.has(key)) return; // already scheduled
-    const attempt = (this.reconnectAttempts.get(key) ?? 0) + 1;
-    this.reconnectAttempts.set(key, attempt);
+    const completed = this.reconnectAttempts.get(key) ?? 0;
+    const configured = vscode.workspace
+      .getConfiguration("tithon")
+      .get<number>("reconnectMaxAttempts", 0);
+    const limit = Number.isSafeInteger(configured) && configured > 0 ? configured : 0;
+    if (limit > 0 && completed >= limit) {
+      this.finishReconnectProgress(key, "cancelled");
+      const message = `Could not restore the connection after ${completed} automatic reconnect attempts. Click to retry.`;
+      this.setRestoreState(key, "failed", message);
+      const state = this.restoreStates.get(key);
+      void vscode.window
+        .showWarningMessage(`Tithon: ${kernelLabel(key)} — ${message}`, "Retry")
+        .then((choice) => {
+          if (
+            choice === "Retry" &&
+            this.wantLive.has(key) &&
+            this.restoreStates.get(key) === state
+          ) {
+            void this.retryRestore(notebook).catch(() => undefined);
+          }
+        });
+      return;
+    }
+    const attempt = completed + 1;
     const delay = Math.min(1000 * 2 ** (attempt - 1), 30000);
     console.log(
       `[tithon] live connection lost (${reason}); reconnecting in ${delay}ms (attempt ${attempt})`,
@@ -1576,6 +1607,8 @@ export class TithonNotebookController {
       if (!this.wantLive.has(key)) return; // cancelled by disposeLive
       const nb = vscode.workspace.notebookDocuments.find((d) => d.uri.toString() === key);
       if (!nb) return; // notebook closed (disposeLive will have cleared wantLive)
+      if (this.pendingLive.has(key)) return; // do not count joining another connection as a retry
+      this.reconnectAttempts.set(key, attempt);
       // Tear down the dead session directly (NOT disposeLive — that would clear
       // wantLive), then re-attach fresh (startLive resyncs + resets the backoff).
       const dead = this.liveSessions.get(key);
@@ -1592,7 +1625,7 @@ export class TithonNotebookController {
           // already closed the notebook.
           if (this.liveSessions.has(key)) this.finishReconnectProgress(key, "connected");
         },
-        () => this.scheduleReconnect(nb, "retry"), // daemon still down: back off
+        () => undefined, // ensureLive schedules the next attempt on failure
       );
     }, delay);
     this.reconnectTimers.set(key, timer);
@@ -1637,12 +1670,18 @@ export class TithonNotebookController {
         {
           location: vscode.ProgressLocation.Notification,
           title: `Tithon: ${label}`,
-          cancellable: false,
+          cancellable: true,
         },
-        async (progress) => {
+        async (progress, token) => {
+          const cancellation = token.onCancellationRequested(() => {
+            if (this.reconnectProgress.get(key) !== entry) return;
+            this.disposeLive(notebook.uri);
+            this.setRestoreState(key, "failed", "Automatic reconnect stopped. Click to retry.");
+          });
           liveReport = (m) => progress.report({ message: m });
           liveReport(pending);
           const result = await outcome;
+          cancellation.dispose();
           progress.report({ message: result === "connected" ? "reconnected" : "disconnected" });
           await new Promise((r) => setTimeout(r, result === "connected" ? 1000 : 700));
         },
@@ -1657,6 +1696,11 @@ export class TithonNotebookController {
       entry.resolve(outcome);
       this.reconnectProgress.delete(key);
     }
+  }
+
+  async retryRestore(notebook: vscode.NotebookDocument): Promise<void> {
+    this.disposeLive(notebook.uri);
+    await this.ensureLive(notebook);
   }
 
   /** Restart a file's kernel (fresh namespace), then resync the live view. */
@@ -1768,7 +1812,7 @@ export class TithonNotebookController {
 
     await ensureDaemon(this.sockPath);
     const client = new SessionClient(
-      undefined,
+      this.sockPath,
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
     );
@@ -1822,7 +1866,7 @@ export class TithonNotebookController {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     if (signal?.aborted) throw new Error("Output restoration cancelled");
     const client = new SessionClient(
-      undefined,
+      this.sockPath,
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
     );
@@ -2128,16 +2172,18 @@ function fmtIdle(seconds: number): string {
  * handle stays separate so the restore-path suites keep forcing a re-seed
  * without depending on the user-facing command's wording.
  */
-export function registerRestore(context: vscode.ExtensionContext): TithonNotebookController {
-  const controller = new TithonNotebookController();
+export function registerRestore(
+  context: vscode.ExtensionContext,
+  sockPath?: string,
+): TithonNotebookController {
+  const controller = new TithonNotebookController(sockPath);
   context.subscriptions.push(
     controller,
     vscode.commands.registerCommand("tithon.retryRestore", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
       if (nb?.notebookType !== "tithon-py") return;
-      controller.disposeLive(nb.uri);
       try {
-        await controller.ensureLive(nb);
+        await controller.retryRestore(nb);
       } catch (error) {
         vscode.window.showErrorMessage(`Tithon restore: ${String(error)}`);
       }

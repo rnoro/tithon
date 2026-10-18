@@ -10,7 +10,8 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
-import { DaemonClient, defaultSocketPath, type ExecOrigin } from "./daemonClient";
+import { DaemonClient, type ExecOrigin } from "./daemonClient";
+import { resolveDaemonHome } from "./daemonHome";
 import { ensureDaemon } from "./daemonProcess";
 import { PercentNotebookSerializer } from "./notebookSerializer";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
@@ -371,21 +372,41 @@ async function syncDiffAssociation(pattern: string, pinned: boolean): Promise<vo
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const client = new DaemonClient();
+  const home = resolveDaemonHome(
+    vscode.workspace.getConfiguration("tithon").get<string>("homePath", ""),
+  );
+  const sockPath = path.join(home, "daemon.sock");
+  const client = new DaemonClient(sockPath);
+  console.log(`[tithon] daemon home: ${home}`);
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("tithon.homePath")) return;
+      void vscode.window
+        .showInformationMessage(
+          `Tithon: reload the window to use the new daemon home. Active home: ${home}.`,
+          "Reload Window",
+        )
+        .then((choice) => {
+          if (choice === "Reload Window")
+            void vscode.commands.executeCommand("workbench.action.reloadWindow");
+        });
+    }),
+  );
 
   // The reconnect/restore half (subscribe -> fold -> restore -> attach).
   // Also owns the executeHandler so the native cell play button works.
-  const notebookCtrl = registerRestore(context);
+  const notebookCtrl = registerRestore(context, sockPath);
 
   const storageView = vscode.window.createOutputChannel("Tithon Storage");
   context.subscriptions.push(
     storageView,
     vscode.commands.registerCommand("tithon.showStorage", async () => {
       try {
-        await ensureDaemon(defaultSocketPath());
+        await ensureDaemon(sockPath);
         const status = await client.status();
         const cfg = vscode.workspace.getConfiguration("tithon");
         storageView.clear();
+        storageView.appendLine(`Daemon home: ${home}`);
         for (const session of status.sessions ?? []) {
           const storage = session.storage;
           storageView.appendLine(session.session);
@@ -463,7 +484,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 filters: { [extension]: [extension] },
               }));
             if (!destination) return;
-            await ensureDaemon(defaultSocketPath());
+            await ensureDaemon(sockPath);
             const root =
               workdirForUri(direction === "import" ? destination : source) ??
               path.dirname((direction === "import" ? destination : source).fsPath);
@@ -552,7 +573,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             (vscode.window.activeTextEditor
               ? findNotebook(vscode.window.activeTextEditor.document.uri)
               : undefined);
-          await ensureDaemon(defaultSocketPath()); // auto-start host daemon if down
+          await ensureDaemon(sockPath); // auto-start host daemon if down
           if (nb) {
             await notebookCtrl.ensureLive(nb);
             notebookCtrl.refreshLive(nb); // pick up cells added since live started (ADR-022)
