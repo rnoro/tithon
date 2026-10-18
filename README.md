@@ -126,6 +126,30 @@ Outputs are matched to cells by content hash, so they survive edits and reopens.
 An output whose cell was edited after it ran is flagged stale. The `.py` itself
 stays pure source — outputs never touch the file, so diffs stay clean.
 
+Workspace settings can isolate storage and bound automatic reconnects:
+
+```json
+{
+  "tithon.homePath": "/tmp/tithon-clone-demo",
+  "tithon.reconnectMaxAttempts": 5
+}
+```
+
+`homePath` is an absolute directory on the extension host (`~/` is supported).
+Empty uses `TITHON_HOME`, then `~/.tithon`. **Reload Window** applies a changed
+home; it keeps journals and running kernels in the previous home. All socket
+connections, startup and daemon management use the selected home. **Tithon:
+Show Session Storage** displays its active path. A separately launched CLI must
+use the same `TITHON_HOME` to reach that daemon. For a clone demo, select an empty
+home and open the cloned project to restore its shared outputs.
+
+`reconnectMaxAttempts` defaults to `0` (unlimited). The initial connection does
+not count; the first automatic retry is attempt 1. Reaching a positive limit
+ends the progress notification and offers **Retry**. Successful connection or
+manual Retry resets the count. You can also cancel the reconnect notification
+at any time; Retry remains available in the connection status bar. Stopping
+retries leaves the daemon and kernel running.
+
 > [!NOTE]
 > The daemon and the extension must run on the **same host** (they share
 > `TITHON_HOME`, default `~/.tithon`). A Tunnel/Remote-SSH satisfies this for

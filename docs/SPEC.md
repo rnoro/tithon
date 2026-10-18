@@ -402,6 +402,11 @@ remain compatible ([`sessionController.ts`](../extension/src/sessionController.t
 - **Live**: deltas stream into cells as the cell runs, coalesced so a
   50,000-iteration loop collapses to a handful of UI updates
   ([`liveSync.ts`](../extension/src/liveSync.ts)).
+- **Reconnect policy**: `tithon.reconnectMaxAttempts` defaults to zero
+  (unlimited). Only automatic retries count, starting at one; the initial
+  connection is excluded. Success or manual Retry resets the per-notebook
+  counter. Exhaustion ends progress and offers Retry; cancelling progress
+  stops the cycle. Neither action terminates the daemon or kernel.
 - Rich-output bytes (matplotlib figures) are fetched via `get_artifact` and
   rendered as `image/png` items; the journal stays base64-free.
 
@@ -571,6 +576,14 @@ or success-rate telemetry are collected.
 ---
 
 ## 6. On-disk layout
+
+The extension's window-scoped `tithon.homePath` overrides `TITHON_HOME`;
+empty falls back to that environment variable, then `~/.tithon`. An absolute
+host path or `~/` is accepted. Activation fixes one resolved directory for all
+clients and management commands, and startup passes it as `TITHON_HOME`.
+Changing the setting requires Reload Window, without deleting old journals or
+terminating their kernels. Show Session Storage and the extension log show the active
+directory. CLI invocations select it separately through their environment.
 
 ```
 $TITHON_HOME (default ~/.tithon)/          # machine-local; never in a repo
@@ -796,7 +809,7 @@ make backpressure# v9                     slow-client host protection
 make widgets     # v5 v29 v30             ipywidget mirror + render + live animation
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
-make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65  per-file kernels + lifecycle
+make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
 make richoutputs # v27 v28 v31 v34 v35 v54 v55  matplotlib/tqdm images, live-plot GC, clear, storage, display_id
 make notebook    # v32 v39 v41–v44 v64 v67    text <-> Notebook, durable association, ruff/ty/Pylance LSP
 make test        # daemon unit tests (pytest)
@@ -819,6 +832,7 @@ Capability → what it guarantees → how it is verified:
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
+| Connection settings      | Workspace home applies throughout; bounded retry preserves kernel | `v69` (real VSCode), `reconnectPolicy.test.ts` |
 | Per-file kernels         | Each file gets its own kernel + journal             | `v17`                                              |
 | Kernel lifetime (idle GC)| Idle kernel reaped; busy/attached never; outputs stay restorable | `v45`, `test_gc.py`                   |
 | Live streaming           | Output streams into cells as it runs                | `v10` (real VSCode), `v28`                         |

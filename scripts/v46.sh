@@ -230,8 +230,12 @@ lostK="$(sess_field "$S" kernel_lost_state)"
 # --- 10) An interpreter change (kill-kernels shutdown) is deliberate too ------
 # The extension's restartDaemon() does exactly this to apply a new interpreter.
 # The namespace is genuinely cleared, but the user asked for it in this session.
-timeout 30 "$TITHON" shutdown --kill-kernels >/dev/null 2>&1
-for _ in $(seq 1 50); do timeout 5 "$TITHON" status >/dev/null 2>&1 || break; sleep 0.2; done
+timeout 30 "$TITHON" shutdown --kill-kernels >/dev/null 2>&1 \
+  || fail "interpreter-change kill-kernels shutdown failed"
+# The socket closes before kernel termination completes; the pid file is removed
+# only after shutdown finishes, so restarting must wait for that boundary.
+for _ in $(seq 1 50); do [ ! -e "$TITHON_HOME/daemon.pid" ] && break; sleep 0.2; done
+[ ! -e "$TITHON_HOME/daemon.pid" ] || fail "daemon did not finish interpreter-change shutdown"
 start_daemon || fail "daemon restart after interpreter-change shutdown failed"
 lostI="$(sess_field "$A" kernel_lost_state)"
 [ "$lostI" = "False" ] || fail "a deliberate kill-kernels shutdown was reported as a loss (got '$lostI')"

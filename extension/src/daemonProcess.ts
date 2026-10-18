@@ -125,6 +125,7 @@ async function startAny(sockPath: string, cfg: vscode.WorkspaceConfiguration): P
   // (it owns the reaping — see daemon.py idle-GC). 0/unset = never reap.
   const idleTimeout = cfg.get<number>("kernelIdleTimeout", 0) || 0;
   const extraEnv: Record<string, string> = {
+    TITHON_HOME: home,
     TITHON_HISTORY_RETENTION_DAYS: String(cfg.get<number>("historyRetentionDays", 0)),
     TITHON_HISTORY_TARGET_MIB: String(cfg.get<number>("historyTargetMiB", 0)),
   };

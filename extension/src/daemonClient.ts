@@ -4,9 +4,10 @@
  * socket, never TCP). Used by the CodeLens "Run Cell" wiring to submit code.
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import WebSocket from "ws";
+import { defaultSocketPath } from "./daemonHome";
+
+export { defaultSocketPath } from "./daemonHome";
 
 export interface ExecOrigin {
   uri: string;
@@ -45,11 +46,6 @@ const INTERRUPT_TIMEOUT_MS = 5000;
 /** The session id is the file uri: one kernel + journal per file (like Jupyter). */
 function sessionOf(origin?: ExecOrigin): string {
   return origin?.uri ?? "default";
-}
-
-export function defaultSocketPath(): string {
-  const home = process.env.TITHON_HOME ?? join(homedir(), ".tithon");
-  return join(home, "daemon.sock");
 }
 
 /** `ws+unix://<socket>:<path>` is how `ws` dials a unix-domain WebSocket. */
