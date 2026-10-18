@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/rnoro/tithon/compare/vscode-v0.2.5...vscode-v0.2.6) (2026-10-18)
+
+
+### Features
+
+* **extension:** configure daemon home and reconnect attempts ([#26](https://github.com/rnoro/tithon/issues/26)) ([4694779](https://github.com/rnoro/tithon/commit/46947790e46fe09b4e8cd455871fab4deb63d50e))
+
 ## [0.2.5](https://github.com/rnoro/tithon/compare/vscode-v0.2.4...vscode-v0.2.5) (2026-10-07)
 
 
