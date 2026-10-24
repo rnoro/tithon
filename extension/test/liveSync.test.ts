@@ -500,6 +500,26 @@ describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => 
     expect(sink.ops.some((o) => o.op === "clear")).toBe(false);
   });
 
+  it.each([false, true])(
+    "a new execution after a clear keeps output (queued before clear: %s)",
+    (queuedBeforeClear) => {
+      const { live, sched, sink, feed } = harness();
+      if (queuedBeforeClear) live.onEvent(queued("e2", src(0)));
+      feed(output("e1", "clear_output", { wait: false }));
+      if (!queuedBeforeClear) live.onEvent(queued("e2", src(0)));
+      live.onEvent({ seq: 3, exec_id: "e2", kind: "started", payload: {} });
+      live.onEvent(stream("e2", "SOURCE_REPLACED\n"));
+      live.onEvent({ seq: 5, exec_id: "e2", kind: "done", payload: { status: "ok" } });
+      sched.tick();
+      expect(sink.visibleStdout(0)).toBe("SOURCE_REPLACED\n");
+      expect(
+        sink.ops
+          .filter((operation) => operation.op === "status")
+          .map((operation) => operation.status),
+      ).toEqual(["running", "done"]);
+    },
+  );
+
   it("a repaint supersedes the window's other output ops (no double-apply)", () => {
     const { sink, sched, feed } = harness();
     feed(widgetEv("out", "req-1"));

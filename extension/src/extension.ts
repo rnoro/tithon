@@ -2,11 +2,13 @@
  * Tithon VSCode extension activation.
  *
  * Wires the three client-side pieces:
- *  - the percent NotebookSerializer for the `tithon-py` Cell View,
+ *  - the percent NotebookSerializer for Python Notebook and optional .py Cell View,
  *  - a "Run Cell" CodeLens on the plain-text view that submits to the daemon,
  *  - the widget renderer messaging (push mirror snapshots to the renderer).
  * The output<->cell attachment uses the journal's cell_hash (see cellAttach).
  */
+
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
@@ -14,13 +16,14 @@ import { DaemonClient, type ExecOrigin } from "./daemonClient";
 import { resolveDaemonHome } from "./daemonHome";
 import { ensureDaemon } from "./daemonProcess";
 import { PercentNotebookSerializer } from "./notebookSerializer";
+import { isTithonNotebookType, NOTEBOOK_TYPES, notebookTypeForPath } from "./notebookTypes";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 import { registerRestore, workdirForUri } from "./sessionController";
 
 /* ===========================================================================
  * SINGLE-REPRESENTATION INVARIANTS — read this before editing anything below.
  *
- * A tithon-py Cell View reuses the .py's OWN `file://` URI as its notebook URI,
+ * Both Tithon notebook types reuse their source file's `file://` URI,
  * which is what keeps ruff / ty / Pylance alive inside cells. The price is that
  * notebook-aware language servers key ONE URI as both a text document and a
  * notebook document, and desync if both exist. The five rules below are what
@@ -34,7 +37,7 @@ import { registerRestore, workdirForUri } from "./sessionController";
  *
  * I2. didClose BEFORE the opposite didOpen. `openAsNotebook` must await
  *     `closeTextDocsAndWait` (the text DOCUMENT gone, not merely the tab) before
- *     `openWith … tithon-py`; ty rejects a `notebookDocument/didOpen` for a URI
+ *     `openWith` the selected notebook type; ty rejects a `notebookDocument/didOpen` for a URI
  *     it still holds as text and then fails every later didChange ("document not
  *     found"), killing go-to-definition. The wait is bounded, so a stuck
  *     buffer degrades to the racy order — never to a freeze.
@@ -47,7 +50,7 @@ import { registerRestore, workdirForUri } from "./sessionController";
  * I4. The guard keys off a TAB-BACKED notebook, never a notebook DOCUMENT.
  *     Overlapping fast toggles can strand a tabless "zombie" notebook document
  *     that lingers in `workspace.notebookDocuments` forever; keying off it would
- *     auto-close every reopened text editor and make the .py un-openable.
+ *     auto-close every reopened text editor and make the source un-openable.
  *     Hence `hasCellViewTab`, and the self-heal that DROPS a stale
  *     `cellViewUris` entry instead of eating the user's editor.
  *
@@ -59,12 +62,14 @@ import { registerRestore, workdirForUri } from "./sessionController";
  * unit tests alone cannot hold them.
  * ======================================================================== */
 
-/** Find a tithon-py notebook document that corresponds to the given file URI. */
+/** Find a Tithon notebook document that corresponds to the given file URI. */
 function findNotebook(fileUri: vscode.Uri): vscode.NotebookDocument | undefined {
-  return vscode.workspace.notebookDocuments.find((n) => n.uri.fsPath === fileUri.fsPath);
+  return vscode.workspace.notebookDocuments.find(
+    (n) => isTithonNotebookType(n.notebookType) && n.uri.fsPath === fileUri.fsPath,
+  );
 }
 
-/** Whether a tithon-py tab exists; a notebook document is insufficient (I4). */
+/** Whether a Tithon notebook tab exists; a notebook document is insufficient (I4). */
 function hasCellViewTab(fileUri: vscode.Uri): boolean {
   const key = fileUri.toString();
   return vscode.window.tabGroups.all
@@ -72,7 +77,7 @@ function hasCellViewTab(fileUri: vscode.Uri): boolean {
     .some(
       (t) =>
         t.input instanceof vscode.TabInputNotebook &&
-        t.input.notebookType === "tithon-py" &&
+        isTithonNotebookType(t.input.notebookType) &&
         t.input.uri.toString() === key,
     );
 }
@@ -112,14 +117,14 @@ function resolveTargetUri(arg: unknown): vscode.Uri | undefined {
   );
 }
 
-/** Close every open Cell-View (tithon-py notebook) tab for `uriStr`. */
+/** Close every open Tithon notebook tab for `uriStr`. */
 async function closeCellViewTabs(uriStr: string): Promise<void> {
   const tabs = vscode.window.tabGroups.all
     .flatMap((g) => g.tabs)
     .filter(
       (t) =>
         t.input instanceof vscode.TabInputNotebook &&
-        t.input.notebookType === "tithon-py" &&
+        isTithonNotebookType(t.input.notebookType) &&
         t.input.uri.toString() === uriStr,
     );
   if (tabs.length) {
@@ -133,10 +138,10 @@ async function closeCellViewTabs(uriStr: string): Promise<void> {
 
 /** True for a notebook backed by Tithon's Cell View. */
 function isTithon(nb: vscode.NotebookDocument): boolean {
-  return nb.notebookType === "tithon-py";
+  return isTithonNotebookType(nb.notebookType);
 }
 
-/** URIs currently guarded as tithon-py notebooks (I1). */
+/** URIs currently guarded as Tithon notebooks (I1). */
 const cellViewUris = new Set<string>();
 let alwaysOpenWithPickerOpen = false;
 let alwaysOpenWithActive = false;
@@ -191,36 +196,28 @@ function trackCellView(nb: vscode.NotebookDocument): void {
 }
 
 /**
- * Redirect Pylance's `<notebook>.py.py` pseudo-path go-to-definition.
- *
- * For an in-notebook definition Pylance answers with a `file://` Location whose
- * path is the notebook uri's path plus an EXTRA `.py`, carrying the target
- * cell's handle in the fragment — e.g. `file:///x/a.py.py#W0sZmlsZQ==`. For a
- * normal `.ipynb` notebook (`a.ipynb` → `a.ipynb.py`) that pseudo-path round-
- * trips back to a `vscode-notebook-cell:` uri and navigation stays in-notebook;
- * but a tithon-py notebook reuses the `.py`'s OWN uri (ADR-041), so the pseudo-
- * path is `a.py.py` and the round-trip never fires — VSCode instead opens a
- * phantom text tab for the non-existent `a.py.py` file ("go-to-def opens
- * a.py.py"). We detect that phantom tab, close it, and reveal the real cell the
- * fragment points at. Scheme-agnostic across the LSP: anything that routes a
- * definition/declaration/reference through the pseudo-path lands here.
- *
- * Guarded so it can never hijack a genuine user file literally named `*.py.py`:
- * it acts ONLY when the de-doubled path is an OPEN tithon-py notebook AND the
- * fragment matches one of that notebook's live cells.
+ * Pylance represents cell definitions as `<notebook>.py#<cell-handle>`.
+ * Only an open Tithon notebook and a matching live cell may claim that path;
+ * a real file always wins over the synthetic definition target.
  */
-async function redirectPseudoPathDefinition(tab: vscode.Tab): Promise<void> {
+export async function redirectPseudoPathDefinition(tab: vscode.Tab): Promise<void> {
   if (!(tab.input instanceof vscode.TabInputText)) return;
   const uri = tab.input.uri;
-  if (uri.scheme !== "file" || !uri.path.endsWith(".py.py") || !uri.fragment) return;
-  // De-double: drop the trailing extra ".py" to recover the notebook path.
-  const nbPath = uri.fsPath.slice(0, -3); // ".../a.py.py" -> ".../a.py"
+  if (uri.scheme !== "file" || !uri.path.endsWith(".py") || !uri.fragment) return;
+  // Drop the synthetic Python suffix to recover the notebook path.
+  const nbPath = uri.fsPath.slice(0, -3);
   const nb = vscode.workspace.notebookDocuments.find(
-    (n) => n.notebookType === "tithon-py" && n.uri.fsPath === nbPath,
+    (n) => isTithonNotebookType(n.notebookType) && n.uri.fsPath === nbPath,
   );
-  if (!nb) return; // not a tithon-py pseudo-path
+  if (!nb) return; // no owning open notebook
   const cell = nb.getCells().find((c) => c.document.uri.fragment === uri.fragment);
   if (!cell) return; // fragment is not a live cell handle — leave the tab alone
+  try {
+    await vscode.workspace.fs.stat(uri.with({ fragment: "" }));
+    return; // A real file always owns its path.
+  } catch (error) {
+    if (!(error instanceof vscode.FileSystemError) || error.code !== "FileNotFound") return;
+  }
   try {
     await vscode.window.tabGroups.close(tab, true);
   } catch {
@@ -447,6 +444,74 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.window.showErrorMessage(`Tithon storage: ${String(error)}`);
       }
     }),
+    vscode.commands.registerCommand("tithon.newNotebook", async (destinationArg?: vscode.Uri) => {
+      try {
+        const destination =
+          destinationArg ??
+          (await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.joinPath(
+              vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(process.cwd()),
+              "Untitled.pynb",
+            ),
+            filters: { "Python Notebook": ["pynb"] },
+          }));
+        if (!destination) return;
+        if (destination.scheme !== "file" || !destination.path.toLowerCase().endsWith(".pynb"))
+          throw new Error("Choose a .pynb filename.");
+        await writeFile(destination.fsPath, "# %%\n", { flag: "wx" });
+        await vscode.commands.executeCommand("tithon.openAsNotebook", destination);
+        return destination;
+      } catch (error) {
+        vscode.window.showErrorMessage(`Tithon new Python Notebook: ${String(error)}`);
+      }
+    }),
+    ...(["copyAsNotebook", "exportPythonScript"] as const).map((command) =>
+      vscode.commands.registerCommand(
+        `tithon.${command}`,
+        async (sourceArg?: unknown, destinationArg?: vscode.Uri) => {
+          try {
+            const source = resolveNotebookUri(sourceArg) ?? resolveTargetUri(undefined);
+            const notebook = command === "copyAsNotebook";
+            const expected = notebook ? ".py" : ".pynb";
+            if (source?.scheme !== "file" || !source.path.toLowerCase().endsWith(expected))
+              throw new Error(`Choose a ${expected} source file.`);
+            const nb = findNotebook(source);
+            if (nb?.isDirty && !(await nb.save())) return;
+            const text = vscode.workspace.textDocuments.find(
+              (d) => d.uri.toString() === source.toString(),
+            );
+            if (text?.isDirty && !(await text.save())) return;
+            const extension = notebook ? "pynb" : "py";
+            const destination =
+              destinationArg ??
+              (await vscode.window.showSaveDialog({
+                defaultUri: source.with({
+                  path: `${source.path.slice(0, -expected.length)}.${extension}`,
+                }),
+                filters: { [notebook ? "Python Notebook" : "Python Script"]: [extension] },
+              }));
+            if (!destination) return;
+            if (
+              destination.scheme !== "file" ||
+              !destination.path.toLowerCase().endsWith(`.${extension}`)
+            )
+              throw new Error(`Choose a .${extension} filename.`);
+            await ensureDaemon(sockPath);
+            const root = workdirForUri(source) ?? path.dirname(source.fsPath);
+            await client.convertNotebook("copy", source.fsPath, destination.fsPath, root);
+            if (notebook)
+              await vscode.commands.executeCommand("tithon.openAsNotebook", destination);
+            else await vscode.commands.executeCommand("vscode.openWith", destination, "default");
+            notifyInfo(
+              `Tithon: copied ${path.basename(destination.fsPath)}. Run cells to create its independent Python state.`,
+            );
+            return destination;
+          } catch (error) {
+            vscode.window.showErrorMessage(`Tithon source copy: ${String(error)}`);
+          }
+        },
+      ),
+    ),
     ...(["import", "export"] as const).map((direction) =>
       vscode.commands.registerCommand(
         `tithon.${direction}Notebook`,
@@ -459,12 +524,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 await vscode.window.showOpenDialog({
                   canSelectMany: false,
                   filters:
-                    direction === "import" ? { "Jupyter Notebook": ["ipynb"] } : { Python: ["py"] },
+                    direction === "import"
+                      ? { "Jupyter Notebook": ["ipynb"] }
+                      : { "Python Notebook / Script": ["pynb", "py"] },
                 })
               )?.[0];
             if (!source) return;
-            const expected = direction === "import" ? ".ipynb" : ".py";
-            if (!source.path.toLowerCase().endsWith(expected))
+            const expected =
+              direction === "import" ? ".ipynb" : path.extname(source.path).toLowerCase();
+            if (
+              direction === "import"
+                ? expected !== ".ipynb" || !source.path.toLowerCase().endsWith(expected)
+                : ![".py", ".pynb"].includes(expected)
+            )
               throw new Error(`Choose a ${expected} source file.`);
             if (direction === "export") {
               const nb = findNotebook(source);
@@ -474,7 +546,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               );
               if (text?.isDirty && !(await text.save())) return;
             }
-            const extension = direction === "import" ? "py" : "ipynb";
+            const extension = direction === "import" ? "pynb" : "ipynb";
             const destination =
               destinationArg ??
               (await vscode.window.showSaveDialog({
@@ -535,8 +607,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           }
         }
       }
-      // Redirect Pylance's `<notebook>.py.py` go-to-definition phantom tab to the
-      // real cell (the pseudo-path never round-trips for a tithon-py notebook).
+      // Redirect synthetic Python definition targets to their owning live cells.
       for (const tab of e.opened) {
         void redirectPseudoPathDefinition(tab);
       }
@@ -544,18 +615,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
-    vscode.workspace.registerNotebookSerializer(
-      "tithon-py",
-      new PercentNotebookSerializer(),
-      // Cell OUTPUTS live in the daemon journal, never in the `.py` on disk (the
-      // serializer writes pure percent-format code, no outputs). Mark them
-      // transient so VSCode does NOT treat live output writes as unsaved edits:
-      // otherwise every appendOutput/clear makes the notebook "dirty" but the save
-      // never persists outputs, so it can never reconcile to clean — autosave then
-      // fires every ~1s ("saving…" in the status bar) and the constant churn lags
-      // the editor. transientOutputs lets restore/live-sync write freely with no
-      // phantom dirty state. (The verbatim `tithonCell` metadata stays persistent.)
-      { transientOutputs: true },
+    ...NOTEBOOK_TYPES.map((type) =>
+      vscode.workspace.registerNotebookSerializer(
+        type,
+        new PercentNotebookSerializer(),
+        // Cell OUTPUTS live in the daemon journal, never in the `.py` on disk (the
+        // serializer writes pure percent-format code, no outputs). Mark them
+        // transient so VSCode does NOT treat live output writes as unsaved edits:
+        // otherwise every appendOutput/clear makes the notebook "dirty" but the save
+        // never persists outputs, so it can never reconcile to clean — autosave then
+        // fires every ~1s ("saving…" in the status bar) and the constant churn lags
+        // the editor. transientOutputs lets restore/live-sync write freely with no
+        // phantom dirty state. (The verbatim `tithonCell` metadata stays persistent.)
+        { transientOutputs: true },
+      ),
     ),
     vscode.languages.registerCodeLensProvider(
       { language: "python", scheme: "file" },
@@ -629,7 +702,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // Arm before closing; open only after the text document is gone (I2/I3/I5).
         cellViewUris.add(uri.toString());
         await closeTextDocsAndWait(uri.toString());
-        await vscode.commands.executeCommand("vscode.openWith", uri, "tithon-py");
+        await vscode.commands.executeCommand("vscode.openWith", uri, notebookTypeForPath(uri.path));
       });
     }),
     // Reopen the active Tithon notebook as a plain text editor. Invoked from the

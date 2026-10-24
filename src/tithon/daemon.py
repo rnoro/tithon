@@ -24,8 +24,10 @@ import os
 import re
 import signal
 import socket
+import sqlite3
 import time
 from collections import Counter
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
@@ -2086,6 +2088,82 @@ class Daemon:
                 idle,
             )
 
+    def _copy_notebook(self, source: Path, destination: Path, root: Path) -> dict:
+        """Check source/destination ownership and publish without yielding to executions."""
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(f"Destination already exists: {destination}")
+        canonical_source, canonical_destination = source.resolve(), destination.resolve()
+        live_source = None
+        for sid, loaded in self._sessions.items():
+            file = _uri_to_path(sid)
+            if file is None:
+                continue
+            if file.resolve() == canonical_destination:
+                raise ValueError("Destination already has a session; choose a new filename")
+            if file.resolve() == canonical_source:
+                if live_source is not None:
+                    raise ValueError("Multiple source sessions refer to this file")
+                live_source = loaded
+        snapshot = None
+        for file, is_destination in ((source, False), (destination, True)):
+            directories = {
+                _session_layout(self.home, identity.as_uri(), hint, self.workdir)[0]
+                for identity in (file.absolute(), file.resolve())
+                for hint in (str(root.resolve()), None)
+            }
+            for meta_path in (self.home / "sessions").glob("**/meta.json"):
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(meta, dict):
+                    continue
+                recorded = _uri_to_path(meta.get("session_id", ""))
+                if recorded is not None and recorded.resolve() == file.resolve():
+                    directories.add(meta_path.parent)
+            for directory in directories:
+                database = directory / "journal.db"
+                if is_destination and (database.exists() or (directory / "meta.json").exists()):
+                    raise ValueError(
+                        "Destination already has saved session history; choose a new filename"
+                    )
+                if not database.exists():
+                    continue
+                with closing(
+                    sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+                ) as connection:
+                    if connection.execute(
+                        "SELECT 1 FROM executions WHERE status IN ('running','queued') LIMIT 1"
+                    ).fetchone():
+                        raise ValueError(
+                            "Open the source and wait for running/queued work to finish before copying"
+                        )
+                    if live_source is None:
+                        closed = connection.execute(
+                            "SELECT value FROM meta WHERE key='closed_by_user'"
+                        ).fetchone()
+                        if closed and closed[0] == "1":
+                            snapshot = {"executions": [], "widgets": None}
+                        else:
+                            raise ValueError(
+                                "Open the source notebook to restore its authoritative saved outputs before copying"
+                            )
+        if live_source is not None:
+            if (
+                live_source._busy
+                or live_source._recovering
+                or live_source._restarting
+                or not live_source._queue.empty()
+                or live_source._pending_input
+            ):
+                raise ValueError("Wait for running and queued cells before copying")
+            if live_source.artifacts.workdir.resolve() != root.resolve():
+                raise ValueError("Copy must use the source session's project directory")
+            snapshot = live_source.snapshot()
+            if snapshot.get("closed_by_user"):
+                snapshot = {"executions": [], "widgets": None}
+        return notebook.copy_percent(source, destination, root, snapshot)
+
     async def _handler(self, ws) -> None:
         session: Session | None = None
         sub: Subscriber | None = None
@@ -2098,13 +2176,15 @@ class Daemon:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 op = msg.get("op")
-                if op in ("import_notebook", "export_notebook"):
+                if op in ("import_notebook", "export_notebook", "copy_notebook"):
                     try:
                         source = Path(msg["source"])
                         destination = Path(msg["destination"])
                         root = Path(msg["workdir"])
                         if op == "import_notebook":
                             result = notebook.import_notebook(source, destination, root)
+                        elif op == "copy_notebook":
+                            result = self._copy_notebook(source, destination, root)
                         else:
                             live_session = self._sessions.get(source.absolute().as_uri())
                             if live_session is None:

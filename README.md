@@ -106,14 +106,28 @@ tithon run -c 'print(x)'             # -> 42, kernel state intact
 
 ## VSCode extension
 
-The extension opens a percent-format `.py` (a plain script with `# %%` cell
-markers) as a **notebook** backed by the daemon — same cells, same Run buttons,
-same rich output as a Jupyter `.ipynb`, except the kernel and its output live on
-the host and survive your disconnects.
+A **Python Notebook** (`.pynb`) opens directly in the notebook editor. Its disk
+format is readable percent-format Python (`# %%` cells); outputs and metadata
+live separately under `.tithon/`, and execution lives in the persistent daemon.
 
-1. Open a `.py` (it opens as plain text by default) and switch it with **Open as
-   Notebook** — the CodeLens at the top of the file, or the editor title menu.
+1. Run **Tithon: New Python Notebook…** to create a saved `.pynb`, or open one.
 2. Pick the **Tithon** kernel and run cells as usual.
+
+Existing `.py` scripts still open as text by default. **Open as Notebook** keeps
+the optional cell view; **Copy as Python Notebook…** creates a separate `.pynb`
+with the saved source, current outputs and notebook metadata. Copying saves dirty
+source first, refuses running/queued work and existing destinations, and stays
+inside one project. It preserves the original file and creates a new URI/session:
+**live variables, imported modules and full execution history do not migrate**.
+Images are copied independently so rerunning one file cannot delete the other's
+saved images. If the source has saved local session history, open it first so the
+daemon can restore its authoritative outputs; wait for any unfinished work to recover before
+copying. A deliberately terminated source copies no retired outputs or widgets.
+
+**Import Jupyter Notebook…** defaults to `.pynb`; **Export to Jupyter Notebook…**
+accepts `.pynb` and existing `.py`. **Export Python Script…** makes a separate
+percent `.py` copy with saved outputs/metadata. Existing output/session history at
+a destination also prevents copying, even if its source file was deleted.
 
 That's all. Selecting the kernel attaches the session automatically; output is
 journaled on the host, and when you reopen the notebook later — VSCode remembers
@@ -123,7 +137,7 @@ remote, so it talks to the daemon's host-local socket directly, with no port
 forwarding. Nothing special for the remote case.
 
 Outputs are matched to cells by content hash, so they survive edits and reopens.
-An output whose cell was edited after it ran is flagged stale. The `.py` itself
+An output whose cell was edited after it ran is flagged stale. The source file itself
 stays pure source — outputs never touch the file, so diffs stay clean.
 
 Workspace settings can isolate storage and bound automatic reconnects:
@@ -191,6 +205,10 @@ for the full design.
 | `tithon attach`      | Stream events as NDJSON. `--since N` sets the resume point; `--once` exits after the backlog sync; `--until-done` exits after the next completion. |
 | `tithon status`      | Print session, queue, kernel, and widget-model status.                                                                                             |
 
+`tithon copy SOURCE DESTINATION --workdir PROJECT` copies percent source and current
+outputs within one project, without transferring kernel variables. `tithon import`
+and `tithon export` convert to and from Jupyter `.ipynb`.
+
 `attach --since` is the reconnect knob:
 
 - `--since 0` — full folded snapshot, then live delta.
@@ -239,6 +257,25 @@ means you are done with that session, so reopening the file no longer restores
 its cells. The history is kept — **Tithon: Restore Previous Outputs** brings it
 back. Every involuntary loss (daemon restart, host reboot, dropped tunnel, idle
 GC) still restores automatically.
+
+### Python language services
+
+Notebook cells use the Python language. Pylance same/cross-cell definitions need
+Tithon's guarded pseudo-path redirect for both suffixes. Ruff's default file
+selection excludes `.pynb`; add this explicitly to your project's `ruff.toml`
+(or the equivalent `tool.ruff` setting in `pyproject.toml`):
+
+```toml
+extend-include = ["*.pynb"]
+```
+
+Tithon never rewrites your Ruff configuration. Real VS Code probes verified
+Pylance completion, imported-file definitions and inlay providers; ty diagnostics,
+cell/imported definitions and inlays; and Ruff diagnostics/edit/reopen with the
+setting above. Full language compatibility is not established: Pylance diagnostics
+and the targeted ty `str.upper` completion did not pass matched `.py` controls.
+The usual text/notebook lifecycle guards remain necessary when manually reopening
+source as text; routine text-toggle controls are shown only for `.py`.
 
 ## Contributing
 

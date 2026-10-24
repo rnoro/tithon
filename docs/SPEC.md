@@ -105,7 +105,7 @@ clients a consistent view. It is a single `asyncio` process; source lives in
   a single point of failure for the kernel.**
 - A session is `one kernel + one execution history + a name`. The daemon holds
   many sessions, keyed by `session_id`; each has its own kernel and its own
-  journal database. The VSCode extension uses **one session per `.py` file**, so
+  journal database. The VSCode extension uses **one session per source file (`.pynb` or optional `.py` cell view)**, so
   files have independent kernels. The CLI defaults to a session named `default`.
 - If the kernel dies (e.g. OOM) the daemon records the event in the journal, so
   every client learns _when_ and _in which cell_ it happened. A death that
@@ -364,19 +364,26 @@ and per-session permissions are out of scope (a possible later phase).
 
 ## 4. The VSCode extension (TypeScript)
 
-Source: [`extension/src/`](../extension/src/). The extension renders a `.py`
-file's cells and their outputs natively, restoring from the daemon on attach and
+Source: [`extension/src/`](../extension/src/). The extension renders a percent source file's (`.pynb` or `.py`)
+cells and their outputs natively, restoring from the daemon on attach and
 streaming live while a cell runs.
 
-### 4.1 Notebook — percent `.py` as a notebook
+### 4.1 Python Notebook — percent source with a dedicated suffix
 
 VSCode has no public API to inject a webview at an arbitrary editor position
 (`createWebviewTextEditorInset` is stuck "proposed", not shippable). So Tithon
-parses the `.py` itself with a **`NotebookSerializer`** for a custom notebook
-type (`tithon-py`) — the pattern proven by the jupytext extension. On disk there
-is only a pure percent-format `.py`; in the editor each `#%%` cell shows its
+parses the source itself with a **`NotebookSerializer`** for custom notebook
+types: `tithon-notebook` for `.pynb` and `tithon-py` for optional `.py` views. On disk there
+is only pure percent-format source; in the editor each `#%%` cell shows its
 image / widget / text output below it as native notebook rendering. Outputs come
-from the journal and are attached to cells, so the `.py` is never polluted.
+from the journal and are attached to cells, so source bytes never contain output.
+
+`.pynb` files use the default **Python Notebook** editor (`tithon-notebook`).
+Both notebook types share serialization, session handling and execution logic;
+each has its own VS Code controller because controllers are notebook-type scoped.
+**New Python Notebook…** creates a saved file without overwriting a destination.
+Routine text-toggle and durable `.py` editor-choice menus remain `.py`-specific;
+manual raw-text reopening still goes through the single-representation guards.
 
 `.py` files open as **plain text by default**; Notebook is opt-in (command
 _Open as Notebook_), and you can flip back with _Open as Text Editor_. The
@@ -488,7 +495,7 @@ would be a duplicate placeholder.
 
 ### 4.6 Language servers & the single-representation rule
 
-A `tithon-py` notebook reuses the `.py`'s **own `file://` URI** as the notebook
+Both Tithon notebook types reuse the source file's **own `file://` URI** as the notebook
 URI. That is what keeps ruff / ty / Pylance working inside the cells: the
 language server sees the file it already knows, so diagnostics, go-to-definition
 and inlay hints resolve against the real source rather than a synthetic
@@ -513,6 +520,14 @@ with their causes and workarounds in
 this area, the notebook/LSP suites also run against VSCode **Insiders** as an
 advisory early warning (see [§10](#10-verification)).
 
+The dedicated suffix does not remove language-provider compatibility constraints.
+Pylance returns `<notebook>.py#<cell-handle>` for internal definitions; the guarded
+redirect supports both suffixes and leaves existing real files alone. Ruff needs
+an explicit project `extend-include = ["*.pynb"]` (Tithon does not edit Ruff config).
+Native macOS probes verified selected Pylance/ty/Ruff features, not universal LSP
+compatibility: Pylance diagnostics and targeted ty string-member completion also
+failed `.py` controls and remain unverified.
+
 ---
 
 ## 5. CLI
@@ -525,6 +540,7 @@ drives the same daemon over the socket:
 | `tithon daemon`    | Run the daemon (foreground); `--log-level`, `--idle-timeout`                    |
 | `tithon run`       | Execute code in a session; `-c`, `--no-wait`, `--timeout`                       |
 | `tithon import`    | Import a Python nbformat 4 notebook as percent source and saved outputs         |
+| `tithon copy`      | Copy percent source, current outputs and metadata into an independent file session |
 | `tithon export`    | Export saved source plus current/saved outputs as nbformat 4 without execution  |
 | `tithon attach`    | Attach and stream events as NDJSON; `--since`, `--once`, `--until-done`         |
 | `tithon status`    | Daemon status (all sessions, or one with `--session`)                           |
@@ -543,15 +559,15 @@ something a default should be able to do.
 
 ### 5.1 Notebook interchange and restore guidance
 
-`tithon import source.ipynb destination.py [--workdir PROJECT]` and
-`tithon export source.py destination.ipynb [--workdir PROJECT]` convert Python
+`tithon import source.ipynb destination.pynb [--workdir PROJECT]` and
+`tithon export source.pynb destination.ipynb [--workdir PROJECT]` convert Python
 nbformat 4 notebooks without executing code or overwriting destination files.
 The VSCode commands are **Tithon: Import Jupyter Notebook…**, **Export to Jupyter Notebook…**, and
 **Show Session Storage**. Export uses a loaded session's current snapshot when available,
 and otherwise the saved shared-output sidecar; it never starts a kernel.
 
-Import writes code, markdown and raw cells as percent `.py`, the existing
-`.tithon/cells/` output sidecar, and `.tithon/notebooks/<relative.py>.json` for
+Import accepts `.pynb` or `.py` destinations (the editor defaults to `.pynb`) and writes code, markdown and raw cells as percent source, the existing
+`.tithon/cells/` output sidecar, and `.tithon/notebooks/<relative-source>.json` for
 source fidelity, cell IDs/metadata, attachments and notebook metadata. Images
 are real hashed files under `.tithon/outputs/`; export embeds them only in the
 external `.ipynb`. Unchanged cells preserve their original source (including
@@ -564,7 +580,7 @@ files from output images so clearing a fold cannot delete an attachment. Stale o
 uses the existing mirror/rendering restrictions; importing does not reconstruct
 kernel objects or interactive callbacks. Non-Python/older formats, ambiguous
 percent boundaries, malformed image/widget data, and missing image files fail
-explicitly. Import validates before publishing the `.py` last.
+explicitly. Import validates before publishing the source last.
 
 An active notebook shows connecting, restoring, connected, retrying or failed
 state. Connected means image prefetch and queued Notebook API application have
@@ -574,6 +590,26 @@ pending connection and clears its restore status. No restore-duration metrics
 or success-rate telemetry are collected.
 
 ---
+
+### 5.2 Source copies and Python Script export
+
+`Copy as Python Notebook…` copies `.py` to `.pynb`; `Export Python Script…`
+copies `.pynb` to `.py`. `tithon copy SOURCE DESTINATION --workdir PROJECT`
+provides the same no-execution operation. Both paths must be inside the same
+project. Dirty editor source is saved first. Only each current cell's attached
+fold is copied, retaining stale hashes and notebook metadata/widget snapshot;
+full journal history and live kernel memory are never transferred. The source
+remains intact and the destination owns a new URI and kernel.
+
+The daemon checks source activity, snapshots and publishes synchronously without
+yielding to execution requests. Running/queued/recovering/restarting or stdin-blocked
+source sessions are refused. An unloaded source with persisted local history must
+be opened/restored before copying; the shared sidecar cannot override its journal.
+A persisted deliberate-closure flag instead copies an empty output/widget snapshot. Loaded or persisted destination sessions are rejected so their
+local journals cannot suppress the new sidecar. Existing destination source, sidecar, metadata
+and dangling destination symlinks cannot be overwritten. Output and metadata image
+references are validated and copied into destination-owned artifact paths. Source
+is published last; failure removes only files created by this copy.
 
 ## 6. On-disk layout
 
@@ -850,6 +886,7 @@ Capability → what it guarantees → how it is verified:
 | Destructive-action gate  | Restart/Terminate touch nothing until confirmed     | `v65` (real VSCode modal)                          |
 | Durable editor choice    | "Always Open With…" survives close/reopen           | `v64` (real VSCode)                                |
 | Output retention         | Atomic seed/deletion/watermark, gap-safe restart    | `v66`, `test_retention.py`                         |
+| Dedicated Python Notebook | Default `.pynb`, native execution/restore, source/output copy and independent kernels/images | `v70`, `test_notebook_copy.py` |
 | Notebook interchange     | No execution/overwrite; rich and moved-cell outputs | `v66`, `v67`, `test_notebook.py`                    |
 | Restore readiness        | Applied outputs/images before connected; retry     | `v67` (missing-image recovery and rerun restore)    |
 | Verification portability | Linux Xvfb and native macOS; separate Tunnel state  | `v68`, real macOS topic bundles                    |

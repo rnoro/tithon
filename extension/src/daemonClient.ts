@@ -197,7 +197,7 @@ export class DaemonClient {
   }
 
   async convertNotebook(
-    direction: "import" | "export",
+    direction: "import" | "export" | "copy",
     source: string,
     destination: string,
     workdir: string,

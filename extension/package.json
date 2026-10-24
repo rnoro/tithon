@@ -37,10 +37,21 @@
     "onStartupFinished",
     "onLanguage:python",
     "onNotebook:tithon-py",
-    "onCommand:tithon.runCell"
+    "onCommand:tithon.runCell",
+    "onNotebook:tithon-notebook"
   ],
   "contributes": {
     "notebooks": [
+      {
+        "type": "tithon-notebook",
+        "displayName": "Python Notebook",
+        "priority": "default",
+        "selector": [
+          {
+            "filenamePattern": "*.pynb"
+          }
+        ]
+      },
       {
         "type": "tithon-py",
         "displayName": "Notebook",
@@ -148,6 +159,21 @@
         "command": "tithon.retryRestore",
         "title": "Retry Output Restore",
         "category": "Tithon"
+      },
+      {
+        "command": "tithon.newNotebook",
+        "title": "New Python Notebook…",
+        "category": "Tithon"
+      },
+      {
+        "command": "tithon.copyAsNotebook",
+        "title": "Copy as Python Notebook…",
+        "category": "Tithon"
+      },
+      {
+        "command": "tithon.exportPythonScript",
+        "title": "Export Python Script…",
+        "category": "Tithon"
       }
     ],
     "configuration": {
@@ -232,18 +258,28 @@
         },
         {
           "command": "tithon.restartKernel",
-          "when": "notebookType == tithon-py",
+          "when": "notebookType == tithon-py || notebookType == tithon-notebook",
           "group": "navigation/execute@2"
         },
         {
           "command": "tithon.selectInterpreter",
-          "when": "notebookType == tithon-py",
+          "when": "notebookType == tithon-py || notebookType == tithon-notebook",
           "group": "navigation/view@1"
         },
         {
           "command": "tithon.killKernel",
-          "when": "notebookType == tithon-py",
+          "when": "notebookType == tithon-py || notebookType == tithon-notebook",
           "group": "kernel@1"
+        },
+        {
+          "command": "tithon.copyAsNotebook",
+          "when": "notebookType == tithon-py",
+          "group": "tithon@2"
+        },
+        {
+          "command": "tithon.exportPythonScript",
+          "when": "notebookType == tithon-notebook",
+          "group": "tithon@2"
         }
       ],
       "explorer/context": [
@@ -251,6 +287,11 @@
           "command": "tithon.alwaysOpenWith",
           "when": "resourceScheme == file && resourceExtname == .py",
           "group": "open@10"
+        },
+        {
+          "command": "tithon.copyAsNotebook",
+          "when": "resourceScheme == file && resourceExtname == .py",
+          "group": "tithon@1"
         }
       ],
       "commandPalette": [
@@ -268,6 +309,22 @@
         {
           "command": "tithon.alwaysOpenWith",
           "when": "resourceScheme == file && resourceExtname == .py"
+        },
+        {
+          "command": "tithon.openAsText",
+          "when": "notebookType == tithon-py"
+        },
+        {
+          "command": "tithon.openAsNotebook",
+          "when": "resourceExtname == .py"
+        },
+        {
+          "command": "tithon.copyAsNotebook",
+          "when": "resourceExtname == .py"
+        },
+        {
+          "command": "tithon.exportPythonScript",
+          "when": "resourceExtname == .pynb"
         }
       ]
     }

@@ -241,6 +241,12 @@ export class LiveOutputSync {
 
     const tsMs = typeof ev.payload?.ts === "number" ? ev.payload.ts * 1000 : undefined;
     if (ev.kind === "started") {
+      // A pending repaint reads the preceding execution's fold, so it must
+      // settle before the new execution's output enters this cell's window.
+      if (this.repainting.has(idx)) {
+        this.scheduler.cancel?.();
+        this.flush();
+      }
       this.queue(idx, { t: "status", status: "running", tsMs });
     } else if (ev.kind === "done") {
       const st = ev.payload?.status ?? "ok";

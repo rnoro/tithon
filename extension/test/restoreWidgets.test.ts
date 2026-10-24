@@ -58,7 +58,10 @@ import { TithonNotebookController, VSCodeCellSink } from "../src/sessionControll
 
 function harness(postMessage: ReturnType<typeof vi.fn>): TithonNotebookController {
   return Object.assign(Object.create(TithonNotebookController.prototype), {
-    controller: {},
+    controllers: new Map([
+      ["tithon-py", {}],
+      ["tithon-notebook", {}],
+    ]),
     sockPath: "unused.sock",
     liveSessions: new Map(),
     pendingLive: new Map(),
@@ -107,7 +110,11 @@ it.each([false, true])(
     const postMessage = vi.fn();
     const controller = harness(postMessage);
     const uri = { toString: () => "file:///restoring.py" } as vscode.Uri;
-    const notebook = { uri, getCells: () => [] } as unknown as vscode.NotebookDocument;
+    const notebook = {
+      uri,
+      notebookType: "tithon-py",
+      getCells: () => [],
+    } as unknown as vscode.NotebookDocument;
     const pending = controller.ensureLive(notebook);
     await restoring;
     const update = (state: Record<string, unknown>) =>
@@ -164,7 +171,11 @@ it("a cancelled connection cannot purge a replacement connection's widget update
   const postMessage = vi.fn();
   const controller = harness(postMessage);
   const uri = { toString: () => "file:///replacement.py" } as vscode.Uri;
-  const notebook = { uri, getCells: () => [] } as unknown as vscode.NotebookDocument;
+  const notebook = {
+    uri,
+    notebookType: "tithon-py",
+    getCells: () => [],
+  } as unknown as vscode.NotebookDocument;
   const first = controller.ensureLive(notebook);
   const rejected = expect(first).rejects.toThrow("cancelled");
   await restoring[0];
@@ -291,7 +302,11 @@ it("cancellation during daemon readiness leaves a replacement connection untouch
   const postMessage = vi.fn();
   const controller = harness(postMessage);
   const uri = { toString: () => "file:///readiness.py" } as vscode.Uri;
-  const notebook = { uri, getCells: () => [] } as unknown as vscode.NotebookDocument;
+  const notebook = {
+    uri,
+    notebookType: "tithon-py",
+    getCells: () => [],
+  } as unknown as vscode.NotebookDocument;
   const first = controller.ensureLive(notebook);
   const rejected = expect(first).rejects.toThrow("cancelled");
   await waiting;

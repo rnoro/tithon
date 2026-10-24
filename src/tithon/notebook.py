@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import io
 import json
@@ -28,11 +29,15 @@ IMAGE_EXT = {
 
 def parse_percent(text: str) -> list[dict]:
     """Find top-level comment markers with Python's string-aware tokenizer."""
-    lines = text.splitlines(keepends=True)
+    lines = re.findall(r".*?(?:\r\n|\r|\n|$)", text, re.DOTALL)
+    if lines and not lines[-1]:
+        lines.pop()
     markers = {}
     depth = 0
     try:
-        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        for token in tokenize.generate_tokens(
+            io.StringIO(text.replace("\r\n", "\n").replace("\r", "\n")).readline
+        ):
             if token.type == tokenize.OP:
                 if token.string in "([{":
                     depth += 1
@@ -131,8 +136,8 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
     """Validate before publishing; the .py is published last and never executed."""
     source, destination = source.resolve(), destination.resolve()
     root = (root or destination.parent).resolve()
-    if source.suffix.lower() != ".ipynb" or destination.suffix.lower() != ".py":
-        raise ValueError("Import requires an .ipynb source and a .py destination")
+    if source.suffix.lower() != ".ipynb" or destination.suffix.lower() not in (".py", ".pynb"):
+        raise ValueError("Import requires an .ipynb source and a .pynb or .py destination")
     doc = nbformat.read(source, as_version=nbformat.NO_CONVERT)
     if doc.nbformat != 4:
         raise ValueError("Only nbformat 4 notebooks are supported")
@@ -240,8 +245,8 @@ def export_notebook(
     """Export saved source and matching outputs; stale results are explicitly marked."""
     source, destination = source.resolve(), destination.resolve()
     root = (root or source.parent).resolve()
-    if source.suffix.lower() != ".py" or destination.suffix.lower() != ".ipynb":
-        raise ValueError("Export requires a .py source and an .ipynb destination")
+    if source.suffix.lower() not in (".py", ".pynb") or destination.suffix.lower() != ".ipynb":
+        raise ValueError("Export requires a .pynb or .py source and an .ipynb destination")
     if destination.exists():
         raise FileExistsError(f"Destination already exists: {destination}")
     with source.open(encoding="utf-8", newline="") as handle:
@@ -325,4 +330,131 @@ def export_notebook(
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("xb") as handle:
         handle.write(data)
+    return {"cells": len(cells), "destination": str(destination)}
+
+
+def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | None = None) -> dict:
+    """Copy saved percent source and current outputs into an independent file session."""
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(f"Destination already exists: {destination}")
+    source, destination, root = source.resolve(), destination.resolve(), root.resolve()
+    if source.suffix.lower() not in (".py", ".pynb") or destination.suffix.lower() not in (
+        ".py",
+        ".pynb",
+    ):
+        raise ValueError("Copy requires .py or .pynb source and destination files")
+    if (
+        source == destination
+        or not source.is_relative_to(root)
+        or not destination.is_relative_to(root)
+    ):
+        raise ValueError("Copy requires distinct files inside the same project directory")
+    source_bytes = source.read_bytes()
+    cells = parse_percent(source_bytes.decode("utf-8"))
+    shared = sidecar.sidecar_path(root, destination)
+    source_shared = sidecar.sidecar_path(root, source)
+    metadata = _metadata_path(root, destination)
+    source_metadata = _metadata_path(root, source)
+    if snapshot is None:
+        found = sidecar.read(source_shared)
+        if source_shared.exists() and found is None:
+            raise ValueError("Source output sidecar is invalid")
+        snapshot = found[0] if found else {}
+    if any(e.get("status") in ("queued", "running") for e in snapshot.get("executions", [])):
+        raise ValueError("Wait for running and queued cells before copying")
+    # Match the current attachment rule: exact index/hash, moved content, then stale index.
+    code_cells = [c for c in cells if c["kind"] == "code"]
+    line_count = len(re.findall(r"\r\n|\r|\n", source_bytes.decode("utf-8")))
+    if source_bytes and not source_bytes.endswith((b"\r", b"\n")):
+        line_count += 1
+    ranges = {
+        cell["index"]: {
+            "start": max(0, cell["start"] - 1),
+            "end": max(
+                max(0, cell["start"] - 1),
+                cells[index + 1]["start"] - 2 if index + 1 < len(cells) else line_count - 1,
+            ),
+        }
+        for index, cell in enumerate(cells)
+    }
+    hashes = {c["index"]: hashlib.sha256(c["body"].encode()).hexdigest() for c in code_cells}
+    attached = {}
+    for execution in sorted(snapshot.get("executions", []), key=lambda e: e.get("seq", 0)):
+        if execution.get("status") not in sidecar.SHAREABLE_STATUS or not execution.get(
+            "cell_hash"
+        ):
+            continue
+        origin = execution.get("origin") or {}
+        index = origin.get("index")
+        target = next((c for c in code_cells if c["index"] == index), None)
+        if target is None or hashes[target["index"]] != execution["cell_hash"]:
+            matches = [c for c in code_cells if hashes[c["index"]] == execution["cell_hash"]]
+            if matches:
+                previous = origin.get("range") or {}
+
+                def proximity(cell, previous=previous):
+                    current = ranges[cell["index"]]
+                    start, end = previous.get("start", 0), previous.get("end", 0)
+                    if current["start"] <= end and start <= current["end"]:
+                        return (0, cell["index"])
+                    gap = (
+                        current["start"] - end if current["start"] > end else start - current["end"]
+                    )
+                    return (gap, cell["index"])
+
+                target = min(matches, key=proximity)
+        if target is not None:
+            current = copy.deepcopy(execution)
+            current["origin"] = {"index": target["index"], "range": ranges[target["index"]]}
+            attached[target["index"]] = current
+    copied = sidecar.build(list(attached.values()))
+    copied["widgets"] = copy.deepcopy(snapshot.get("widgets"))
+    WidgetMirror().hydrate(copied["widgets"] or {})
+    pending = {}
+    owner = hashlib.sha256(destination.as_uri().encode()).hexdigest()[:20]
+
+    def duplicate_refs(value, category):
+        if isinstance(value, list):
+            return [duplicate_refs(item, category) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$tithon_artifact" in value:
+            ref = dict(value["$tithon_artifact"])
+            original = (root / ref["rel_path"]).resolve()
+            if not original.is_relative_to((root / ".tithon/outputs").resolve()):
+                raise ValueError("Image reference is outside the output directory")
+            raw = original.read_bytes()
+            sha = hashlib.sha256(raw).hexdigest()
+            if ref.get("sha256") != sha:
+                raise ValueError("Image reference hash does not match its file")
+            rel = Path(".tithon/outputs") / f"copy_{owner}_{category}_{sha}{original.suffix}"
+            pending[root / rel] = raw
+            ref.update(rel_path=str(rel), artifact_id=sha, sha256=sha)
+            return {"$tithon_artifact": ref}
+        return {key: duplicate_refs(item, category) for key, item in value.items()}
+
+    copied = duplicate_refs(copied, "output")
+    if source_metadata.exists():
+        saved = duplicate_refs(json.loads(source_metadata.read_text(encoding="utf-8")), "asset")
+        pending[metadata] = (json.dumps(saved, ensure_ascii=False, indent=1) + "\n").encode()
+    pending[shared] = sidecar.dumps(copied).encode()
+    pending[destination] = source_bytes
+    for path in (metadata, shared, destination):
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f"Destination already exists: {path}")
+    created = []
+    try:
+        for path, data in pending.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path not in (metadata, shared, destination) and path.exists():
+                if path.read_bytes() != data:
+                    raise ValueError(f"Conflicting image file: {path}")
+                continue
+            with path.open("xb") as handle:
+                created.append(path)
+                handle.write(data)
+    except BaseException:
+        for path in reversed(created):
+            path.unlink(missing_ok=True)
+        raise
     return {"cells": len(cells), "destination": str(destination)}

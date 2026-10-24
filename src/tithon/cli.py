@@ -226,7 +226,7 @@ def cmd_import(args) -> int:
     return 0
 
 
-async def _export(args) -> int:
+async def _export(args, direction="export") -> int:
     from .notebook import export_notebook
 
     source = Path(args.source).absolute()
@@ -236,9 +236,9 @@ async def _export(args) -> int:
             await ws.send(
                 json.dumps(
                     {
-                        "op": "export_notebook",
+                        "op": f"{direction}_notebook",
                         "source": str(source),
-                        "destination": str(Path(args.destination).resolve()),
+                        "destination": str(Path(args.destination).absolute()),
                         "workdir": str(root),
                     }
                 )
@@ -247,13 +247,22 @@ async def _export(args) -> int:
             if result.get("op") == "error":
                 raise ValueError(result["message"])
     except (ConnectionRefusedError, FileNotFoundError):
-        result = export_notebook(source, Path(args.destination), root)
+        if direction == "copy":
+            from .daemon import Daemon
+
+            result = Daemon(get_home(), root)._copy_notebook(source, Path(args.destination), root)
+        else:
+            result = export_notebook(source, Path(args.destination), root)
     print(json.dumps(result, indent=2))
     return 0
 
 
 def cmd_export(args) -> int:
     return asyncio.run(_export(args))
+
+
+def cmd_copy(args) -> int:
+    return asyncio.run(_export(args, "copy"))
 
 
 def main(argv=None) -> None:
@@ -330,9 +339,9 @@ def main(argv=None) -> None:
     )
     sp.set_defaults(fn=cmd_shutdown)
 
-    for name, fn in (("import", cmd_import), ("export", cmd_export)):
+    for name, fn in (("import", cmd_import), ("export", cmd_export), ("copy", cmd_copy)):
         sp = sub.add_parser(
-            name, help=f"{name} a Python nbformat 4 notebook without executing code"
+            name, help=f"{name} notebook source and saved outputs without executing code"
         )
         sp.add_argument("source")
         sp.add_argument("destination")

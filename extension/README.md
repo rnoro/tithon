@@ -12,7 +12,7 @@
 
 ![A real VS Code recording shows Tithon surviving a daemon crash: connection loss and reconnection are highlighted, then the same remote kernel resumes live output synchronization without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
-Run a Python `.py` file as a notebook against a **persistent remote kernel**.
+Open a `.pynb` Python Notebook (or optional `.py` cell view) against a **persistent remote kernel**.
 Close your editor, lose your connection, or return later; the same session is
 still there and still streaming.
 
@@ -78,14 +78,28 @@ pip install tithon      # or: uv add tithon
 
 ## Quickstart
 
-A percent-format `.py` (a plain script with `# %%` cell markers) opens as a
-**notebook** backed by the daemon — same cells, same Run buttons, same rich
-output as a Jupyter `.ipynb`, except the kernel and its output live on the host
-and survive your disconnects.
+A **Python Notebook** (`.pynb`) opens directly in the notebook editor. Its disk
+format is readable percent-format Python (`# %%` cells); outputs and metadata
+live separately under `.tithon/`, and execution lives in the persistent daemon.
 
-1. Open a `.py`. It opens as plain text by default; switch it with **Open as
-   Notebook** — the CodeLens at the top of the file, or the editor title menu.
+1. Run **Tithon: New Python Notebook…** to create a saved `.pynb`, or open one.
 2. Pick the **Tithon** kernel and run cells as usual.
+
+Existing `.py` scripts still open as text by default. **Open as Notebook** keeps
+the optional cell view; **Copy as Python Notebook…** creates a separate `.pynb`
+with the saved source, current outputs and notebook metadata. Copying saves dirty
+source first, refuses running/queued work and existing destinations, and stays
+inside one project. It preserves the original file and creates a new URI/session:
+**live variables, imported modules and full execution history do not migrate**.
+Images are copied independently so rerunning one file cannot delete the other's
+saved images. If the source has saved local session history, open it first so the
+daemon can restore its authoritative outputs; wait for any unfinished work to recover before
+copying. A deliberately terminated source copies no retired outputs or widgets.
+
+**Import Jupyter Notebook…** defaults to `.pynb`; **Export to Jupyter Notebook…**
+accepts `.pynb` and existing `.py`. **Export Python Script…** makes a separate
+percent `.py` copy with saved outputs/metadata. Existing output/session history at
+a destination also prevents copying, even if its source file was deleted.
 
 That's all. Selecting the kernel attaches the session and restores any earlier
 output automatically; new output then streams into the cells live as it is
@@ -94,12 +108,12 @@ running. Reopen the notebook later (VSCode remembers the kernel) and the outputs
 are back and resume streaming, with **no command to run**.
 
 Outputs are matched to cells by content hash, so they survive edits and reopens;
-an output whose cell changed after it ran is flagged stale. The `.py` itself
+an output whose cell changed after it ran is flagged stale. The source file itself
 stays pure source — outputs never touch the file, so diffs stay clean.
 
 ## What you get
 
-- **Notebook view** for percent `.py` files, with per-cell run and a kernel
+- **Python Notebook** for percent `.pynb` files and optional `.py` views, with per-cell run and a kernel
   toolbar (interrupt / restart / select interpreter).
 - **Automatic restore + live sync** — selecting the kernel (or reopening the
   file) rebuilds the folded output state into the cells and resumes streaming;
@@ -119,6 +133,9 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 
 | Command | What it does |
 | --- | --- |
+| `Tithon: New Python Notebook…` | Create a `.pynb` file that opens directly as a notebook. |
+| `Tithon: Copy as Python Notebook…` | Copy saved `.py` source and current outputs to an independent `.pynb`. |
+| `Tithon: Export Python Script…` | Copy `.pynb` source and outputs to an independent `.py`. |
 | `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text, once. |
 | `Tithon: Always Open With…` | Choose Text Editor or Notebook for this one file, permanently in this workspace. |
 | `Tithon: Restart Kernel` | Restart the session's kernel. |
@@ -189,6 +206,25 @@ the default path.
 The daemon also ships a CLI (`tithon run`, `tithon attach`, `tithon status`) for
 driving the same sessions from a terminal. See the [main project README][repo]
 and the [design spec][spec] for the full architecture.
+
+### Python language services
+
+Notebook cells use the Python language. Pylance same/cross-cell definitions need
+Tithon's guarded pseudo-path redirect for both suffixes. Ruff's default file
+selection excludes `.pynb`; add this explicitly to your project's `ruff.toml`
+(or the equivalent `tool.ruff` setting in `pyproject.toml`):
+
+```toml
+extend-include = ["*.pynb"]
+```
+
+Tithon never rewrites your Ruff configuration. Real VS Code probes verified
+Pylance completion, imported-file definitions and inlay providers; ty diagnostics,
+cell/imported definitions and inlays; and Ruff diagnostics/edit/reopen with the
+setting above. Full language compatibility is not established: Pylance diagnostics
+and the targeted ty `str.upper` completion did not pass matched `.py` controls.
+The usual text/notebook lifecycle guards remain necessary when manually reopening
+source as text; routine text-toggle controls are shown only for `.py`.
 
 ## License
 

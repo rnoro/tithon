@@ -13,6 +13,7 @@ import { computeCellHash, docCellsFromParsed } from "./cellAttach";
 import { DaemonClient, defaultSocketPath, type KernelInfo } from "./daemonClient";
 import { ensureDaemon, listPythonEnvironments, waitForDaemonStop } from "./daemonProcess";
 import { type CellSink, LiveOutputSync, ThrottleScheduler } from "./liveSync";
+import { isTithonNotebookType, NOTEBOOK_TYPES } from "./notebookTypes";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 import type { OutputItem } from "./outputFold";
 import {
@@ -879,12 +880,12 @@ export class VSCodeCellSink implements CellSink {
 }
 
 /**
- * Owns a NotebookController for the Tithon Cell View and restores cell outputs
+ * Owns one NotebookController per Tithon notebook type and restores cell outputs
  * from the daemon on demand. Outputs are written via cell executions
  * (`replaceOutput`) — the stable VSCode mechanism for setting cell output.
  */
 export class TithonNotebookController {
-  private readonly controller: vscode.NotebookController;
+  private readonly controllers = new Map<string, vscode.NotebookController>();
   private readonly daemon: DaemonClient;
   private readonly sockPath: string;
   private labelledPython = false; // set the "Python x.y" label only once
@@ -1025,33 +1026,30 @@ export class TithonNotebookController {
         }
       }
     });
-    this.controller = vscode.notebooks.createNotebookController("tithon", "tithon-py", "Tithon");
-    this.controller.supportedLanguages = ["python"];
-    this.controller.supportsExecutionOrder = false;
     this.daemon = new DaemonClient(this.sockPath);
-    // Native cell play button: start live sync then submit each cell to the daemon.
-    this.controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
-    // Cell STOP button (and the toolbar Interrupt VSCode draws once this handler
-    // exists): the cell runs on the daemon's kernel, not a VSCode-managed
-    // execution, so there's no cancellation token to honor — wire
-    // interruptHandler so ⏹ SIGINTs the kernel. The running cell raises
-    // KeyboardInterrupt -> errors -> the live sink ends it; the kernel stays
-    // alive so the cell can be re-run. Because this handler already gives the
-    // toolbar its button, the extension must not contribute a second one
-    // (`notebook/toolbar` in package.json) — see `interruptKernel`.
-    this.controller.interruptHandler = (nb) => this.interruptKernel(nb);
-    // Auto restore + live sync exactly when OUR kernel becomes the notebook's
-    // selected kernel — this is the right moment (createNotebookCellExecution
-    // requires the controller be selected, so starting on raw open races ahead
-    // of selection and the restore silently fails). On reopen VSCode re-selects
-    // the remembered kernel, so the user gets restore+live with NO command (#3/#4).
-    this.selectionSub = this.controller.onDidChangeSelectedNotebooks((e) => {
-      if (e.selected) {
-        void this.ensureLive(e.notebook).catch(() => undefined);
-      } else {
-        this.disposeLive(e.notebook.uri);
-      }
+    const selections = NOTEBOOK_TYPES.map((type) => {
+      const controller = vscode.notebooks.createNotebookController(
+        type === "tithon-py" ? "tithon" : "tithon-notebook",
+        type,
+        "Tithon",
+      );
+      this.controllers.set(type, controller);
+      controller.supportedLanguages = ["python"];
+      controller.supportsExecutionOrder = false;
+      controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
+      controller.interruptHandler = (nb) => this.interruptKernel(nb);
+      return controller.onDidChangeSelectedNotebooks((event) => {
+        if (event.selected) void this.ensureLive(event.notebook).catch(() => undefined);
+        else this.disposeLive(event.notebook.uri);
+      });
     });
+    this.selectionSub = vscode.Disposable.from(...selections);
+  }
+
+  private controllerFor(notebook: vscode.NotebookDocument): vscode.NotebookController {
+    const controller = this.controllers.get(notebook.notebookType);
+    if (!controller) throw new Error(`Unsupported notebook type: ${notebook.notebookType}`);
+    return controller;
   }
 
   private async _executeHandler(
@@ -1258,8 +1256,10 @@ export class TithonNotebookController {
   /** Show the kernel's Python version on the selected controller label. */
   private applyKernelLabel(python: string | null): void {
     if (!python || this.labelledPython) return;
-    this.controller.label = `Tithon · Python ${python}`;
-    this.controller.description = `Python ${python}`;
+    for (const controller of this.controllers.values()) {
+      controller.label = `Tithon · Python ${python}`;
+      controller.description = `Python ${python}`;
+    }
     this.labelledPython = true;
   }
 
@@ -1281,7 +1281,7 @@ export class TithonNotebookController {
     await waitForDaemonStop(this.sockPath);
     await ensureDaemon(this.sockPath); // relaunches with the (possibly new) interpreter
     for (const nb of vscode.workspace.notebookDocuments) {
-      if (nb.notebookType === "tithon-py") await this.ensureLive(nb).catch(() => undefined);
+      if (isTithonNotebookType(nb.notebookType)) await this.ensureLive(nb).catch(() => undefined);
     }
   }
 
@@ -1428,7 +1428,7 @@ export class TithonNotebookController {
     this.wantLive.clear();
     for (const s of this.liveSessions.values()) s.dispose();
     this.liveSessions.clear();
-    this.controller.dispose();
+    for (const controller of this.controllers.values()) controller.dispose();
   }
 
   /**
@@ -1836,7 +1836,7 @@ export class TithonNotebookController {
         } catch {
           continue; // cell index out of range for the current document
         }
-        const exec = this.controller.createNotebookCellExecution(cell);
+        const exec = this.controllerFor(notebook).createNotebookCellExecution(cell);
         exec.start(Date.now());
         await exec.replaceOutput(toCellOutputs(att.outputs as OutputItem[], att.stale, ctx));
         exec.end(!att.stale, Date.now());
@@ -1901,7 +1901,7 @@ export class TithonNotebookController {
       // replays the backlog, so the SNAPSHOT is the only thing carrying that death
       // to a client opening or reconnecting now.
       this.warnKernelDied(notebook.uri, client);
-      const sink = new VSCodeCellSink(this.controller, notebook, client);
+      const sink = new VSCodeCellSink(this.controllerFor(notebook), notebook, client);
       const live = new LiveOutputSync(
         cellsFromNotebook(notebook), // in-memory, not disk (ADR-021)
         sink,
@@ -2181,7 +2181,7 @@ export function registerRestore(
     controller,
     vscode.commands.registerCommand("tithon.retryRestore", async () => {
       const nb = vscode.window.activeNotebookEditor?.notebook;
-      if (nb?.notebookType !== "tithon-py") return;
+      if (!nb || !isTithonNotebookType(nb.notebookType)) return;
       try {
         await controller.retryRestore(nb);
       } catch (error) {
