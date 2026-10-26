@@ -41,6 +41,21 @@
     "onNotebook:tithon-notebook"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "tithon-notebook",
+        "aliases": [
+          "Python Notebook"
+        ],
+        "extensions": [
+          ".pynb"
+        ],
+        "icon": {
+          "light": "./icons/pynb.svg",
+          "dark": "./icons/pynb.svg"
+        }
+      }
+    ],
     "notebooks": [
       {
         "type": "tithon-notebook",

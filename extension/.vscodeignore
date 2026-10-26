@@ -8,5 +8,6 @@
 !CHANGELOG.md
 !LICENSE
 !icon.png
+!icons/pynb.svg
 !dist/extension.js
 !dist/widgetRenderer.js
