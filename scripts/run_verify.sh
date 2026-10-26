@@ -9,7 +9,7 @@
 #     core         v1 v2 v3 v4 v47 v49 v50 v57 journal / fold / artifact / daemon-crash survival / reply payload / completion barrier / multi-client fan-out / in-flight recovery (hermetic)
 #     serializer   v6                     percent <-> notebook round-trip                      (hermetic)
 #     backpressure v9                     slow-client host protection                          (hermetic)
-#     widgets      v5 v29 v30 v71         ipywidget mirror + render + animation + kernel-scoped history
+#     widgets      v5 v29 v30 v71 v72 v73  widget mirror + history + classic comms + real DOM input
 #     restore      v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect: output + cell-state restore, orphan, shared-sidecar clone, closed-session (daemon + real VSCode)
 #     livesync     v10 v11 v12 v13 v14 v33 v37 v51 v53 v56 v59  live streaming into cells (native run, edits, display, cross-cell display, dispose-flush race, training-loop sync)
 #     kernels      v17 v18 v19 v20 v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65  per-file kernels + lifecycle (restart/interrupt/terminate/autostart/idle-GC/host-reboot/liveness-watchdog/reconnect-progress-UX/process-group cleanup/interrupt priority/destructive-action confirmation)
@@ -36,7 +36,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 core_s="v1 v2 v3 v4 v47 v49 v50 v57 v66 v68"
 serializer_s="v6"
 backpressure_s="v9"
-widgets_s="v5 v29 v30 v71"
+widgets_s="v5 v29 v30 v71 v72 v73"
 restore_s="v7 v8 v15 v16 v22 v38 v61 v62 v63"
 livesync_s="v10 v11 v12 v13 v14 v33 v37 v51 v53 v56 v59 v63"
 kernels_s="v17 v18 v19 v20 v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69"
@@ -44,8 +44,8 @@ richoutputs_s="v27 v28 v31 v34 v35 v54 v55"
 notebook_s="v32 v39 v41 v42 v43 v44 v64 v67 v70"
 
 # --- meta bundles ------------------------------------------------------------
-fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v55 v57 v58 v60 v61 v62 v66 v68 v71"   # every hermetic test
-vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v63 v64 v65 v67 v69 v70"
+fast_s="v1 v2 v3 v4 v5 v6 v7 v9 v17 v27 v31 v34 v35 v40 v45 v46 v47 v48 v49 v50 v54 v55 v57 v58 v60 v61 v62 v66 v68 v71 v72"   # every hermetic test
+vscode_s="v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v63 v64 v65 v67 v69 v70 v73"
 
 bundle="${1:-fast}"
 case "$bundle" in
@@ -75,7 +75,7 @@ label="$(echo "$bundle" | tr '[:lower:]-' '[:upper:]_')"
 # Any bundle that includes a real-VSCode test builds the extension ONCE here;
 # the per-test scripts see TITHON_SKIP_BUILD=1 and reuse it (was: each of the 26
 # scripts ran `tsc` twice -> 52 redundant builds per full vscode run).
-ELECTRON=" v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v65 v67 v69 v70 "
+ELECTRON=" v8 v10 v11 v12 v13 v14 v15 v16 v18 v19 v20 v21 v22 v23 v24 v26 v28 v29 v30 v32 v33 v37 v38 v39 v41 v42 v43 v44 v51 v52 v53 v56 v59 v65 v67 v69 v70 v73 "
 need_build=0
 for s in $scripts; do case "$ELECTRON" in *" $s "*) need_build=1 ;; esac; done
 if [ "$need_build" -eq 1 ]; then

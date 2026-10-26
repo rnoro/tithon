@@ -38,6 +38,15 @@ export interface WidgetStateEntry {
 }
 
 class TithonWidgetManager extends HTMLManager {
+  constructor(private readonly commFor?: (id: string) => any) {
+    super();
+  }
+
+  async new_model(options: any, state: any = {}): Promise<any> {
+    const id = options.model_id ?? options.comm?.comm_id;
+    return super.new_model(this.commFor ? { ...options, comm: this.commFor(id) } : options, state);
+  }
+
   protected async loadClass(
     className: string,
     moduleName: string,
@@ -50,12 +59,13 @@ class TithonWidgetManager extends HTMLManager {
       if (mod[className]) return mod[className];
       throw new Error(`Class ${className} not found in ${moduleName}@${moduleVersion}`);
     }
+    if (this.commFor) throw new Error(`Unbundled widget module ${moduleName}`);
     return super.loadClass(className, moduleName, moduleVersion);
   }
 }
 
-export function createManager(): HTMLManager {
-  return new TithonWidgetManager();
+export function createManager(commFor?: (id: string) => any): HTMLManager {
+  return new TithonWidgetManager(commFor);
 }
 
 /** Find the first model id in the snapshot whose model_name matches. */

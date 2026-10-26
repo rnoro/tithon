@@ -167,6 +167,7 @@ export interface TithonWidgetPayload {
   model_id: string;
   state: WidgetState;
   scope?: WidgetScope;
+  live?: boolean;
 }
 
 /** Resolve saved outputs against their own kernel's mirror, including model-id collisions. */
@@ -232,6 +233,7 @@ export function widgetPayload(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): TithonWidgetPayload | undefined {
+  const source = widgets;
   const scope = widgetScopeForOutput(item, widgets);
   widgets = widgetStateForOutput(item, widgets);
   const id = widgetModelIdOf(item);
@@ -239,9 +241,14 @@ export function widgetPayload(
   if (!id || !models?.[id]) return undefined;
   const reachable: Record<string, WidgetStateEntry> = {};
   const queue = [id];
+  let complete = true;
   while (queue.length) {
     const next = queue.pop()!;
-    if (reachable[next] || !models[next]) continue;
+    if (reachable[next]) continue;
+    if (!models[next]) {
+      complete = false;
+      continue;
+    }
     reachable[next] = models[next];
     const refs = new Set<string>();
     referencedModels(models[next].state, refs);
@@ -250,6 +257,10 @@ export function widgetPayload(
   return {
     model_id: id,
     ...(scope ? { scope } : {}),
+    live:
+      complete &&
+      widgetsLiveForOutput(item, source) &&
+      Object.keys(reachable).every((id) => source?.widget_context?.active_model_ids.includes(id)),
     state: {
       version_major: widgets?.version_major ?? 2,
       version_minor: widgets?.version_minor ?? 0,
@@ -258,21 +269,34 @@ export function widgetPayload(
   };
 }
 
-// Widgets with no client -> kernel back-channel. The comm path is receive-only,
-// so a control's own DOM interaction updates its LOCAL view state and never
-// reaches the kernel or errors — a slider drag or button click does nothing, with
-// no indication anything is wrong. This is an ALLOW-list, not a deny-list, on
-// purpose: an unrecognized model — including any future ipywidgets control — falls
-// back to text by default rather than risking a silent no-op control that LOOKS
-// functional. Every entry verified against the installed `@jupyter-widgets`
-// package source (its View class registers no DOM listener that writes back to
-// the model) — an entry that cannot be checked against that source does not
-// belong here. `OutputModel` is deliberately
-// EXCLUDED despite having no interaction of its own: its `outputs` trait can
-// nest a `display_data` item carrying ANOTHER widget's
-// `application/vnd.jupyter.widget-view+json` reference, entirely outside the
-// `children` array this function walks — an interactive widget captured inside
-// an Output widget would slip past this guard undetected.
+function widgetsLiveForOutput(item: OutputItem, widgets: WidgetState | null | undefined): boolean {
+  const context = widgets?.widget_context;
+  return (
+    !!context &&
+    widgets?.renderer_available !== false &&
+    "widget_kernel_id" in item &&
+    item.widget_kernel_id === context.kernel_id
+  );
+}
+
+const INTERACTIVE_MODELS = new Set([
+  "ButtonModel",
+  "IntSliderModel",
+  "FloatSliderModel",
+  "TextModel",
+  "DropdownModel",
+]);
+
+export function isRenderableWidget(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): boolean {
+  const id = widgetModelIdOf(item);
+  if (!id) return false;
+  const state = widgetStateForOutput(item, widgets);
+  return supportedGraph(id, state, widgetPayload(item, widgets)?.live === true);
+}
+
 const DISPLAY_ONLY_MODELS = new Set([
   "HTMLModel",
   "HTMLMathModel",
@@ -286,15 +310,18 @@ const DISPLAY_ONLY_MODELS = new Set([
   "GridBoxModel",
 ]);
 
-/**
- * Whether this widget — and, for a container, every descendant reachable via
- * `children` — is display-only. A container holding even one interactive or
- * unrecognized child is NOT safe to render interactively: the child would still
- * silently swallow its own input. Mirrors `widgetFallbackText`'s own traversal.
- */
+/** Classify graphs that remain renderable without live input authority. */
 export function isDisplayOnlyWidget(
   modelId: string,
   widgets: WidgetState | null | undefined,
+): boolean {
+  return supportedGraph(modelId, widgets, false);
+}
+
+function supportedGraph(
+  modelId: string,
+  widgets: WidgetState | null | undefined,
+  interactive: boolean,
 ): boolean {
   const models = widgets?.state;
   if (!models) return false;
@@ -305,7 +332,8 @@ export function isDisplayOnlyWidget(
     const s = models[id]?.state;
     if (!s) return false; // unknown model: fail closed
     const name = String(s._model_name ?? "");
-    if (!DISPLAY_ONLY_MODELS.has(name)) return false;
+    if (!DISPLAY_ONLY_MODELS.has(name) && !(interactive && INTERACTIVE_MODELS.has(name)))
+      return false;
     const ch = s.children;
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
     // that isn't an array (a malformed/unexpected shape) fails closed instead of

@@ -102,6 +102,9 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
         payload["_tithon_kernel_id"] = content.get("_tithon_kernel_id", LEGACY_SCOPE)
         if "_tithon_legacy_kernel_id" in content:
             payload["_tithon_legacy_kernel_id"] = content["_tithon_legacy_kernel_id"]
+        for key in ("_tithon_message", "_tithon_request"):
+            if key in content:
+                payload[key] = content[key]
         buffers_b64 = content.get("_buffers_b64")
         if buffers_b64:
             payload["_buffers_b64"] = buffers_b64

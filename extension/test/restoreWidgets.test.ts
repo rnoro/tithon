@@ -33,6 +33,10 @@ vi.mock("../src/sessionClient", () => ({
     widgets() {
       return null;
     }
+    widgetMessageForRenderer() {
+      return undefined;
+    }
+    async sendWidgetMessage() {}
     executions() {
       return [];
     }

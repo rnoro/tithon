@@ -68,6 +68,9 @@ class WidgetMirror:
         # comm_id -> {"state": {...json attrs...}, "buffers": {path_tuple: bytes}}
         self._models: dict[str, dict] = {}
 
+    def has_model(self, comm_id: str) -> bool:
+        return comm_id in self._models
+
     def would_accept(self, msg_type: str, content: dict) -> bool:
         """Predict apply()'s accept/reject WITHOUT mutating — must stay in sync
         with apply()'s own guard clauses. Lets a caller journal before

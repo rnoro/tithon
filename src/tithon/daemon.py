@@ -40,6 +40,12 @@ from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
+from .widget_transport import (
+    MAX_WIDGET_PENDING,
+    WIDGET_REQUEST_TTL,
+    raw_message,
+    request_content,
+)
 from .widgets import LEGACY_SCOPE, WIDGET_VIEW, WidgetMirror, is_comm
 
 log = logging.getLogger("tithon.daemon")
@@ -246,6 +252,7 @@ class Session:
         # Shell-channel routing: `parent_header.msg_id` -> the awaiter of that
         # request's reply. One pump owns the channel — see `_shell_pump`.
         self._shell_waiters: dict[str, asyncio.Future] = {}
+        self._widget_requests: dict[str, dict] = {}
         # Completion barrier: `status: idle` for an execution's parent, signalled
         # from `_handle_iopub` and awaited by `_run_one` (see `_await_idle`).
         self._idle_events: dict[str, asyncio.Event] = {}
@@ -596,6 +603,7 @@ class Session:
         self._fail_shell_waiters("kernel restarted")
         self._idle_events.clear()
         self._control_fences.clear()
+        self._widget_requests.clear()
         self._recovery_gate = asyncio.Event()
         self._recovery_gate.set()
         self._start_tasks()
@@ -1132,6 +1140,52 @@ class Session:
                 fut.set_exception(ConnectionError(reason))
         self._shell_waiters.clear()
 
+    def send_widget_message(self, request: dict, binding: str) -> str:
+        """Send once to an existing live comm; never create or revive a kernel."""
+        content, buffers = request_content(request)
+        identity = self.kernel.kernel_id
+        if (
+            self._killed
+            or self._restarting
+            or self.kc is None
+            or self.kernel_status == "dead"
+            or not self.kernel.is_alive()
+            or request.get("kernel_id") != identity
+            or request.get("binding") != f"{binding}:{identity}"
+        ):
+            raise ValueError("Widget connection or kernel is unavailable")
+        mirror = self._widget_mirrors.get(identity)
+        if mirror is None or not mirror.has_model(content["comm_id"]):
+            raise ValueError("Widget model is not an active kernel comm")
+        now = time.monotonic()
+        self._widget_requests = {
+            key: item
+            for key, item in self._widget_requests.items()
+            if now - item["created"] < WIDGET_REQUEST_TTL
+        }
+        if len(self._widget_requests) >= MAX_WIDGET_PENDING:
+            raise ValueError("Too many pending widget messages")
+        if any(
+            item["binding"] == binding and item["request_id"] == request["request_id"]
+            for item in self._widget_requests.values()
+        ):
+            raise ValueError("Duplicate widget request")
+        message = self.kc.session.msg("comm_msg", content=content, metadata={"version": "2.1.0"})
+        message_id = message["header"]["msg_id"]
+        self._widget_requests[message_id] = {
+            "created": now,
+            "request_id": request["request_id"],
+            "binding": binding,
+            "kernel_id": identity,
+        }
+        try:
+            self.kc.session.send(self.kc.shell_channel.socket, message, buffers=buffers)
+        except Exception:
+            self._widget_requests.pop(message_id, None)
+            raise
+        self.touch()
+        return message_id
+
     def _handle_iopub(self, msg: dict) -> None:
         msg_type = msg["header"]["msg_type"]
         content = msg.get("content", {})
@@ -1156,8 +1210,25 @@ class Session:
                 control["idle"].set()
             return
         exec_id = self._msgid_to_exec.get(parent_id)
+        interaction = self._widget_requests.get(parent_id)
+        if interaction is not None and msg_type == "status":
+            payload = {
+                "kernel_id": interaction["kernel_id"],
+                "request_id": interaction["request_id"],
+                "binding": interaction["binding"],
+                "message": raw_message(msg),
+            }
+            self._journal_lifecycle(None, "tithon.widget_status", payload)
+            if content.get("execution_state") == "idle":
+                self._widget_requests.pop(parent_id, None)
+            return
         if is_comm(msg_type):
-            self._handle_comm(exec_id, msg_type, content, msg.get("buffers") or [])
+            raw = {"_tithon_message": raw_message(msg)}
+            if interaction is not None:
+                raw["_tithon_request"] = {
+                    key: interaction[key] for key in ("request_id", "binding")
+                }
+            self._handle_comm(exec_id, msg_type, {**content, **raw}, msg.get("buffers") or [])
             return
         if exec_id is None or msg_type not in JOURNALED_IOPUB:
             return
@@ -1291,7 +1362,12 @@ class Session:
         mirror = self._widget_mirrors.get(scope)
         if mirror is None:
             mirror = WidgetMirror()
-        if not mirror.would_accept(msg_type, content):
+        custom = (
+            msg_type == "comm_msg"
+            and mirror.has_model(content.get("comm_id"))
+            and (content.get("data") or {}).get("method") == "custom"
+        )
+        if not custom and not mirror.would_accept(msg_type, content):
             return
         stored = {**content, "_tithon_kernel_id": scope if self.kernel.kernel_id else None}
         if scope == LEGACY_SCOPE:
@@ -1992,7 +2068,10 @@ class Daemon:
         # write_limit caps each connection's send buffer so a slow client makes
         # ws.send apply backpressure instead of growing daemon memory unbounded.
         async with unix_serve(
-            self._handler, path=str(self.sock_path), write_limit=WRITE_BUFFER_HIGH
+            self._handler,
+            path=str(self.sock_path),
+            write_limit=WRITE_BUFFER_HIGH,
+            max_size=6 * 1024 * 1024,
         ):
             os.chmod(self.sock_path, 0o600)
             self.pid_file.write_text(str(os.getpid()))
@@ -2271,6 +2350,8 @@ class Daemon:
         session: Session | None = None
         sub: Subscriber | None = None
         pump: asyncio.Task | None = None
+        widget_binding: str | None = None
+        widget_sequence = 0
         log.info("client connected")
         try:
             async for raw in ws:
@@ -2351,6 +2432,32 @@ class Daemon:
                     log.info("[%s] interrupt ok=%s", sid, ok)
                     await ws.send(json.dumps({"op": "interrupted", "ok": ok}))
                     continue
+                if op == "widget_message":
+                    request_id = msg.get("request_id")
+                    try:
+                        if (
+                            session is None
+                            or sub is None
+                            or sub.dropped
+                            or widget_binding is None
+                            or msg.get("session") != session.session_id
+                        ):
+                            raise ValueError("Widget message requires its attached session")
+                        sequence = msg.get("request_seq")
+                        if type(sequence) is not int or sequence <= widget_sequence:
+                            raise ValueError("Widget request sequence has already been consumed")
+                        widget_sequence = sequence
+                        session.send_widget_message(msg, widget_binding)
+                        reply = {"op": "widget_ack", "request_id": request_id, "ok": True}
+                    except (ValueError, TypeError) as error:
+                        reply = {
+                            "op": "widget_ack",
+                            "request_id": request_id,
+                            "ok": False,
+                            "message": str(error),
+                        }
+                    await ws.send(json.dumps(reply))
+                    continue
                 # A connection is bound to one session, fixed on the first op.
                 # The first op may carry the client's project root (`workdir`) so
                 # a freshly-created session roots its artifacts/kernel there.
@@ -2374,6 +2481,9 @@ class Daemon:
 
                 if op == "attach":
                     if sub is None:
+                        candidate = msg.get("widget_binding")
+                        if isinstance(candidate, str) and 1 <= len(candidate) <= 128:
+                            widget_binding = candidate
                         sub = Subscriber(asyncio.Queue(maxsize=SUB_QUEUE_MAX))
                         session._subs.add(sub)  # buffer live events from this instant
                         try:

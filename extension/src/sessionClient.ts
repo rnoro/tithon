@@ -31,6 +31,7 @@ import {
   decodeBufferEntries,
   mergeBufferEntries,
   type WidgetContext,
+  type WidgetScope,
   type WidgetState,
 } from "./richOutput";
 import type { Cell } from "./serializer";
@@ -136,6 +137,105 @@ export class SessionClient {
   private widgetState: WidgetState | null = null;
   private readonly widgetBinding = randomUUID();
   private attached = false;
+  private widgetSequence = 0;
+  private readonly widgetAcks = new Map<
+    string,
+    {
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+
+  /** Acknowledges sending only; callback completion arrives as correlated IOPub. */
+  sendWidgetMessage(
+    scope: WidgetScope,
+    requestId: string,
+    commId: string,
+    data: unknown,
+    buffers: string[] = [],
+  ): Promise<void> {
+    const widgets = this.widgets();
+    const context = widgets?.widget_context;
+    if (
+      !this.isConnected() ||
+      widgets?.renderer_available === false ||
+      scope.session !== this.session ||
+      scope.binding !== widgets?.renderer_binding?.binding ||
+      scope.kernel_id !== context?.kernel_id ||
+      !context?.active_model_ids.includes(commId)
+    ) {
+      return Promise.reject(new Error("Widget connection or model is unavailable"));
+    }
+    if (this.widgetAcks.size >= 64 || this.widgetAcks.has(requestId)) {
+      return Promise.reject(new Error("Too many pending or duplicate widget requests"));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.widgetAcks.delete(requestId);
+        reject(new Error("Widget send outcome is uncertain; reconnect before retrying"));
+      }, 60000);
+      this.widgetAcks.set(requestId, { resolve, reject, timer });
+      try {
+        this.ws!.send(
+          JSON.stringify({
+            op: "widget_message",
+            session: this.session,
+            kernel_id: scope.kernel_id,
+            binding: scope.binding,
+            request_id: requestId,
+            request_seq: ++this.widgetSequence,
+            comm_id: commId,
+            data,
+            buffers,
+          }),
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        this.widgetAcks.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  /** Only this connection's parent IDs may complete its renderer callbacks. */
+  widgetMessageForRenderer(event: LiveEvent): any | undefined {
+    const widgets = this.widgets();
+    if (widgets?.renderer_available === false) return;
+    const payload = event.payload;
+    let message: any;
+    let request: any;
+    if (event.kind === "widget") {
+      if (payload?._tithon_kernel_id !== widgets?.widget_context?.kernel_id) return;
+      message = payload?._tithon_message;
+      request = payload?._tithon_request;
+    } else if (event.kind === "widget_status") {
+      if (
+        payload?.kernel_id !== widgets?.widget_context?.kernel_id ||
+        payload?.binding !== this.widgetBinding
+      )
+        return;
+      message = payload.message;
+      request = payload;
+    }
+    if (!message) return;
+    return {
+      ...message,
+      parent_header: {
+        ...message.parent_header,
+        ...(request?.binding === this.widgetBinding ? { msg_id: request.request_id } : {}),
+      },
+    };
+  }
+
+  private rejectWidgetAcks(): void {
+    for (const pending of this.widgetAcks.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Widget connection ended; sent actions are not retried"));
+    }
+    this.widgetAcks.clear();
+  }
+
   /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
    *  Seeded from the snapshot (reconnect re-prompts) and kept current by the
    *  tithon.input_request / input_resolved events. Null when nothing is waiting. */
@@ -203,6 +303,7 @@ export class SessionClient {
   private fireDisconnect(reason: string): void {
     if (this.disconnected || this.closing) return;
     this.disconnected = true;
+    this.rejectWidgetAcks();
     if (this.widgetState?.widget_context) this.widgetState.widget_context.active_model_ids = [];
     this.onDisconnectCb?.(reason);
   }
@@ -368,6 +469,7 @@ export class SessionClient {
         ws.send(
           JSON.stringify({
             op: "attach",
+            widget_binding: this.widgetBinding,
             last_seen_seq: lastSeenSeq,
             session: this.session,
             workdir: this.workdir,
@@ -417,6 +519,16 @@ export class SessionClient {
 
   private handle(m: any): void {
     switch (m.op) {
+      case "widget_ack": {
+        const pending = this.widgetAcks.get(m.request_id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.widgetAcks.delete(m.request_id);
+          if (m.ok) pending.resolve();
+          else pending.reject(new Error(m.message || "Widget request rejected"));
+        }
+        break;
+      }
       case "snapshot":
         this.applySnapshot(m);
         break;
@@ -510,6 +622,7 @@ export class SessionClient {
       }
       if (["dead", "restarting", "killed", "gc", "shutdown"].includes(status)) {
         if (context) context.active_model_ids = [];
+        this.rejectWidgetAcks();
         this.kernelInfoData = { ...(this.kernelInfoData ?? {}), status };
       } else if (status === "restarted" || status === "replaced") {
         this.kernelInfoData = {
@@ -714,6 +827,7 @@ export class SessionClient {
         ws.send(
           JSON.stringify({
             op: "attach",
+            widget_binding: this.widgetBinding,
             last_seen_seq: -1,
             session: this.session,
             workdir: this.workdir,
@@ -759,6 +873,7 @@ export class SessionClient {
 
   close(): void {
     if (this.widgetState?.widget_context) this.widgetState.widget_context.active_model_ids = [];
+    this.rejectWidgetAcks();
     this.closing = true; // suppress the disconnect callback for an intentional close
     this.ws?.close();
     this.ws = null;

@@ -20,8 +20,8 @@ import {
   decodeBufferEntries,
   imageOf,
   imageRefsOf,
-  isDisplayOnlyWidget,
   isOutputAreaView,
+  isRenderableWidget,
   mergeBufferEntries,
   TITHON_WIDGET_MIME,
   WIDGET_VIEW_MIME,
@@ -35,7 +35,7 @@ import {
   widgetStateForOutput,
 } from "./richOutput";
 import { type Cell, parse } from "./serializer";
-import { type KernelSnapshot, SessionClient } from "./sessionClient";
+import { type KernelSnapshot, type LiveEvent, SessionClient } from "./sessionClient";
 import { formatTraceback } from "./tracebackFormatter";
 
 /**
@@ -150,13 +150,8 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
       //    snapshot) -> the text fallback, else the display's own text/plain.
       const modelId = widgetModelIdOf(o);
       if (modelId) {
-        // Interactive controls (sliders, buttons, text boxes...) have no
-        // client -> kernel comm back-channel — rendering them
-        // via html-manager would produce a control that LOOKS functional but
-        // silently drops every interaction. Render only display-only widgets
-        // (and containers of them) interactively; anything else is the
-        // honest text fallback, even though the mirror state IS known.
-        const payload = isDisplayOnlyWidget(modelId, widgetStateForOutput(o, ctx?.widgets))
+        // Interactive graphs require complete active dependencies (see isRenderableWidget).
+        const payload = isRenderableWidget(o, ctx?.widgets)
           ? widgetPayload(o, ctx?.widgets ?? null)
           : undefined;
         if (payload) {
@@ -200,10 +195,7 @@ function isLiveWidget(o: OutputItem, ctx?: RenderCtx): boolean {
   if (o.output_type === "stream" || o.output_type === "error" || imageOf(o)) return false;
   const id = widgetModelIdOf(o);
   if (!id) return false;
-  return (
-    isDisplayOnlyWidget(id, widgetStateForOutput(o, ctx?.widgets)) &&
-    !!widgetPayload(o, ctx?.widgets ?? null)
-  );
+  return isRenderableWidget(o, ctx?.widgets) && !!widgetPayload(o, ctx?.widgets ?? null);
 }
 
 /** Cheap identity of an item's rendered CONTENT — unchanged means nothing to write. */
@@ -914,6 +906,7 @@ export class TithonNotebookController {
       hasPendingFlush: () => boolean;
       diag: () => LiveDiag;
       widgets: () => WidgetState | null;
+      sendWidgetMessage: SessionClient["sendWidgetMessage"];
     }
   >();
 
@@ -1032,8 +1025,41 @@ export class TithonNotebookController {
         mode?: string;
         comm_id?: string;
         scope?: WidgetScope;
+        request_id?: string;
+        data?: unknown;
+        buffers?: string[];
       };
-      if (m?.type === "tithon.widget-rendered") {
+      if (m?.type === "tithon.widget-send") {
+        const owner = e.editor.notebook.uri.toString();
+        const client = this.liveSessions.get(owner);
+        const scope = m.scope;
+        if (!scope || typeof m.request_id !== "string" || typeof m.comm_id !== "string") return;
+        if (!client) {
+          void this.widgetMessaging.postMessage(
+            {
+              type: "tithon.widget-error",
+              scope,
+              request_id: m.request_id,
+              message: "Widget connection is not ready. Reconnect to refresh.",
+            },
+            e.editor,
+          );
+          return;
+        }
+        void client
+          .sendWidgetMessage(scope, m.request_id, m.comm_id, m.data, m.buffers)
+          .catch((error) => {
+            void this.widgetMessaging.postMessage(
+              {
+                type: "tithon.widget-error",
+                scope,
+                request_id: m.request_id,
+                message: String(error.message ?? error),
+              },
+              e.editor,
+            );
+          });
+      } else if (m?.type === "tithon.widget-rendered") {
         this.widgetRenders.push({ model_id: m.model_id, mode: m.mode });
         if (m.mode === "html" && m.model_id)
           this.resyncWidget(e.editor.notebook.uri.toString(), m.model_id, m.scope);
@@ -1958,6 +1984,7 @@ export class TithonNotebookController {
     hasPendingFlush: () => boolean;
     diag: () => LiveDiag;
     widgets: () => WidgetState | null;
+    sendWidgetMessage: SessionClient["sendWidgetMessage"];
   }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     if (signal?.aborted) throw new Error("Output restoration cancelled");
@@ -1967,6 +1994,27 @@ export class TithonNotebookController {
       workdirForUri(notebook.uri),
     );
     let rendererBinding: WidgetState["renderer_binding"];
+    // Register raw routing before output seeding can mount a live manager.
+    const forwardWidgetEvent = (ev: LiveEvent) => {
+      if (
+        ev.kind === "kernel" &&
+        ["dead", "restarting", "restarted", "replaced", "killed", "gc", "shutdown"].includes(
+          ev.payload?.status,
+        )
+      ) {
+        this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
+        rendererBinding = client.widgets()?.renderer_binding;
+      }
+      const rawWidget = client.widgetMessageForRenderer(ev);
+      if (rawWidget && client.isConnected() && !signal?.aborted) {
+        const identity = client.widgets()?.widget_context?.kernel_id;
+        void this.widgetMessaging.postMessage({
+          type: "tithon.widget-message",
+          scope: { ...client.widgets()?.renderer_binding, kernel_id: identity },
+          message: rawWidget,
+        });
+      }
+    };
     let teardown = () => client.close();
     let cleaned = false;
     const cleanup = () => {
@@ -1981,6 +2029,7 @@ export class TithonNotebookController {
       if (signal?.aborted) throw new Error("Output restoration cancelled");
       await client.attach(0); // catch up on any prior state, then stream live
       rendererBinding = client.widgets()?.renderer_binding;
+      client.onEvent(forwardWidgetEvent);
       if (signal?.aborted) throw new Error("Output restoration cancelled");
       // Register the reconnect handler with NO await between attach resolving and
       // here, so a drop during the seed/prefetch below cannot slip past an
@@ -2133,15 +2182,7 @@ export class TithonNotebookController {
         rendererBinding = settledBinding;
       }
       client.onEvent((ev) => {
-        if (
-          ev.kind === "kernel" &&
-          ["dead", "restarting", "restarted", "replaced", "killed", "gc", "shutdown"].includes(
-            ev.payload?.status,
-          )
-        ) {
-          this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
-          rendererBinding = client.widgets()?.renderer_binding;
-        }
+        forwardWidgetEvent(ev);
         live.onEvent(ev);
         // Keep deltas through restoration, but reject arrivals after teardown
         // closes the client (see flushWidgetUpdates).
@@ -2184,6 +2225,7 @@ export class TithonNotebookController {
         refresh,
         activeCells: () => sink.activeCells(),
         widgets: () => client.widgets(),
+        sendWidgetMessage: client.sendWidgetMessage.bind(client),
         hasPendingFlush: () => live.hasPendingFlush(),
         diag: () => ({
           syncSeq: client.syncSeq,

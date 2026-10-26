@@ -1,24 +1,13 @@
 /**
- * VSCode notebook renderer entrypoint for {@link TITHON_WIDGET_MIME}
- * (`application/vnd.tithon.widget+json`) — the ipywidget renderer that runs
- * inside the notebook webview. The output item is self-contained: it carries the
- * view's `model_id` AND the daemon mirror's widget state, so html-manager can
- * instantiate the model/view with no extension-host round-trip (avoids the
- * render-before-state race). On any failure it degrades to the text fallback.
- *
- * Live updates: the extension host pushes `tithon.widget-update` messages (comm
- * state deltas, optionally carrying binary buffers) over the renderer
- * channel; we apply them to the live model so a tqdm.notebook bar animates, or an
- * Image widget's live-updating pixels stay current. We report the render outcome
- * back so the host (and verify) can confirm html vs fallback.
- *
- * Bundled by esbuild (platform=browser, format=esm) into dist/widgetRenderer.js;
- * the render logic itself is covered under jsdom by test/widget.test.ts.
+ * Notebook widget entrypoint: self-contained snapshots bootstrap each view.
+ * Active models use shared classic comms (see LiveWidgetRenderer); saved and
+ * legacy display models receive scoped state deltas with a text fallback.
  */
 
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
 import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+import { LiveWidgetRenderer } from "./liveWidgetRenderer";
 import type { WidgetBufferEntry, WidgetScope } from "./richOutput";
 import {
   createManager,
@@ -47,6 +36,7 @@ interface WidgetPayload {
   model_id: string;
   state: WidgetStateSnapshot;
   scope?: WidgetScope;
+  live?: boolean;
 }
 interface UpdateMessage {
   type: "tithon.widget-update";
@@ -73,6 +63,7 @@ function injectCss(): void {
 
 export const activate: ActivationFunction = (context) => {
   injectCss();
+  const live = new LiveWidgetRenderer((message) => context.postMessage?.(message));
   const managers = new Map<
     string,
     { manager: HTMLManager; scope?: WidgetScope; active: boolean }
@@ -96,9 +87,11 @@ export const activate: ActivationFunction = (context) => {
   };
 
   context.onDidReceiveMessage?.((msg: unknown) => {
+    live.receive(msg);
     const invalidation = msg as { type?: string; session?: string; binding?: string };
     if (invalidation?.type === "tithon.widget-invalidate") {
       revokedBindings.add(bindingKey(invalidation));
+      live.invalidate(invalidation);
       for (const [id, entry] of managers) {
         if (
           entry.scope?.session === invalidation.session &&
@@ -145,12 +138,22 @@ export const activate: ActivationFunction = (context) => {
   return {
     async renderOutputItem(item: OutputItem, element: HTMLElement) {
       invalidateItem(item.id);
+      live.dispose(item.id);
       element.replaceChildren();
       const payload = item.json() as WidgetPayload;
       const host = document.createElement("div");
       host.className = "tithon-widget-host";
       element.appendChild(host);
 
+      if (payload.live && payload.scope) {
+        try {
+          await live.render(item.id, { ...payload, scope: payload.scope }, host);
+        } catch {
+          live.dispose(item.id);
+          renderFallbackText(payload.state, payload.model_id, host);
+        }
+        return;
+      }
       let mode: "html" | "fallback" = "fallback";
       const manager = createManager();
       const entry = {
@@ -180,6 +183,7 @@ export const activate: ActivationFunction = (context) => {
       });
     },
     disposeOutputItem(id: string) {
+      live.dispose(id);
       invalidateItem(id);
     },
   };

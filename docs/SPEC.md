@@ -283,11 +283,23 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
 - Binary widget state (`Image`, `ipympl`, `bqplot`) rides the comm frame as
   base64 buffers, live and on replay, so a widget whose state is partly binary
   does not go stale across a reconnect.
-- _Bidirectional_ control (a client dragging a slider → kernel) is specified
-  here but not implemented; see [§9](#9-implementation-status). `tqdm` is
-  display-only and needs no back-channel. Because a rendered-but-dead control
-  would silently swallow every input, the client deliberately routes interactive
-  widgets to a text rendering instead — see [§4.4](#44-widget-rendering).
+- Bidirectional classic comms use the attached socket's `widget_binding` and a
+  `widget_message` operation. Validate session, connection epoch, actual live
+  kernel and known current comm without creating a session or reviving a kernel.
+  Each connection consumes monotonically increasing request sequences, including
+  rejected requests; completed sequences cannot be resent on that connection.
+- Kernel comm headers, parent headers, metadata and binary buffers are retained
+  with the journaled comm event. Interaction busy/idle frames are journaled as
+  `tithon.widget_status`. The requesting client maps kernel parent IDs back to
+  its renderer request IDs; peers consume state without completing another
+  connection's callbacks. The existing shell reader remains the only consumer.
+- A `widget_ack` means sent to the kernel transport, not callback completion.
+  Input is never automatically replayed after failure. JSON data is limited to
+  256KiB, binary data to 4MiB/64 buffers, with 64 pending requests per session
+  and renderer and a 60s response window. A renderer buffers at most256 incoming
+  frames or8MiB of queued JSON before disabling its controls and requesting a fresh connection.
+  Expired or disconnected sent actions may still execute; exactly-once side
+  effects across failures are not promised. Callback output routing is pending.
 
 ### 3.5 Sessions, execution queue & sync protocol
 
@@ -331,6 +343,12 @@ for an already-running file wait out an unrelated file's startup. Looking a
 session up creates nothing — a session that does not exist has no cell to stop.
 `get_artifact` echoes `req_id` so a client multiplexes many image fetches over
 one long-lived connection instead of a socket per image.
+
+`widget_message` requires an already attached connection and never performs the
+lazy bind above. It carries `session`, `kernel_id`, renderer `binding`,
+`request_id`, increasing `request_seq`, `comm_id`, `data`, and optional base64
+`buffers`; it returns `widget_ack` with the same request ID and `ok`/error.
+`attach` optionally fixes a `widget_binding` for that socket's lifetime.
 
 `attach` semantics by `last_seen_seq`:
 
@@ -462,15 +480,21 @@ instantiates the model immediately from that payload. The renderer is an esbuild
 bundle (html-manager + ipywidgets controls + CSS inlined). It renders:
 
 - **statically** and **on reconnect** (the widget mirror snapshot), and
-- **live** — the bar animates as the cell runs (comm deltas coalesced and pushed
-  to the renderer, applied with `model.set_state`).
+- **live** — raw correlated comm messages update active stock models; saved and
+  legacy display-only views retain the state-delta rendering path.
 
-Only **display-only** widgets take the html-manager path, decided by an
-allow-list that fails closed on anything it does not recognize and recurses
-through container `children`. Everything else — sliders, buttons, text boxes —
-renders as text on purpose: without the client → kernel back-channel of
-[§3.4](#34-widget-mirror-ipywidgets--comm) a live-looking control would accept a
-drag and drop it silently, which is worse than an honest static value.
+Active Button, IntSlider, FloatSlider, Text and Dropdown models and standard
+containers use a shared live model registry per notebook/kernel/connection,
+with independent view lifetimes. Stock models receive classic comms during
+construction, including ordered echo/correction and IOPub status callbacks.
+Binary buffers and custom messages use the same path. Live modules are bundled
+base/controls only; no third-party loading is enabled.
+
+Interactive graphs require current active models and complete dependencies.
+Saved, legacy and unavailable controls remain static text. Disconnect, kernel
+replacement, rejection or response timeout disables a mounted live view and
+revokes queued work; sent actions are never retried. Unsupported/mixed graphs
+still fall back as a whole pending child-level fallback support.
 
 If html rendering fails, the widget's final state is shown as text
 (e.g. `100% |████| 5/5`), so information is never lost. An
@@ -806,10 +830,10 @@ does not have.
 
 **Partial / not yet implemented**
 
-- Bidirectional widgets (client → kernel control, e.g. slider drag). Interactive
-  widgets therefore render as text on purpose ([§4.4](#44-widget-rendering)).
-  Kernel-scoped model history and renderer invalidation are implemented; the
-  comm back-channel and callback-output routing are still missing.
+- Callback `print`/display/error/clear and Output capture from interactive
+  widgets still need explicit interaction ownership/routing (#23). Basic control
+  input, state changes and shared live model transport are implemented; Output
+  views, third-party widgets and mixed unsupported-child fallback remain pending.
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
@@ -857,7 +881,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30 v71         widget mirror + render + kernel-scoped history
+make widgets     # v5 v29 v30 v71 v72 v73         widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -881,6 +905,7 @@ Capability → what it guarantees → how it is verified:
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
 | Widget identity          | Historical/copy state cannot rebind to a replacement kernel | `v71` (real daemon SIGKILL, same-ID models, retention, saved projection and scoped renderer) |
+| Widget comm transport | Real callback values, raw correlation and shared model lifecycle | `v72` (actual socket/kernel, binary, replay, scoped rejection), `v73` (real VSCode DOM input and stale-view revocation) |
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
