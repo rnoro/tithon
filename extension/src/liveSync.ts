@@ -319,6 +319,9 @@ export class LiveOutputSync {
         ) {
           op.item.data = item.data; // fold into the pending create
           op.item.metadata = item.metadata;
+          delete op.item.widget_kernel_id;
+          if (typeof item.widget_kernel_id === "string")
+            op.item.widget_kernel_id = item.widget_kernel_id;
           return;
         }
       }
@@ -429,6 +432,9 @@ function toExecResult(content: any): OutputItem {
     output_type: "execute_result",
     data: content?.data ?? {},
     metadata: content?.metadata ?? {},
+    ...(typeof content?._tithon_kernel_id === "string"
+      ? { widget_kernel_id: content._tithon_kernel_id }
+      : {}),
     execution_count: content?.execution_count ?? null,
   };
 }
@@ -438,6 +444,9 @@ function toDisplay(content: any): OutputItem {
     output_type: "display_data",
     data: content?.data ?? {},
     metadata: content?.metadata ?? {},
+    ...(typeof content?._tithon_kernel_id === "string"
+      ? { widget_kernel_id: content._tithon_kernel_id }
+      : {}),
   };
   const did = content?.transient?.display_id;
   if (did != null) item.display_id = did;

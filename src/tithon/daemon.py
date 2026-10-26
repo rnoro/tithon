@@ -40,7 +40,7 @@ from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
-from .widgets import WidgetMirror, is_comm
+from .widgets import LEGACY_SCOPE, WIDGET_VIEW, WidgetMirror, is_comm
 
 log = logging.getLogger("tithon.daemon")
 
@@ -234,6 +234,7 @@ class Session:
         # file is GC'd, so a live-updating plot keeps O(1) files, not one/step.
         self._artifact_refs: Counter[str] = Counter()
         self._mirror = WidgetMirror()
+        self._widget_mirrors: dict[str, WidgetMirror] = {}
         # `display_id` -> the execution whose `display_data` CREATED it, for the
         # rest of the session — see `_register_display` / `_display_target`.
         # Never evicted: an update whose owner's fold no longer holds a matching
@@ -409,7 +410,12 @@ class Session:
         seq = self.journal.append_message(
             None,
             "tithon.kernel",
-            {"status": "replaced", "pid": self.kernel.pid, "deliberate": False},
+            {
+                "status": "replaced",
+                "pid": self.kernel.pid,
+                "deliberate": False,
+                "kernel_id": self.kernel.kernel_id,
+            },
         )
         self.kernel_generation = seq
 
@@ -706,6 +712,7 @@ class Session:
             return
         if self.journal.count_local_executions():
             return
+        doc = sidecar.saved_snapshot(doc)
         dropped = self.journal.drop_imported()
         imported = sidecar.import_into(self.journal, self.artifacts.workdir, doc)
         self.journal.set_meta("sidecar_sha", sha)
@@ -732,8 +739,15 @@ class Session:
         """
         if self.sidecar_path is None:
             return True  # nothing shared, so nothing can be left inconsistent
-        doc = sidecar.build(self._execution_snapshots())
-        doc["widgets"] = self._mirror.snapshot()
+        saved = sidecar.saved_snapshot(
+            {
+                "executions": self._execution_snapshots(),
+                "widgets": self._mirror.snapshot(),
+                "widget_context": self.widget_context(),
+            }
+        )
+        doc = sidecar.build(saved["executions"])
+        doc["widgets"] = saved["widgets"]
         try:
             sidecar.write(self.sidecar_path, doc)
         except OSError as e:
@@ -780,7 +794,16 @@ class Session:
         if seed:
             for exec_id, saved in seed["folds"].items():
                 if exec_id in self._folds:
-                    self._folds[exec_id] = ExecutionFold.hydrate(saved["outputs"], saved["state"])
+                    outputs = saved["outputs"]
+                    if exec_id not in self._imported:
+                        outputs = [
+                            {**output, "widget_kernel_id": LEGACY_SCOPE}
+                            if WIDGET_VIEW in output.get("data", {})
+                            and "widget_kernel_id" not in output
+                            else output
+                            for output in outputs
+                        ]
+                    self._folds[exec_id] = ExecutionFold.hydrate(outputs, saved["state"])
             self._display_registry.update(seed["display_registry"])
         for _seq, exec_id, msg_type, content_json in self.journal.all_messages():
             if _seq <= boundary:
@@ -817,8 +840,15 @@ class Session:
         code, not the mirror's — one bad row here must skip and continue, not
         abort every OTHER widget's rebuild.
         """
+        self._mirror = WidgetMirror()
+        self._widget_mirrors = {}
         try:
-            self._mirror.hydrate(json.loads(self.journal.get_meta("imported_widgets") or "{}"))
+            saved = json.loads(self.journal.get_meta("imported_widgets") or "{}")
+            self._mirror.hydrate(saved)
+            imported = WidgetMirror()
+            imported.hydrate(saved)
+            if len(imported):
+                self._widget_mirrors["saved"] = imported
         except ValueError:
             log.exception("[%s] skipping malformed imported widget state", self.session_id)
         for seq, _exec_id, msg_type, content_json in self.journal.comm_messages_after(0):
@@ -826,12 +856,26 @@ class Session:
                 content = json.loads(content_json)
                 buffers = [base64.b64decode(b) for b in content.pop("_buffers_b64", [])]
                 self._mirror.apply(msg_type, content, buffers)
+                scope = content.get("_tithon_kernel_id", LEGACY_SCOPE) or "saved"
+                mirror = self._widget_mirrors.setdefault(scope, WidgetMirror())
+                mirror.apply(msg_type, content, buffers)
             except Exception:
                 log.exception(
                     "[%s] skipping malformed comm row at seq=%d during rebuild",
                     self.session_id,
                     seq,
                 )
+
+        legacy = self._widget_mirrors.get(LEGACY_SCOPE)
+        if (
+            legacy is not None
+            and self.kernel.kernel_id
+            and self.journal.get_meta("legacy_widget_kernel_id") is None
+        ):
+            self.journal.set_meta(
+                "legacy_widget_kernel_id",
+                self.kernel.kernel_id if self.kernel.reattached else "unavailable",
+            )
 
     async def _wait_kernel_ready(self, timeout: float = 120.0) -> None:
         """Poll kernel_info until the kernel replies.
@@ -1120,6 +1164,11 @@ class Session:
         log.debug("[%s] iopub exec=%s type=%s", self.session_id, exec_id, msg_type)
         artifact_ref = None
         if msg_type in ("display_data", "execute_result", "update_display_data"):
+            if "application/vnd.jupyter.widget-view+json" in content.get("data", {}):
+                content = {
+                    **content,
+                    "_tithon_kernel_id": self._widget_display_scope(content),
+                }
             # Keyed on the EMITTER even for a redirected row: the artifact id is
             # provenance ("who produced these bytes"), while the fold that
             # REFERENCES it — and so decides when GC reclaims it — is resolved
@@ -1208,6 +1257,27 @@ class Session:
                 del self._artifact_refs[aid]
                 self.artifacts.delete(aid)
 
+    def _legacy_widget_live(self) -> bool:
+        """Legacy raw models may update only on their surviving migration kernel."""
+        return bool(
+            self.kernel.kernel_id
+            and self.journal.get_meta("legacy_widget_kernel_id") == self.kernel.kernel_id
+        )
+
+    def _widget_display_scope(self, content: dict) -> str | None:
+        view = content.get("data", {}).get(WIDGET_VIEW)
+        if not isinstance(view, dict):
+            return self.kernel.kernel_id
+        comm_id = view.get("model_id")
+        legacy = self._widget_mirrors.get(LEGACY_SCOPE)
+        if (
+            self._legacy_widget_live()
+            and legacy is not None
+            and comm_id in legacy.snapshot()["state"]
+        ):
+            return LEGACY_SCOPE
+        return self.kernel.kernel_id
+
     def _handle_comm(self, exec_id, msg_type: str, content: dict, buffers: list) -> None:
         """Feed the Widget State Mirror; journal raw comm (buffers base64).
 
@@ -1217,15 +1287,23 @@ class Session:
         `apply()` ever runs — the live mirror can never get ahead of what a
         restart's `_rebuild_mirror` would derive from the journal.
         """
-        if not self._mirror.would_accept(msg_type, content):
+        scope = LEGACY_SCOPE if self._legacy_widget_live() else self.kernel.kernel_id or "saved"
+        mirror = self._widget_mirrors.get(scope)
+        if mirror is None:
+            mirror = WidgetMirror()
+        if not mirror.would_accept(msg_type, content):
             return
-        stored = content
+        stored = {**content, "_tithon_kernel_id": scope if self.kernel.kernel_id else None}
+        if scope == LEGACY_SCOPE:
+            stored["_tithon_legacy_kernel_id"] = self.kernel.kernel_id
         if buffers:
             stored = {
-                **content,
+                **stored,
                 "_buffers_b64": [base64.b64encode(bytes(b)).decode("ascii") for b in buffers],
             }
         seq = self.journal.append_message(exec_id, msg_type, stored)
+        mirror.apply(msg_type, content, buffers)
+        self._widget_mirrors[scope] = mirror
         self._mirror.apply(msg_type, content, buffers)
         # The fold needs comm too, but only to track which Output area claims
         # this execution's msg_id (see `ExecutionFold`) — it produces no output
@@ -1571,6 +1649,8 @@ class Session:
 
     # -- protocol helpers ------------------------------------------------------
     def _journal_lifecycle(self, exec_id, msg_type: str, payload: dict) -> None:
+        if msg_type == "tithon.kernel":
+            payload = {**payload, "kernel_id": self.kernel.kernel_id}
         seq = self.journal.append_message(exec_id, msg_type, payload)
         self._broadcast(event_from_message(seq, exec_id, msg_type, payload))
 
@@ -1712,6 +1792,27 @@ class Session:
             )
         return execs
 
+    def widget_context(self) -> dict:
+        """Keep historical model IDs separate from the current kernel's live comms."""
+        identity = self.kernel.kernel_id
+        current = self._widget_mirrors.get(identity)
+        available = not self._killed and not self._restarting and self.kernel_status != "dead"
+        active = (
+            current.snapshot()["state"]
+            if current is not None and available and not self._legacy_widget_live()
+            else {}
+        )
+        return {
+            "kernel_id": identity,
+            "legacy_kernel_id": (
+                self.journal.get_meta("legacy_widget_kernel_id")
+                if self.journal.get_meta("legacy_widget_kernel_id") != "unavailable"
+                else None
+            ),
+            "active_model_ids": list(active),
+            "states": {scope: mirror.snapshot() for scope, mirror in self._widget_mirrors.items()},
+        }
+
     def snapshot(self) -> dict:
         return {
             "session": self.session_id,
@@ -1725,6 +1826,7 @@ class Session:
                 "lost_state": self.kernel_lost_state,
                 "reattached": self.kernel.reattached,
                 "generation": self.kernel_generation,
+                "kernel_id": self.kernel.kernel_id,
             },
             "queue_len": self._queue.qsize(),
             "executions": self._execution_snapshots(),
@@ -1732,6 +1834,7 @@ class Session:
             # a client restores nothing until asked (see `closed_by_user`).
             "closed_by_user": self.closed_by_user,
             "widgets": self._mirror.snapshot(),
+            "widget_context": self.widget_context(),
             # A cell blocked on input()/getpass() at attach time, so a reconnecting
             # client re-presents the prompt (None when nothing is waiting).
             "pending_input": self._pending_input,

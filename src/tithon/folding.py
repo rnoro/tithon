@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from .widgets import legacy_widget_content
+
 _CTRL = re.compile(r"[\r\n\x08]")
 
 #: Key a DAEMON-SYNTHESIZED message carries to force cell scope, overriding any
@@ -160,6 +162,7 @@ class ExecutionFold:
                 self._claims.remove(comm_id)
 
     def apply(self, msg_type: str, content: dict) -> None:
+        content = legacy_widget_content(content)
         if msg_type in _COMM:
             self._apply_comm(msg_type, content)
             return
@@ -181,6 +184,9 @@ class ExecutionFold:
                 if it.get("display_id") == did:
                     it["data"] = content.get("data", {})
                     it["metadata"] = content.get("metadata", {})
+                    it.pop("widget_kernel_id", None)
+                    if "_tithon_kernel_id" in content:
+                        it["widget_kernel_id"] = content["_tithon_kernel_id"]
             return
         if msg_type not in ("stream", "display_data", "execute_result", "error"):
             return  # status, execute_input, ... do not affect outputs
@@ -220,6 +226,8 @@ class ExecutionFold:
                 "data": content.get("data", {}),
                 "metadata": content.get("metadata", {}),
             }
+            if "_tithon_kernel_id" in content:
+                item["widget_kernel_id"] = content["_tithon_kernel_id"]
             did = (content.get("transient") or {}).get("display_id")
             if did is not None:
                 item["display_id"] = did
@@ -232,6 +240,11 @@ class ExecutionFold:
                         "data": content.get("data", {}),
                         "metadata": content.get("metadata", {}),
                         "execution_count": content.get("execution_count"),
+                        **(
+                            {"widget_kernel_id": content["_tithon_kernel_id"]}
+                            if "_tithon_kernel_id" in content
+                            else {}
+                        ),
                     },
                     owner,
                 )

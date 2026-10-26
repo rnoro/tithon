@@ -22,6 +22,18 @@ from __future__ import annotations
 import base64
 
 WIDGET_TARGET = "jupyter.widget"
+WIDGET_VIEW = "application/vnd.jupyter.widget-view+json"
+LEGACY_SCOPE = "legacy"
+
+
+def legacy_widget_content(content: dict) -> dict:
+    """Resolve unversioned raw widget displays to read-only legacy state."""
+    data = content.get("data")
+    if isinstance(data, dict) and WIDGET_VIEW in data and "_tithon_kernel_id" not in content:
+        return {**content, "_tithon_kernel_id": LEGACY_SCOPE}
+    return content
+
+
 #: Public — the single authority for "is this a comm message", shared by
 #: `is_comm()` and `journal.comm_messages_after()`'s SQL filter, so the two
 #: can never silently diverge on a future addition.

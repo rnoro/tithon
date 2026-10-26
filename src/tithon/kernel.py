@@ -9,6 +9,8 @@ the next daemon re-attach (SPEC.md).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import signal
@@ -38,6 +40,7 @@ class KernelHandle:
         # that has already died.
         self.pgid: int | None = None
         self.reattached = False
+        self.kernel_id: str | None = None
 
     def _alive_pid(self) -> int | None:
         """PID from pid file iff that process is alive and really our kernel."""
@@ -85,6 +88,7 @@ class KernelHandle:
             self.pid = pid
             self.pgid = self._resolve_pgid(pid)
             self.reattached = True
+            self.kernel_id = self._identity(pid)
             log.info("re-attaching to existing kernel pid=%d conn=%s", pid, self.conn_file)
             return False
         self._spawn()
@@ -109,7 +113,19 @@ class KernelHandle:
         self.pgid = self._resolve_pgid(proc.pid)
         self.reattached = False
         self.pid_file.write_text(str(proc.pid))
+        self.kernel_id = self._identity(proc.pid)
         log.info("spawned kernel pid=%d conn=%s", proc.pid, self.conn_file)
+
+    def _identity(self, pid: int) -> str:
+        """Identify the actual process across reattachment, independently of history."""
+        connection = json.loads(self.conn_file.read_text())
+        if not isinstance(connection, dict) or not isinstance(connection.get("key"), str):
+            raise ValueError("Kernel connection configuration is malformed")
+        born = psutil.Process(pid).create_time()
+        material = json.dumps(
+            [connection, pid, born], sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(material).hexdigest()
 
     def make_client(self) -> AsyncKernelClient:
         kc = AsyncKernelClient()

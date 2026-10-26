@@ -567,3 +567,66 @@ describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => 
     expect(sink.ops.find((o) => o.op === "status")?.status).toBe("running");
   });
 });
+
+it("preserves widget kernel provenance through live output and coalesced display updates", () => {
+  const sched = new ManualScheduler();
+  const sink = new TestSink();
+  const appended: OutputItem[] = [];
+  const updated: OutputItem[] = [];
+  sink.appendOutput = (_idx, item) => {
+    appended.push(item);
+  };
+  sink.updateDisplay = (_idx, _displayId, item) => {
+    if (item) updated.push(item);
+  };
+  const live = new LiveOutputSync(cells, sink, sched);
+  const content = (kernel: string, value: string) => ({
+    data: { "application/vnd.jupyter.widget-view+json": { model_id: value } },
+    metadata: { custom: "preserved" },
+    transient: { display_id: "same-display" },
+    _tithon_kernel_id: kernel,
+  });
+  live.onEvent(queued("e1", src(0)));
+  live.onEvent(output("e1", "display_data", content("old", "widget")));
+  live.onEvent(output("e1", "execute_result", content("old", "result")));
+  live.onEvent(output("e1", "update_display_data", content("new", "pending-create-update")));
+  sched.tick();
+  expect(appended).toHaveLength(2);
+  expect(appended).toEqual([
+    expect.objectContaining({
+      output_type: "display_data",
+      widget_kernel_id: "new",
+      metadata: { custom: "preserved" },
+    }),
+    expect.objectContaining({
+      output_type: "execute_result",
+      widget_kernel_id: "old",
+      metadata: { custom: "preserved" },
+    }),
+  ]);
+  live.onEvent(output("e1", "update_display_data", content("old", "first")));
+  live.onEvent(output("e1", "update_display_data", content("new", "last")));
+  sched.tick();
+  expect(updated).toHaveLength(1);
+  expect(updated[0]).toMatchObject({
+    widget_kernel_id: "new",
+    data: { "application/vnd.jupyter.widget-view+json": { model_id: "last" } },
+  });
+  live.onEvent(
+    output("e1", "update_display_data", {
+      data: { "text/plain": "ordinary" },
+      transient: { display_id: "same-display" },
+    }),
+  );
+  sched.tick();
+  expect(updated[1]).not.toHaveProperty("widget_kernel_id");
+  live.onEvent(output("e1", "display_data", content("old", "pending-clear")));
+  live.onEvent(
+    output("e1", "update_display_data", {
+      data: { "text/plain": "ordinary" },
+      transient: { display_id: "same-display" },
+    }),
+  );
+  sched.tick();
+  expect(appended[2]).not.toHaveProperty("widget_kernel_id");
+});

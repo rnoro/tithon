@@ -140,16 +140,59 @@ export function mergeBufferEntries(
   return [...merged.values()];
 }
 
+export interface WidgetContext {
+  kernel_id: string | null;
+  active_model_ids: string[];
+  legacy_kernel_id?: string | null;
+  states: Record<string, WidgetState>;
+}
+
+export interface WidgetScope {
+  session: string;
+  kernel_id: string;
+  binding: string;
+}
+
 export interface WidgetState {
   version_major?: number;
   version_minor?: number;
   state?: Record<string, WidgetStateEntry>;
+  widget_context?: WidgetContext;
+  renderer_binding?: { session: string; binding: string };
+  renderer_available?: boolean;
 }
 
 /** Payload carried by a {@link TITHON_WIDGET_MIME} output item. */
 export interface TithonWidgetPayload {
   model_id: string;
   state: WidgetState;
+  scope?: WidgetScope;
+}
+
+/** Resolve saved outputs against their own kernel's mirror, including model-id collisions. */
+export function widgetStateForOutput(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): WidgetState | null | undefined {
+  if (!widgets?.widget_context) return widgets;
+  const kernelId =
+    "widget_kernel_id" in item && typeof item.widget_kernel_id === "string"
+      ? item.widget_kernel_id
+      : "saved";
+  return widgets.widget_context.states[kernelId];
+}
+
+export function widgetScopeForOutput(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): WidgetScope | undefined {
+  if (!widgets?.renderer_binding) return undefined;
+  const kernelId = widgets.widget_context
+    ? "widget_kernel_id" in item && typeof item.widget_kernel_id === "string"
+      ? item.widget_kernel_id
+      : "saved"
+    : "legacy";
+  return { ...widgets.renderer_binding, kernel_id: kernelId };
 }
 
 /** Prefix ipywidgets uses to reference one model from another's trait value. */
@@ -189,6 +232,8 @@ export function widgetPayload(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): TithonWidgetPayload | undefined {
+  const scope = widgetScopeForOutput(item, widgets);
+  widgets = widgetStateForOutput(item, widgets);
   const id = widgetModelIdOf(item);
   const models = widgets?.state;
   if (!id || !models?.[id]) return undefined;
@@ -204,6 +249,7 @@ export function widgetPayload(
   }
   return {
     model_id: id,
+    ...(scope ? { scope } : {}),
     state: {
       version_major: widgets?.version_major ?? 2,
       version_minor: widgets?.version_minor ?? 0,
@@ -362,5 +408,8 @@ export function isOutputAreaView(
 ): boolean {
   const id = widgetModelIdOf(item);
   if (!id) return false;
-  return String(widgets?.state?.[id]?.state?._model_name ?? "") === "OutputModel";
+  return (
+    String(widgetStateForOutput(item, widgets)?.state?.[id]?.state?._model_name ?? "") ===
+    "OutputModel"
+  );
 }

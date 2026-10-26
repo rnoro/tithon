@@ -26,10 +26,13 @@ import {
   TITHON_WIDGET_MIME,
   WIDGET_VIEW_MIME,
   type WidgetBufferEntry,
+  type WidgetScope,
   type WidgetState,
   widgetFallbackText,
   widgetModelIdOf,
   widgetPayload,
+  widgetScopeForOutput,
+  widgetStateForOutput,
 } from "./richOutput";
 import { type Cell, parse } from "./serializer";
 import { type KernelSnapshot, SessionClient } from "./sessionClient";
@@ -153,16 +156,16 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
         // silently drops every interaction. Render only display-only widgets
         // (and containers of them) interactively; anything else is the
         // honest text fallback, even though the mirror state IS known.
-        const payload = isDisplayOnlyWidget(modelId, ctx?.widgets ?? null)
+        const payload = isDisplayOnlyWidget(modelId, widgetStateForOutput(o, ctx?.widgets))
           ? widgetPayload(o, ctx?.widgets ?? null)
           : undefined;
         if (payload) {
           const items = [vscode.NotebookCellOutputItem.json(payload, TITHON_WIDGET_MIME)];
-          const fb = widgetFallbackText(modelId, ctx?.widgets ?? null);
+          const fb = widgetFallbackText(modelId, widgetStateForOutput(o, ctx?.widgets));
           if (fb) items.push(vscode.NotebookCellOutputItem.text(fb, "text/plain"));
           return items;
         }
-        const text = widgetFallbackText(modelId, ctx?.widgets ?? null);
+        const text = widgetFallbackText(modelId, widgetStateForOutput(o, ctx?.widgets));
         if (text) return [vscode.NotebookCellOutputItem.text(text, "text/plain")];
       }
       // 4) HTML repr (pandas DataFrame etc.).
@@ -197,7 +200,10 @@ function isLiveWidget(o: OutputItem, ctx?: RenderCtx): boolean {
   if (o.output_type === "stream" || o.output_type === "error" || imageOf(o)) return false;
   const id = widgetModelIdOf(o);
   if (!id) return false;
-  return isDisplayOnlyWidget(id, ctx?.widgets ?? null) && !!widgetPayload(o, ctx?.widgets ?? null);
+  return (
+    isDisplayOnlyWidget(id, widgetStateForOutput(o, ctx?.widgets)) &&
+    !!widgetPayload(o, ctx?.widgets ?? null)
+  );
 }
 
 /** Cheap identity of an item's rendered CONTENT — unchanged means nothing to write. */
@@ -368,9 +374,10 @@ export class VSCodeCellSink implements CellSink {
       // gains a CHILD references a model the renderer has never been given, and
       // can only get it by being rebuilt from a fresh payload.
       fingerprint: live
-        ? Object.keys(widgetPayload(o, ctx.widgets)?.state.state ?? {})
-            .sort()
-            .join(",")
+        ? JSON.stringify([
+            widgetScopeForOutput(o, ctx.widgets),
+            Object.keys(widgetPayload(o, ctx.widgets)?.state.state ?? {}).sort(),
+          ])
         : slotFingerprint(o),
       live,
       item: o,
@@ -946,7 +953,13 @@ export class TithonNotebookController {
   // buffer before the shared 50ms timer flushes; see `invalidateWidgetUpdatesFor`.
   private readonly widgetUpdateBuf = new Map<
     string,
-    { owner: string; commId: string; state: Record<string, unknown>; buffers: WidgetBufferEntry[] }
+    {
+      owner: string;
+      commId: string;
+      state: Record<string, unknown>;
+      buffers: WidgetBufferEntry[];
+      scope?: WidgetScope;
+    }
   >();
 
   // NUL-separated: neither a uri nor a comm_id can contain one, so this can't
@@ -1013,11 +1026,17 @@ export class TithonNotebookController {
     // text fallback (surfaced for verification), and we push live comm deltas to it.
     this.widgetMessaging = vscode.notebooks.createRendererMessaging("tithon-widget");
     this.widgetMessaging.onDidReceiveMessage((e) => {
-      const m = e.message as { type?: string; model_id?: string; mode?: string; comm_id?: string };
+      const m = e.message as {
+        type?: string;
+        model_id?: string;
+        mode?: string;
+        comm_id?: string;
+        scope?: WidgetScope;
+      };
       if (m?.type === "tithon.widget-rendered") {
         this.widgetRenders.push({ model_id: m.model_id, mode: m.mode });
         if (m.mode === "html" && m.model_id)
-          this.resyncWidget(e.editor.notebook.uri.toString(), m.model_id);
+          this.resyncWidget(e.editor.notebook.uri.toString(), m.model_id, m.scope);
         console.log(`[tithon] widget rendered: ${m.mode} (${m.model_id})`);
       } else if (m?.type === "tithon.widget-updated") {
         this.widgetUpdatesApplied += 1;
@@ -1094,35 +1113,90 @@ export class TithonNotebookController {
   private queueWidgetUpdate(
     owner: string,
     payload:
-      | { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] }
+      | {
+          msg_type?: string;
+          comm_id?: string;
+          data?: any;
+          _buffers_b64?: string[];
+          _tithon_kernel_id?: string;
+          _tithon_legacy_kernel_id?: string;
+        }
       | undefined,
+    widgets: WidgetState | null | undefined = this.liveSessions.get(owner)?.widgets(),
   ): void {
-    if (payload?.msg_type !== "comm_msg" || !payload.comm_id) return;
+    if (
+      payload?.msg_type !== "comm_msg" ||
+      !payload.comm_id ||
+      widgets?.renderer_available === false
+    )
+      return;
+    const kernelId = payload._tithon_kernel_id;
+    const context = widgets?.widget_context;
+    if (
+      context &&
+      !(kernelId === "legacy"
+        ? typeof context.kernel_id === "string" &&
+          context.legacy_kernel_id === context.kernel_id &&
+          payload._tithon_legacy_kernel_id === context.kernel_id &&
+          !!context.states.legacy?.state?.[payload.comm_id]
+        : kernelId === context.kernel_id && context.active_model_ids.includes(payload.comm_id))
+    )
+      return;
+    const scope = widgetScopeForOutput(
+      { output_type: "display_data", data: {}, widget_kernel_id: kernelId },
+      widgets,
+    );
     const data = payload.data ?? {};
     if (data.method !== "update" && data.method !== "echo_update") return;
     const key = this.widgetBufKey(owner, payload.comm_id);
-    const prior = this.widgetUpdateBuf.get(key);
+    const queued = this.widgetUpdateBuf.get(key);
+    const prior = JSON.stringify(queued?.scope) === JSON.stringify(scope) ? queued : undefined;
     const state = { ...(prior?.state ?? {}), ...(data.state ?? {}) };
     const delta = decodeBufferEntries(data.buffer_paths, payload._buffers_b64);
     const buffers = delta.length
       ? mergeBufferEntries(prior?.buffers, delta)
       : (prior?.buffers ?? []);
-    this.widgetUpdateBuf.set(key, { owner, commId: payload.comm_id, state, buffers });
+    this.widgetUpdateBuf.set(key, { owner, commId: payload.comm_id, state, buffers, scope });
     if (!this.widgetFlushTimer) {
       this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
     }
   }
 
   /** A mounted renderer may have missed deltas while building its models. */
-  private resyncWidget(owner: string, modelId: string): void {
+  private resyncWidget(owner: string, modelId: string, scope?: WidgetScope): void {
+    const widgets = this.liveSessions.get(owner)?.widgets();
+    if (widgets?.renderer_available === false) return;
+    const context = widgets?.widget_context;
+    const resyncKernel =
+      scope?.kernel_id === "legacy" &&
+      typeof context?.kernel_id === "string" &&
+      context.legacy_kernel_id === context.kernel_id
+        ? "legacy"
+        : context?.kernel_id;
+    const expected = widgetScopeForOutput(
+      {
+        output_type: "display_data",
+        data: {},
+        widget_kernel_id: resyncKernel ?? undefined,
+      },
+      widgets,
+    );
+    if (JSON.stringify(scope) !== JSON.stringify(expected)) return;
     const payload = widgetPayload(
-      { output_type: "display_data", data: { [WIDGET_VIEW_MIME]: { model_id: modelId } } },
-      this.liveSessions.get(owner)?.widgets(),
+      {
+        output_type: "display_data",
+        data: { [WIDGET_VIEW_MIME]: { model_id: modelId } },
+        widget_kernel_id: scope?.kernel_id,
+      },
+      widgets,
     );
     for (const [commId, model] of Object.entries(payload?.state.state ?? {})) {
       this.queueWidgetUpdate(owner, {
         msg_type: "comm_msg",
         comm_id: commId,
+        _tithon_kernel_id: scope?.kernel_id,
+        _tithon_legacy_kernel_id:
+          scope?.kernel_id === "legacy" ? (context?.legacy_kernel_id ?? undefined) : undefined,
         data: {
           method: "update",
           state: model.state,
@@ -1137,7 +1211,12 @@ export class TithonNotebookController {
    * buffer, so its already-scheduled flush can't `postMessage` a stale update
    * after detach/restart. The buffer and its timer are global across
    * notebooks, so `disposeLive` alone would leave them armed. */
-  private invalidateWidgetUpdatesFor(owner: string): void {
+  private invalidateWidgetUpdatesFor(
+    owner: string,
+    binding = this.liveSessions.get(owner)?.widgets()?.renderer_binding,
+  ): void {
+    if (binding)
+      void this.widgetMessaging.postMessage({ type: "tithon.widget-invalidate", ...binding });
     for (const [key, entry] of this.widgetUpdateBuf) {
       if (entry.owner === owner) this.widgetUpdateBuf.delete(key);
     }
@@ -1146,9 +1225,25 @@ export class TithonNotebookController {
   /** Push the coalesced widget deltas to the renderer so live widgets animate. */
   private flushWidgetUpdates(): void {
     this.widgetFlushTimer = null;
-    for (const [key, { owner, commId: comm_id, state, buffers }] of this.widgetUpdateBuf) {
+    for (const [key, { owner, commId: comm_id, state, buffers, scope }] of this.widgetUpdateBuf) {
       // Restore-time deltas stay coalesced until output seeding finishes.
+      const widgets = this.liveSessions.get(owner)?.widgets();
       if (!this.liveSessions.has(owner)) continue;
+      if (
+        scope &&
+        (widgets?.renderer_available === false ||
+          widgets?.renderer_binding?.binding !== scope.binding ||
+          (widgets.widget_context &&
+            !(scope.kernel_id === "legacy"
+              ? typeof widgets.widget_context.kernel_id === "string" &&
+                widgets.widget_context.legacy_kernel_id === widgets.widget_context.kernel_id &&
+                !!widgets.widget_context.states.legacy?.state?.[comm_id]
+              : widgets.widget_context.kernel_id === scope.kernel_id &&
+                widgets.widget_context.active_model_ids.includes(comm_id))))
+      ) {
+        this.widgetUpdateBuf.delete(key);
+        continue;
+      }
       // Omit `buffers` entirely (not `[]`) when there's nothing to carry —
       // symmetric with the daemon's own wire choice (event_from_message omits
       // `_buffers_b64` when absent) and keeps the overwhelmingly common
@@ -1158,7 +1253,8 @@ export class TithonNotebookController {
         comm_id: string;
         state: Record<string, unknown>;
         buffers?: typeof buffers;
-      } = { type: "tithon.widget-update", comm_id, state };
+        scope?: WidgetScope;
+      } = { type: "tithon.widget-update", comm_id, state, ...(scope ? { scope } : {}) };
       if (buffers.length) msg.buffers = buffers;
       void this.widgetMessaging.postMessage(msg);
       this.widgetUpdateBuf.delete(key);
@@ -1870,12 +1966,13 @@ export class TithonNotebookController {
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
     );
+    let rendererBinding: WidgetState["renderer_binding"];
     let teardown = () => client.close();
     let cleaned = false;
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
-      this.invalidateWidgetUpdatesFor(notebook.uri.toString());
+      this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
       teardown();
     };
     const cancel = () => cleanup();
@@ -1883,6 +1980,7 @@ export class TithonNotebookController {
     try {
       if (signal?.aborted) throw new Error("Output restoration cancelled");
       await client.attach(0); // catch up on any prior state, then stream live
+      rendererBinding = client.widgets()?.renderer_binding;
       if (signal?.aborted) throw new Error("Output restoration cancelled");
       // Register the reconnect handler with NO await between attach resolving and
       // here, so a drop during the seed/prefetch below cannot slip past an
@@ -1890,7 +1988,10 @@ export class TithonNotebookController {
       // crash, ADR-018) would otherwise freeze the live view forever; reconnect +
       // resync from a fresh folded snapshot instead. A clean attach resets the
       // backoff so a later, independent drop reconnects promptly.
-      client.onDisconnect((reason) => this.scheduleReconnect(notebook, reason));
+      client.onDisconnect((reason) => {
+        this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
+        this.scheduleReconnect(notebook, reason);
+      });
       this.setRestoreState(notebook.uri.toString(), "restoring");
       // Surface the kernel's Python version on the controller (the picker/indicator
       // showed only "Tithon"; now "Tithon · Python 3.11.5").
@@ -2026,12 +2127,26 @@ export class TithonNotebookController {
         changeSub.dispose();
         baseTeardown();
       };
+      const settledBinding = client.widgets()?.renderer_binding;
+      if (rendererBinding?.binding !== settledBinding?.binding) {
+        this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
+        rendererBinding = settledBinding;
+      }
       client.onEvent((ev) => {
+        if (
+          ev.kind === "kernel" &&
+          ["dead", "restarting", "restarted", "replaced", "killed", "gc", "shutdown"].includes(
+            ev.payload?.status,
+          )
+        ) {
+          this.invalidateWidgetUpdatesFor(notebook.uri.toString(), rendererBinding);
+          rendererBinding = client.widgets()?.renderer_binding;
+        }
         live.onEvent(ev);
         // Keep deltas through restoration, but reject arrivals after teardown
         // closes the client (see flushWidgetUpdates).
         if (ev.kind === "widget" && client.isConnected() && !signal?.aborted) {
-          this.queueWidgetUpdate(notebook.uri.toString(), ev.payload);
+          this.queueWidgetUpdate(notebook.uri.toString(), ev.payload, client.widgets());
         }
         // The daemon's watchdog observed this kernel die out-of-band (no cell was
         // running, so nothing else would ever tell the user).
@@ -2086,10 +2201,12 @@ export class TithonNotebookController {
                 .join("")
                 .slice(-200),
               images: items.filter((o) => imageRefsOf(o).length > 0).length,
-              widgets: items
-                .map((o) => widgetModelIdOf(o))
-                .filter((id): id is string => !!id)
-                .map((id) => widgetFallbackText(id, widgets) ?? `[${id}]`),
+              widgets: items.flatMap((o) => {
+                const id = widgetModelIdOf(o);
+                return id
+                  ? [widgetFallbackText(id, widgetStateForOutput(o, widgets)) ?? `[${id}]`]
+                  : [];
+              }),
             };
           }),
         }),

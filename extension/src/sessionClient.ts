@@ -15,6 +15,7 @@
  * fold to the same state — is this client's core contract with the daemon.
  */
 
+import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { ArtifactCache } from "./artifactCache";
 import {
@@ -26,7 +27,12 @@ import {
 } from "./cellAttach";
 import { defaultSocketPath } from "./daemonHome";
 import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
-import { decodeBufferEntries, mergeBufferEntries, type WidgetState } from "./richOutput";
+import {
+  decodeBufferEntries,
+  mergeBufferEntries,
+  type WidgetContext,
+  type WidgetState,
+} from "./richOutput";
 import type { Cell } from "./serializer";
 
 export { defaultSocketPath } from "./daemonHome";
@@ -74,6 +80,7 @@ export interface KernelSnapshot {
    *  THIS, never on the pid: a rebooted host restarts its pid space, so a later
    *  lost kernel can reuse an earlier pid and would be silently suppressed. */
   generation?: number;
+  kernel_id?: string | null;
 }
 
 /** A pending input()/getpass() prompt the kernel is blocked on. */
@@ -127,6 +134,8 @@ export class SessionClient {
   private disconnected = false;
   private kernelInfoData: KernelSnapshot | null = null;
   private widgetState: WidgetState | null = null;
+  private readonly widgetBinding = randomUUID();
+  private attached = false;
   /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
    *  Seeded from the snapshot (reconnect re-prompts) and kept current by the
    *  tithon.input_request / input_resolved events. Null when nothing is waiting. */
@@ -194,6 +203,7 @@ export class SessionClient {
   private fireDisconnect(reason: string): void {
     if (this.disconnected || this.closing) return;
     this.disconnected = true;
+    if (this.widgetState?.widget_context) this.widgetState.widget_context.active_model_ids = [];
     this.onDisconnectCb?.(reason);
   }
 
@@ -216,7 +226,21 @@ export class SessionClient {
 
   /** The widget state mirror from the snapshot (for the text fallback). */
   widgets(): WidgetState | null {
-    return this.widgetState;
+    return this.widgetState
+      ? {
+          ...this.widgetState,
+          renderer_available:
+            !this.disconnected &&
+            !this.closing &&
+            !["dead", "restarting", "killed", "gc", "shutdown"].includes(
+              this.kernelInfoData?.status ?? "",
+            ),
+          renderer_binding: {
+            session: this.session,
+            binding: `${this.widgetBinding}:${this.widgetState.widget_context?.kernel_id ?? "legacy"}`,
+          },
+        }
+      : null;
   }
 
   /** Synchronous read of an already-fetched artifact (undefined = not fetched). */
@@ -333,6 +357,9 @@ export class SessionClient {
    * initial backlog has been applied (state is ready for {@link restoreInto}).
    */
   attach(lastSeenSeq = 0): Promise<void> {
+    if (this.attached || this.closing)
+      return Promise.reject(new Error("SessionClient can only attach once"));
+    this.attached = true;
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(unixWsUrl(this.sockPath));
       this.ws = ws;
@@ -411,6 +438,7 @@ export class SessionClient {
     executions?: SnapshotExecWire[];
     kernel?: KernelSnapshot;
     widgets?: WidgetState;
+    widget_context?: WidgetContext;
     pending_input?: PendingInput | null;
     closed_by_user?: boolean;
   }): void {
@@ -418,6 +446,10 @@ export class SessionClient {
     if (snap.kernel) this.kernelInfoData = snap.kernel;
     this.closedByUser = snap.closed_by_user === true;
     if (snap.widgets) this.widgetState = snap.widgets;
+    if (snap.widget_context) {
+      this.widgetState ??= { version_major: 2, version_minor: 0, state: {} };
+      this.widgetState.widget_context = snap.widget_context;
+    }
     // A reconnecting client re-presents a prompt the kernel is still blocked on.
     this.pendingInputData = snap.pending_input ?? null;
     for (const e of snap.executions ?? []) {
@@ -466,8 +498,19 @@ export class SessionClient {
     // only the last one is true by the time the batch is applied.
     if (ev.kind === "kernel") {
       const status = ev.payload?.status;
-      if (status === "dead") {
-        this.kernelInfoData = { ...(this.kernelInfoData ?? {}), status: "dead" };
+      const kernelId = ev.payload?.kernel_id;
+      const context = this.widgetState?.widget_context;
+      if (context && typeof kernelId === "string" && kernelId !== context.kernel_id) {
+        context.kernel_id = kernelId;
+        context.active_model_ids = [];
+        context.states[kernelId] ??= { version_major: 2, version_minor: 0, state: {} };
+      }
+      if (typeof kernelId === "string") {
+        this.kernelInfoData = { ...(this.kernelInfoData ?? {}), kernel_id: kernelId };
+      }
+      if (["dead", "restarting", "killed", "gc", "shutdown"].includes(status)) {
+        if (context) context.active_model_ids = [];
+        this.kernelInfoData = { ...(this.kernelInfoData ?? {}), status };
       } else if (status === "restarted" || status === "replaced") {
         this.kernelInfoData = {
           ...(this.kernelInfoData ?? {}),
@@ -538,16 +581,48 @@ export class SessionClient {
    */
   private applyWidgetEvent(
     payload:
-      | { msg_type?: string; comm_id?: string; data?: any; _buffers_b64?: string[] }
+      | {
+          msg_type?: string;
+          comm_id?: string;
+          data?: any;
+          _buffers_b64?: string[];
+          _tithon_kernel_id?: string;
+          _tithon_legacy_kernel_id?: string;
+        }
       | undefined,
   ): void {
     const commId = payload?.comm_id;
     if (!commId) return;
     if (!this.widgetState) this.widgetState = { version_major: 2, version_minor: 0, state: {} };
     if (!this.widgetState.state) this.widgetState.state = {};
-    const models = this.widgetState.state;
+    const context = this.widgetState.widget_context;
+    const kernelId = payload?._tithon_kernel_id ?? "saved";
+    if (
+      context &&
+      kernelId === "legacy" &&
+      !context.legacy_kernel_id &&
+      payload?._tithon_legacy_kernel_id === context.kernel_id
+    ) {
+      context.legacy_kernel_id = payload._tithon_legacy_kernel_id;
+    }
+    if (context) context.states[kernelId] ??= { version_major: 2, version_minor: 0, state: {} };
+    const mirror = context ? context.states[kernelId] : this.widgetState;
+    mirror.state ??= {};
+    const models = mirror.state;
     const data = payload?.data ?? {};
     if (payload?.msg_type === "comm_open") {
+      if (
+        context &&
+        kernelId === context.kernel_id &&
+        !this.disconnected &&
+        !this.closing &&
+        !["dead", "restarting", "killed", "gc", "shutdown"].includes(
+          this.kernelInfoData?.status ?? "",
+        ) &&
+        !context.active_model_ids.includes(commId)
+      ) {
+        context.active_model_ids.push(commId);
+      }
       const s = (data.state ?? {}) as Record<string, unknown>;
       models[commId] = {
         model_name: s._model_name as string | undefined,
@@ -569,6 +644,13 @@ export class SessionClient {
       if (delta.length) entry.buffers = mergeBufferEntries(entry.buffers, delta);
     } else if (payload?.msg_type === "comm_close") {
       delete models[commId];
+      if (context && kernelId === context.kernel_id) {
+        context.active_model_ids = context.active_model_ids.filter((id) => id !== commId);
+      }
+    }
+    if (context) {
+      if (models[commId]) this.widgetState.state[commId] = models[commId];
+      else delete this.widgetState.state[commId];
     }
   }
 
@@ -676,6 +758,7 @@ export class SessionClient {
   }
 
   close(): void {
+    if (this.widgetState?.widget_context) this.widgetState.widget_context.active_model_ids = [];
     this.closing = true; // suppress the disconnect callback for an intentional close
     this.ws?.close();
     this.ws = null;

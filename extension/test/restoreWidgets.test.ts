@@ -30,6 +30,9 @@ vi.mock("../src/sessionClient", () => ({
     kernelInfo() {
       return null;
     }
+    widgets() {
+      return null;
+    }
     executions() {
       return [];
     }
@@ -338,4 +341,207 @@ it("cancellation during daemon readiness leaves a replacement connection untouch
     state: { value: 9 },
   });
   controller.disposeLive(uri);
+});
+
+it("host coalescing rejects historical scopes and purges closed models before flush", async () => {
+  vi.useFakeTimers();
+  const postMessage = vi.fn();
+  const controller = harness(postMessage);
+  const widgets: WidgetState = {
+    version_major: 2,
+    version_minor: 0,
+    state: {},
+    renderer_binding: { session: "file:///scoped.py", binding: "current-connection" },
+    widget_context: { kernel_id: "current", active_model_ids: ["same"], states: {} },
+  };
+  const bridge = controller as unknown as {
+    liveSessions: Map<string, { widgets: () => WidgetState }>;
+    queueWidgetUpdate(owner: string, payload: unknown, state?: WidgetState): void;
+    resyncWidget(owner: string, modelId: string, scope: unknown): void;
+  };
+  const owner = "file:///scoped.py";
+  bridge.liveSessions.set(owner, { widgets: () => widgets });
+  const update = (kernel: string, value: number) =>
+    bridge.queueWidgetUpdate(owner, {
+      msg_type: "comm_msg",
+      comm_id: "same",
+      _tithon_kernel_id: kernel,
+      data: { method: "update", state: { value } },
+    });
+  update("old", 10);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
+  update("current", 50);
+  widgets.widget_context!.active_model_ids = [];
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
+  widgets.widget_context!.active_model_ids = ["same"];
+  update("current", 90);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).toHaveBeenCalledWith({
+    type: "tithon.widget-update",
+    comm_id: "same",
+    state: { value: 90 },
+    scope: { session: owner, binding: "current-connection", kernel_id: "current" },
+  });
+  postMessage.mockClear();
+  widgets.widget_context!.states.old = { state: { same: { state: { value: 10 } } } };
+  bridge.resyncWidget(owner, "same", {
+    session: owner,
+    binding: "current-connection",
+    kernel_id: "old",
+  });
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
+});
+
+it.each(["render", "update"])(
+  "revokes an %s already in flight without affecting the new kernel manager",
+  async (phase) => {
+    const snap = JSON.parse(
+      readFileSync(join(__dirname, "fixtures", "tqdm_widget_state.json"), "utf8"),
+    );
+    const id = Object.keys(snap.state).find(
+      (key) => snap.state[key].model_name === "FloatProgressModel",
+    )!;
+    snap.state[id].state.value = 10;
+    snap.state[id].state.max = 100;
+    let release!: () => void;
+    let entered!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const originalRender = widgetRender.renderWidget;
+    const manager = widgetRender.createManager();
+    vi.spyOn(widgetRender, "createManager").mockReturnValueOnce(manager);
+    if (phase === "render") {
+      vi.spyOn(widgetRender, "renderWidget").mockImplementationOnce(async (...args) => {
+        entered();
+        await barrier;
+        return originalRender(...args);
+      });
+    } else {
+      const originalSetState = manager.set_state.bind(manager);
+      let calls = 0;
+      vi.spyOn(manager, "set_state").mockImplementation(async (...args) => {
+        if (++calls > 1) {
+          entered();
+          await barrier;
+        }
+        return originalSetState(...args);
+      });
+    }
+    let receive: ((msg: unknown) => void) | undefined;
+    const posted: any[] = [];
+    const renderer = activate({
+      onDidReceiveMessage: (cb) => {
+        receive = cb;
+      },
+      postMessage: (msg) => posted.push(msg),
+    });
+    const old = { session: "same", kernel_id: "old", binding: "connection:old" };
+    const current = { session: "same", kernel_id: "new", binding: "connection:new" };
+    const oldHost = document.createElement("div");
+    const newHost = document.createElement("div");
+    document.body.append(oldHost, newHost);
+    const rendering = renderer.renderOutputItem(
+      { id: "in-flight-old", json: () => ({ model_id: id, state: snap, scope: old }) },
+      oldHost,
+    );
+    if (phase === "update") {
+      await rendering;
+      receive?.({ type: "tithon.widget-update", comm_id: id, scope: old, state: { value: 90 } });
+    }
+    await waiting;
+    receive?.({ type: "tithon.widget-invalidate", session: old.session, binding: old.binding });
+    await renderer.renderOutputItem(
+      { id: "replacement", json: () => ({ model_id: id, state: snap, scope: current }) },
+      newHost,
+    );
+    release();
+    await rendering;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect((newHost.querySelector(".progress-bar") as HTMLElement)?.style.width).toBe("10%");
+    expect(posted.filter((msg) => msg.type === "tithon.widget-updated")).toHaveLength(0);
+    receive?.({ type: "tithon.widget-update", comm_id: id, scope: old, state: { value: 60 } });
+    receive?.({ type: "tithon.widget-update", comm_id: id, scope: current, state: { value: 50 } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect((newHost.querySelector(".progress-bar") as HTMLElement)?.style.width).toBe("50%");
+    expect(posted.filter((msg) => msg.type === "tithon.widget-updated")).toHaveLength(1);
+    renderer.disposeOutputItem?.("in-flight-old");
+    renderer.disposeOutputItem?.("replacement");
+    oldHost.remove();
+    newHost.remove();
+  },
+);
+
+it("delivers legacy mirror updates only for the surviving available source kernel", async () => {
+  vi.useFakeTimers();
+  const postMessage = vi.fn();
+  const controller = harness(postMessage);
+  const widgets: WidgetState = {
+    version_major: 2,
+    version_minor: 0,
+    state: {},
+    renderer_binding: { session: "file:///legacy.py", binding: "connection:survivor" },
+    renderer_available: true,
+    widget_context: {
+      kernel_id: "survivor",
+      legacy_kernel_id: "survivor",
+      active_model_ids: [],
+      states: {
+        legacy: { state: { same: { state: { _model_name: "IntProgressModel", value: 10 } } } },
+      },
+    },
+  };
+  const bridge = controller as unknown as {
+    liveSessions: Map<string, { widgets: () => WidgetState }>;
+    queueWidgetUpdate(owner: string, payload: unknown): void;
+    resyncWidget(owner: string, modelId: string, scope: unknown): void;
+  };
+  const owner = "file:///legacy.py";
+  const scope = { session: owner, binding: "connection:survivor", kernel_id: "legacy" };
+  bridge.liveSessions.set(owner, { widgets: () => widgets });
+  const update = (source: string | undefined) =>
+    bridge.queueWidgetUpdate(owner, {
+      msg_type: "comm_msg",
+      comm_id: "same",
+      _tithon_kernel_id: "legacy",
+      _tithon_legacy_kernel_id: source,
+      data: { method: "update", state: { value: 20 } },
+    });
+  update(undefined);
+  update("different-kernel");
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
+  update("survivor");
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).toHaveBeenCalledWith({
+    type: "tithon.widget-update",
+    comm_id: "same",
+    state: { value: 20 },
+    scope,
+  });
+  expect(widgets.widget_context!.active_model_ids).toEqual([]);
+  postMessage.mockClear();
+  bridge.resyncWidget(owner, "same", scope);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).toHaveBeenCalledTimes(1);
+  postMessage.mockClear();
+  update("survivor");
+  widgets.renderer_available = false;
+  await vi.advanceTimersByTimeAsync(100);
+  update("survivor");
+  bridge.resyncWidget(owner, "same", scope);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
+  widgets.renderer_available = true;
+  widgets.widget_context!.kernel_id = "replacement";
+  update("survivor");
+  bridge.resyncWidget(owner, "same", scope);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(postMessage).not.toHaveBeenCalled();
 });

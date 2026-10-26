@@ -190,3 +190,132 @@ describe("widgetRendererEntry.activate — live update wiring (RISKS #13)", () =
     expect(bar?.style.width).toBe("90%"); // the later-arriving update, not whichever set_state() resolved first
   });
 });
+
+describe("widget renderer identity", () => {
+  it("isolates the same model ID across notebooks, kernels and connections", async () => {
+    const snap = JSON.parse(
+      readFileSync(join(__dirname, "fixtures", "tqdm_widget_state.json"), "utf8"),
+    );
+    const id = Object.keys(snap.state).find(
+      (key) => snap.state[key].model_name === "FloatProgressModel",
+    )!;
+    snap.state[id].state.value = 10;
+    snap.state[id].state.max = 100;
+    let receive: ((msg: unknown) => void) | undefined;
+    const posted: any[] = [];
+    const renderer = activate({
+      onDidReceiveMessage: (cb) => {
+        receive = cb;
+      },
+      postMessage: (msg) => posted.push(msg),
+    });
+    const active = { session: "a", kernel_id: "current", binding: "connection" };
+    const scopes = [
+      active,
+      { ...active, session: "b" },
+      { ...active, kernel_id: "old" },
+      { ...active, binding: "old-connection" },
+    ];
+    const hosts: HTMLElement[] = [];
+    for (const [index, scope] of scopes.entries()) {
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      hosts.push(host);
+      await renderer.renderOutputItem(
+        { id: `isolated-${index}`, json: () => ({ model_id: id, state: snap, scope }) },
+        host,
+      );
+    }
+    receive?.({ type: "tithon.widget-update", scope: active, comm_id: id, state: { value: 90 } });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      hosts.map((host) => (host.querySelector(".progress-bar") as HTMLElement)?.style.width),
+    ).toEqual(["90%", "10%", "10%", "10%"]);
+    expect(posted.filter((msg) => msg.type === "tithon.widget-updated")).toHaveLength(1);
+    for (const [index, host] of hosts.entries()) {
+      renderer.disposeOutputItem?.(`isolated-${index}`);
+      host.remove();
+    }
+  });
+
+  it.each(["dispose", "invalidate"])(
+    "cancels queued updates on %s without erasing historical output",
+    async (action) => {
+      const snap = JSON.parse(
+        readFileSync(join(__dirname, "fixtures", "tqdm_widget_state.json"), "utf8"),
+      );
+      const id = Object.keys(snap.state).find(
+        (key) => snap.state[key].model_name === "FloatProgressModel",
+      )!;
+      snap.state[id].state.value = 10;
+      snap.state[id].state.max = 100;
+      let receive: ((msg: unknown) => void) | undefined;
+      const posted: any[] = [];
+      const renderer = activate({
+        onDidReceiveMessage: (cb) => {
+          receive = cb;
+        },
+        postMessage: (msg) => posted.push(msg),
+      });
+      const scope = { session: "a", kernel_id: "current", binding: "connection" };
+      const host = document.createElement("div");
+      document.body.appendChild(host);
+      await renderer.renderOutputItem(
+        { id: "cancelled", json: () => ({ model_id: id, state: snap, scope }) },
+        host,
+      );
+      receive?.({ type: "tithon.widget-update", scope, comm_id: id, state: { value: 90 } });
+      if (action === "dispose") renderer.disposeOutputItem?.("cancelled");
+      else
+        receive?.({
+          type: "tithon.widget-invalidate",
+          session: scope.session,
+          binding: scope.binding,
+        });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect((host.querySelector(".progress-bar") as HTMLElement)?.style.width).toBe("10%");
+      expect(posted.filter((msg) => msg.type === "tithon.widget-updated")).toHaveLength(0);
+      host.remove();
+    },
+  );
+});
+
+it("keeps a late render from a revoked binding static while a new kernel binding updates", async () => {
+  const snap = JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "tqdm_widget_state.json"), "utf8"),
+  );
+  const id = Object.keys(snap.state).find(
+    (key) => snap.state[key].model_name === "FloatProgressModel",
+  )!;
+  snap.state[id].state.value = 10;
+  snap.state[id].state.max = 100;
+  let receive: ((msg: unknown) => void) | undefined;
+  const renderer = activate({
+    onDidReceiveMessage: (cb) => {
+      receive = cb;
+    },
+  });
+  const old = { session: "same-notebook", kernel_id: "old", binding: "connection:old" };
+  const current = { session: "same-notebook", kernel_id: "new", binding: "connection:new" };
+  receive?.({ type: "tithon.widget-invalidate", session: old.session, binding: old.binding });
+  const historicalHost = document.createElement("div");
+  const currentHost = document.createElement("div");
+  document.body.append(historicalHost, currentHost);
+  await renderer.renderOutputItem(
+    { id: "late-history", json: () => ({ model_id: id, state: snap, scope: old }) },
+    historicalHost,
+  );
+  await renderer.renderOutputItem(
+    { id: "current", json: () => ({ model_id: id, state: snap, scope: current }) },
+    currentHost,
+  );
+  receive?.({ type: "tithon.widget-update", comm_id: id, scope: old, state: { value: 90 } });
+  receive?.({ type: "tithon.widget-update", comm_id: id, scope: current, state: { value: 50 } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect((historicalHost.querySelector(".progress-bar") as HTMLElement)?.style.width).toBe("10%");
+  expect((currentHost.querySelector(".progress-bar") as HTMLElement)?.style.width).toBe("50%");
+  renderer.disposeOutputItem?.("late-history");
+  renderer.disposeOutputItem?.("current");
+  historicalHost.remove();
+  currentHost.remove();
+});

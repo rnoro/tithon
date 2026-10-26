@@ -264,6 +264,22 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
 - On reconnect the daemon sends the _snapshot_, not the message history, so a
   50,000-update `tqdm` bar costs one final-state transfer. Live updates flow as
   deltas so a connected client can animate the bar in real time.
+- Model IDs are scoped to the actual kernel process. `widget_context` carries
+  separate historical state snapshots, the current `kernel_id`, and the IDs of
+  current live models. Folded widget outputs retain `widget_kernel_id`, so a
+  replacement kernel reusing a model ID cannot change an earlier cell's display.
+  The identity survives daemon reattachment and changes on every kernel
+  replacement, including an empty history; it is distinct from the lost-state
+  warning's `kernel_generation`. Imported models remain saved display state.
+  Untagged raw history uses a separate read-only `legacy` scope; a durable marker
+  permits updates only from its surviving migration kernel. New models from that
+  same process remain in the legacy scope so dependency graphs stay complete,
+  and kernel replacement permanently ends that migration binding. Legacy models
+  never enter `active_model_ids`. Renderer updates also carry the notebook
+  session and client binding, invalidated on disconnect or kernel replacement.
+- Saved sidecars, copies, and notebook exports flatten the scoped states into
+  canonical widget metadata using distinct model IDs and rewritten dependencies.
+  Saved output never carries live kernel or connection authority.
 - Binary widget state (`Image`, `ipympl`, `bqplot`) rides the comm frame as
   base64 buffers, live and on replay, so a widget whose state is partly binary
   does not go stale across a reconnect.
@@ -792,9 +808,8 @@ does not have.
 
 - Bidirectional widgets (client → kernel control, e.g. slider drag). Interactive
   widgets therefore render as text on purpose ([§4.4](#44-widget-rendering)).
-  The remaining blocker is not only the comm back-channel: the widget mirror is
-  not scoped to a kernel generation, so any model-identity scheme layered on top
-  would be unsafe across a restart until that is fixed first.
+  Kernel-scoped model history and renderer invalidation are implemented; the
+  comm back-channel and callback-output routing are still missing.
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
@@ -842,7 +857,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30             ipywidget mirror + render + live animation
+make widgets     # v5 v29 v30 v71         widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -865,6 +880,7 @@ Capability → what it guarantees → how it is verified:
 | Reconnect sync           | Snapshot + monotonic-seq delta                      | `v1`, `v2` (client stream == journal)              |
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
+| Widget identity          | Historical/copy state cannot rebind to a replacement kernel | `v71` (real daemon SIGKILL, same-ID models, retention, saved projection and scoped renderer) |
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
