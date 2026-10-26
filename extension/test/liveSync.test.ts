@@ -486,6 +486,46 @@ describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => 
     },
   });
 
+  it("repaints an ordinary callback without starting a new cell append", () => {
+    const { sink, sched, feed } = harness();
+    feed(
+      output("e1", "stream", {
+        name: "stdout",
+        text: "callback",
+        _tithon_widget_callback: true,
+        _tithon_output_owner: null,
+      }),
+    );
+    sched.tick();
+    expect(sink.ops.map((o) => o.op)).toEqual(["repaint"]);
+  });
+
+  it("repaints captured streams with independent cursors across flush windows", () => {
+    const { sink, sched, feed, fold } = harness();
+    feed(output("e1", "stream", { name: "stdout", text: "sibling" }));
+    sched.tick();
+    feed(
+      output("e1", "stream", {
+        name: "stdout",
+        text: "captured",
+        _tithon_output_owner: "out",
+      }),
+    );
+    sched.tick();
+    expect(sink.ops.at(-1)?.op).toBe("repaint");
+    expect(fold.outputs().map((o) => o.text)).toEqual(["sibling", "captured"]);
+    feed(
+      output("e1", "stream", {
+        name: "stdout",
+        text: "\rNEW",
+        _tithon_output_owner: "out",
+      }),
+    );
+    sched.tick();
+    expect(sink.ops.at(-1)?.op).toBe("repaint");
+    expect(fold.outputs().map((o) => o.text)).toEqual(["sibling", "NEWtured"]);
+  });
+
   it("emits repaint (not a blind clear) and the sibling output survives", () => {
     const { sink, sched, feed } = harness();
     feed(output("e1", "display_data", { data: { "text/plain": "BAR" }, metadata: {} }));

@@ -253,6 +253,7 @@ class Session:
         # request's reply. One pump owns the channel — see `_shell_pump`.
         self._shell_waiters: dict[str, asyncio.Future] = {}
         self._widget_requests: dict[str, dict] = {}
+        self._output_claims: dict[tuple[str, str], dict] = {}
         # Completion barrier: `status: idle` for an execution's parent, signalled
         # from `_handle_iopub` and awaited by `_run_one` (see `_await_idle`).
         self._idle_events: dict[str, asyncio.Event] = {}
@@ -335,6 +336,8 @@ class Session:
         self._import_sidecar()
         self._rebuild_folds()
         self._rebuild_mirror()
+        self._restore_widget_requests()
+        self._rebuild_output_claims()
         self._exec_counter = self.journal.max_exec_seq()
         self._classify_kernel_generation()
         retention.compact(self)
@@ -604,6 +607,8 @@ class Session:
         self._idle_events.clear()
         self._control_fences.clear()
         self._widget_requests.clear()
+        self._persist_widget_requests()
+        self._output_claims.clear()
         self._recovery_gate = asyncio.Event()
         self._recovery_gate.set()
         self._start_tasks()
@@ -1140,6 +1145,95 @@ class Session:
                 fut.set_exception(ConnectionError(reason))
         self._shell_waiters.clear()
 
+    def _widget_output_execution(self, comm_id: str, scope: str) -> str | None:
+        """Most recent displayed dependency graph owns otherwise uncaptured output."""
+        mirror = self._widget_mirrors.get(scope)
+        if mirror is None:
+            return None
+        models = mirror.snapshot()["state"]
+
+        def references(value):
+            if isinstance(value, str) and value.startswith("IPY_MODEL_"):
+                yield value[len("IPY_MODEL_") :]
+            elif isinstance(value, list):
+                for item in value:
+                    yield from references(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from references(item)
+
+        for exec_id, fold in reversed(self._folds.items()):
+            if exec_id in self._imported:
+                continue
+            for output in reversed(fold.outputs()):
+                if output.get("widget_kernel_id", "saved") != scope:
+                    continue
+                view = output.get("data", {}).get(WIDGET_VIEW, {})
+                pending = [view.get("model_id")]
+                seen = set()
+                while pending:
+                    identifier = pending.pop()
+                    if not isinstance(identifier, str) or identifier in seen:
+                        continue
+                    if identifier == comm_id:
+                        return exec_id
+                    seen.add(identifier)
+                    pending.extend(references(models.get(identifier, {}).get("state", {})))
+        return None
+
+    def _persist_widget_requests(self) -> None:
+        self.journal.set_meta("widget_requests", json.dumps(self._widget_requests))
+
+    def _restore_widget_requests(self) -> None:
+        try:
+            saved = json.loads(self.journal.get_meta("widget_requests") or "{}")
+            self._widget_requests = {
+                key: value
+                for key, value in saved.items()
+                if value.get("kernel_id") == self.kernel.kernel_id
+                and 0 <= time.monotonic() - value.get("created", 0) < WIDGET_REQUEST_TTL
+                and (value.get("exec_id") is None or value["exec_id"] in self._folds)
+            }
+        except (ValueError, TypeError, AttributeError):
+            self._widget_requests = {}
+
+    def _track_output_claim(self, msg_type: str, content: dict) -> None:
+        scope = content.get("_tithon_kernel_id", LEGACY_SCOPE)
+        if scope != self.kernel.kernel_id and not (
+            scope == LEGACY_SCOPE and self._legacy_widget_live()
+        ):
+            return
+        comm_id = content.get("comm_id")
+        key = (scope, comm_id)
+        if msg_type == "comm_close":
+            self._output_claims.pop(key, None)
+            return
+        state = (content.get("data") or {}).get("state")
+        if not isinstance(state, dict) or "msg_id" not in state:
+            return
+        mirror = self._widget_mirrors.get(scope)
+        model = mirror.snapshot()["state"].get(comm_id, {}) if mirror else {}
+        if model.get("model_name") != "OutputModel":
+            return
+        parent = state["msg_id"]
+        if not parent:
+            self._output_claims.pop(key, None)
+        elif isinstance(parent, str) and self._output_claims.get(key, {}).get("parent") != parent:
+            self._output_claims.pop(key, None)
+            self._output_claims[key] = {
+                "parent": parent,
+                "owner": comm_id,
+                "exec_id": self._widget_output_execution(comm_id, scope),
+            }
+
+    def _rebuild_output_claims(self) -> None:
+        self._output_claims.clear()
+        for _seq, _exec, kind, raw in self.journal.comm_messages_after(0):
+            try:
+                self._track_output_claim(kind, json.loads(raw))
+            except (ValueError, TypeError, AttributeError):
+                log.warning("[%s] invalid Output claim at seq=%s", self.session_id, _seq)
+
     def send_widget_message(self, request: dict, binding: str) -> str:
         """Send once to an existing live comm; never create or revive a kernel."""
         content, buffers = request_content(request)
@@ -1177,11 +1271,14 @@ class Session:
             "request_id": request["request_id"],
             "binding": binding,
             "kernel_id": identity,
+            "exec_id": self._widget_output_execution(content["comm_id"], identity),
         }
+        self._persist_widget_requests()
         try:
             self.kc.session.send(self.kc.shell_channel.socket, message, buffers=buffers)
         except Exception:
             self._widget_requests.pop(message_id, None)
+            self._persist_widget_requests()
             raise
         self.touch()
         return message_id
@@ -1211,6 +1308,8 @@ class Session:
             return
         exec_id = self._msgid_to_exec.get(parent_id)
         interaction = self._widget_requests.get(parent_id)
+        if interaction is not None:
+            exec_id = interaction.get("exec_id")
         if interaction is not None and msg_type == "status":
             payload = {
                 "kernel_id": interaction["kernel_id"],
@@ -1221,6 +1320,8 @@ class Session:
             self._journal_lifecycle(None, "tithon.widget_status", payload)
             if content.get("execution_state") == "idle":
                 self._widget_requests.pop(parent_id, None)
+                self._persist_widget_requests()
+                self._publish_sidecar()
             return
         if is_comm(msg_type):
             raw = {"_tithon_message": raw_message(msg)}
@@ -1230,8 +1331,20 @@ class Session:
                 }
             self._handle_comm(exec_id, msg_type, {**content, **raw}, msg.get("buffers") or [])
             return
-        if exec_id is None or msg_type not in JOURNALED_IOPUB:
+        claim = next(
+            (
+                value
+                for value in reversed(self._output_claims.values())
+                if value["parent"] == parent_id
+            ),
+            None,
+        )
+        destination = (claim.get("exec_id") if claim else None) or exec_id
+        if destination is None or msg_type not in JOURNALED_IOPUB:
             return
+        content = {**content, "_tithon_output_owner": claim["owner"] if claim else None}
+        if interaction is not None:
+            content["_tithon_widget_callback"] = True
         log.debug("[%s] iopub exec=%s type=%s", self.session_id, exec_id, msg_type)
         artifact_ref = None
         if msg_type in ("display_data", "execute_result", "update_display_data"):
@@ -1244,9 +1357,9 @@ class Session:
             # provenance ("who produced these bytes"), while the fold that
             # REFERENCES it — and so decides when GC reclaims it — is resolved
             # separately below.
-            refs = self.artifacts.extract(exec_id, content)
+            refs = self.artifacts.extract(exec_id or destination, content)
             artifact_ref = ",".join(refs) or None
-        target = self._display_target(exec_id, msg_type, content)
+        target = self._display_target(destination, msg_type, content)
         seq = self.journal.append_message(
             exec_id,
             msg_type,
@@ -1259,12 +1372,12 @@ class Session:
         # keep. A registry that ran ahead of a failed append would route
         # later updates at an owner no restart can re-derive.
         if msg_type == "display_data":
-            self._register_display(exec_id, content)
+            self._register_display(target, content)
         fold = self._folds[target]
         before = fold.artifact_ids()
         fold.apply(msg_type, content)
         self._gc_artifacts(before, fold.artifact_ids())
-        if target != exec_id:
+        if target != exec_id or interaction is not None:
             # The owner may have FINISHED long ago, so its cached `folded_json` —
             # written once by `mark_done` — would otherwise still show the
             # pre-update content to anyone who read it. Same reason
@@ -1381,6 +1494,7 @@ class Session:
         mirror.apply(msg_type, content, buffers)
         self._widget_mirrors[scope] = mirror
         self._mirror.apply(msg_type, content, buffers)
+        self._track_output_claim(msg_type, stored)
         # The fold needs comm too, but only to track which Output area claims
         # this execution's msg_id (see `ExecutionFold`) — it produces no output
         # item. `_handle_iopub` returns early for comm, so without this the LIVE

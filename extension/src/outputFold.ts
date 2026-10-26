@@ -143,6 +143,8 @@ export class ExecutionFold {
   }
 
   private ownerFor(content: any): string | undefined {
+    if (content && "_tithon_output_owner" in content)
+      return content._tithon_output_owner ?? undefined;
     if (content?.[SCOPE_KEY] === SCOPE_CELL) return undefined;
     return this.claims.length ? this.claims[this.claims.length - 1] : undefined;
   }

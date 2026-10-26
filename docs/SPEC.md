@@ -251,6 +251,22 @@ receive-before-journal crash window cannot be distinguished from a long-running
 stdin-enabled computation without kernel-side identity recovery; it remains a
 documented limitation rather than interrupting every such computation.
 
+Widget callback parents are comm requests, not new cell executions. The daemon
+records each accepted request's current kernel, binding, and output destination
+before sending it. Ordinary callback output belongs to the most recently
+executed cell displaying the sending model (including a container dependency).
+An active Output claim routes matching-parent output to the most recently
+executed cell displaying that Output model, falling back to the emitter when it
+has no displayed destination. Explicit internal area ownership keeps unrelated
+parent claims from capturing those rows. Cross-cell rows retain their resolved
+target for identical live, replay and rebuilt folds; callback output never
+submits a synthetic execute request.
+
+Pending routing context survives daemon reattachment to the same kernel within
+the existing 60-second request window. Actions are never replayed. Output claims
+are reconstructed from scoped comm history; messages emitted while the daemon
+was disconnected remain subject to the kernel transport's loss window.
+
 ### 3.4 Widget mirror (ipywidgets / comm)
 
 Widgets (`tqdm.notebook`, `FloatProgress`, interactive plots) need two-way state
@@ -499,7 +515,7 @@ still fall back as a whole pending child-level fallback support.
 If html rendering fails, the widget's final state is shown as text
 (e.g. `100% |████| 5/5`), so information is never lost. An
 `ipywidgets.Output`'s own view is not rendered at all: what it holds is already
-folded into the same cell by [§3.3](#33-folding-materialized-view), so its view
+folded into the owning cell by [§3.3](#33-folding-materialized-view), so its view
 would be a duplicate placeholder.
 
 ### 4.5 Lifecycle & UX
@@ -830,10 +846,11 @@ does not have.
 
 **Partial / not yet implemented**
 
-- Callback `print`/display/error/clear and Output capture from interactive
-  widgets still need explicit interaction ownership/routing (#23). Basic control
-  input, state changes and shared live model transport are implemented; Output
-  views, third-party widgets and mixed unsupported-child fallback remain pending.
+- Callback `print`/display/error/clear and context-managed Output capture use
+  explicit interaction ownership/routing. The captured contents render as
+  notebook outputs in the owning cell; dedicated Output views/layout and
+  `Output.outputs` trait operations such as `append_stdout` remain pending (#23).
+  Third-party widgets and mixed unsupported-child fallback remain pending (#28).
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
@@ -881,7 +898,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30 v71 v72 v73         widget mirror + render + kernel-scoped history
+make widgets     # v5 v29 v30 v71 v72 v73 v74 v75         widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -916,6 +933,7 @@ Capability → what it guarantees → how it is verified:
 | Bounded render cost      | Coalescing caps UI updates                          | `liveSync.test.ts` (50k events → 1 sink call)      |
 | Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
+| Widget callback outputs | Cross-cell stdout/HTML/PNG/errors, scoped clear, same-kernel crash recovery | `v74` (actual processes and client folds), `v75` (real VSCode DOM callbacks) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |

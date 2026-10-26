@@ -272,6 +272,16 @@ export class LiveOutputSync {
       else this.queueRepaint(idx, execId);
       return;
     }
+    if (
+      (typeof content?._tithon_output_owner === "string" || content?._tithon_widget_callback) &&
+      this.foldOutputs &&
+      this.sink.repaint
+    ) {
+      // Output areas have independent stream cursors; paint their canonical fold.
+      this.pendingClear.delete(execId);
+      this.queueRepaint(idx, execId);
+      return;
+    }
     if (msgType === "update_display_data") {
       const did = content?.transient?.display_id;
       if (did != null) this.queueDisplay(idx, did, toDisplay(content));

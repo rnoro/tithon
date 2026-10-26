@@ -120,6 +120,8 @@ class ExecutionFold:
     def _owner_for(self, content: dict) -> str | None:
         """The area a message belongs to: the innermost claim, unless the
         message is daemon-synthesized and forced to cell scope (`SCOPE_KEY`)."""
+        if "_tithon_output_owner" in content:
+            return content["_tithon_output_owner"]
         if content.get(SCOPE_KEY) == SCOPE_CELL:
             return None
         return self._claims[-1] if self._claims else None

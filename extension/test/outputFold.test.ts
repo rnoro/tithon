@@ -248,3 +248,16 @@ describe("ExecutionFold — Output-widget areas (RISKS #17)", () => {
     }
   });
 });
+
+it("explicit callback areas override unrelated execution claims", () => {
+  const fold = new ExecutionFold();
+  fold.apply("stream", { name: "stdout", text: "sibling" });
+  fold.apply("comm_msg", {
+    comm_id: "unrelated",
+    data: { method: "update", state: { msg_id: "execution-parent" } },
+  });
+  fold.apply("stream", { name: "stdout", text: "plain", _tithon_output_owner: null });
+  fold.apply("stream", { name: "stdout", text: "captured", _tithon_output_owner: "out" });
+  fold.apply("clear_output", { wait: false, _tithon_output_owner: "out" });
+  expect(fold.outputs()).toEqual([{ output_type: "stream", name: "stdout", text: "siblingplain" }]);
+});
