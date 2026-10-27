@@ -29,6 +29,7 @@ export const activate = (context: any) => {
       }
       context.postMessage({type: "test.widget-done", id: message.id,
         text: host.textContent, disabled: host.querySelector<HTMLButtonElement>("button")?.disabled,
+        checked: host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked,
         interactive: host.isConnected && !!host.querySelector("button:not([disabled])")});
     } catch (error) { context.postMessage({type: "test.widget-error", id: message.id, error: String(error)}); }
   });

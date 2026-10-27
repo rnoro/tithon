@@ -55,7 +55,12 @@ export class LiveWidgetRenderer {
   }
 
   receive(event: any): void {
-    if (event?.type !== "tithon.widget-message" && event?.type !== "tithon.widget-error") return;
+    if (
+      event?.type !== "tithon.widget-message" &&
+      event?.type !== "tithon.widget-error" &&
+      event?.type !== "tithon.widget-resync"
+    )
+      return;
     const group = event.scope ? this.groups.get(this.key(event.scope)) : undefined;
     if (!group?.active) return;
     if (event.type === "tithon.widget-error") {
@@ -63,7 +68,8 @@ export class LiveWidgetRenderer {
       return;
     }
     const message = event.message as RawWidgetMessage;
-    const bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
+    const state = event.type === "tithon.widget-resync" ? structuredClone(event.state) : undefined;
+    const bytes = new TextEncoder().encode(JSON.stringify(state ?? message)).byteLength;
     if (group.queued >= 256 || group.queuedBytes + bytes > 8 * 1024 * 1024) {
       this.disable(group, "Widget updates exceeded the display buffer. Reconnect to refresh.");
       return;
@@ -73,6 +79,13 @@ export class LiveWidgetRenderer {
     group.serial = group.serial
       .then(async () => {
         if (!group.active) return;
+        if (state) {
+          const existing = Object.fromEntries(
+            Object.entries(state.state ?? {}).filter(([id]) => group.manager.has_model(id)),
+          );
+          await group.manager.set_state({ ...state, state: existing });
+          return;
+        }
         if (message.header.msg_type === "comm_open") {
           const id = message.content.comm_id;
           if (!group.manager.has_model(id)) {

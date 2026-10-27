@@ -84,6 +84,66 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
     assert.ok((await action("group", "inspect")).text.includes("5"));
     const before = await query("print('COUNT', clicks)");
     assert.ok(before.includes("COUNT 5"));
+
+    const readyBefore = received.filter(
+      (m) => m.type === "test.widget-ready" && m.model === "checkbox",
+    ).length;
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await until(
+      () =>
+        !vscode.window.visibleNotebookEditors.some(
+          (e) => e.notebook.uri.toString() === notebook.uri.toString(),
+        ),
+      "notebook editor closed",
+    );
+    const reopened = await vscode.workspace.openNotebookDocument(notebook.uri);
+    await vscode.window.showNotebookDocument(reopened);
+    await vscode.commands.executeCommand("notebook.selectKernel", {
+      id: "tithon-notebook",
+      extension: extension.id,
+    });
+    await until(
+      () =>
+        received.filter((m) => m.type === "test.widget-ready" && m.model === "checkbox").length >
+        readyBefore,
+      "checkbox view remounted",
+    );
+    await until(
+      async () => (await action("checkbox", "inspect")).checked === true,
+      "restored checkbox value",
+    );
+    await action("checkbox", "check");
+    await until(
+      async () => (await query("print('CHECKBOX', checkbox.value)")).includes("CHECKBOX False"),
+      "checkbox after remount",
+    );
+
+    const readyBeforeReconnect = received.filter(
+      (m) => m.type === "test.widget-ready" && m.model === "checkbox",
+    ).length;
+    await vscode.commands.executeCommand("tithon.retryRestore");
+    await until(
+      () =>
+        received.filter((m) => m.type === "test.widget-ready" && m.model === "checkbox").length >
+        readyBeforeReconnect,
+      "checkbox view reconnected",
+    );
+    await until(
+      async () => (await action("checkbox", "inspect")).checked === false,
+      "reconnected checkbox value",
+    );
+    assert.ok(
+      (await query("print('CHANGES', checkbox_changes)")).includes("CHANGES [True, False]"),
+    );
+    await action("checkbox", "check");
+    await until(
+      async () => (await query("print('CHECKBOX', checkbox.value)")).includes("CHECKBOX True"),
+      "checkbox after reconnect",
+    );
+    assert.ok(
+      (await query("print('CHANGES', checkbox_changes)")).includes("CHANGES [True, False, True]"),
+    );
+
     await vscode.commands.executeCommand("tithon.restartKernel");
     await until(
       async () => (await action("button", "inspect")).interactive === false,

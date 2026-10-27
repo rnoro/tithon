@@ -16,6 +16,8 @@ fslider = w.FloatSlider(value=0, min=0, max=100, step=1, model_id='float-slider'
 text = w.Text(value='initial', model_id='text')
 dropdown = w.Dropdown(options=['a', 'b'], model_id='dropdown')
 checkbox = w.Checkbox(value=False, description='Enabled', model_id='checkbox')
+checkbox_changes = []
+checkbox.observe(lambda change: checkbox_changes.append(change['new']), names='value')
 label = w.Label(value='0', model_id='label')
 clicks = 0
 def clicked(_):
@@ -35,4 +37,4 @@ run_vscode node "$TITHON_HOME/test-extension/out-int/integration/runTest.js" > "
 rc=$?
 tail -40 "$OUT"
 [ "$rc" -eq 0 ] || fail "real DOM transport suite (rc=$rc)"
-echo "RESULT v73 PASS real VSCode DOM Button x5 + Slider keyboard x21 + Text/Dropdown/Checkbox -> Python and Label DOM; replaced kernel revokes stale view"
+echo "RESULT v73 PASS real VSCode DOM controls -> Python, checkbox remount and reconnect restore current value, replaced kernel revokes stale view"

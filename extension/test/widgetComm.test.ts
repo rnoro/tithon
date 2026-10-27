@@ -73,6 +73,29 @@ it("shares a live button model between views and drops input on invalidation", a
   }
 });
 
+it("refreshes an existing live model from the scoped snapshot after a remount", async () => {
+  const renderer = new LiveWidgetRenderer(() => {});
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    expect(host.querySelector("button")!.textContent).toBe("Click");
+    const current = snapshot();
+    current.state.button.state.description = "Current";
+    renderer.receive({ type: "tithon.widget-resync", scope, state: current });
+    await settle(20);
+    expect(host.querySelector("button")!.textContent).toBe("Current");
+    renderer.invalidate(scope);
+    current.state.button.state.description = "Stale";
+    renderer.receive({ type: "tithon.widget-resync", scope, state: current });
+    await settle(20);
+    expect(host.querySelector("button")!.textContent).toBe("Current");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
 it("delivers raw binary custom and correlated idle callbacks in order", async () => {
   const posted: any[] = [],
     received: any[] = [],

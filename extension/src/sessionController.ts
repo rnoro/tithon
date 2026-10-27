@@ -1216,6 +1216,13 @@ export class TithonNotebookController {
       },
       widgets,
     );
+    if (payload?.live && scope) {
+      void this.widgetMessaging.postMessage({
+        type: "tithon.widget-resync",
+        scope,
+        state: payload.state,
+      });
+    }
     for (const [commId, model] of Object.entries(payload?.state.state ?? {})) {
       this.queueWidgetUpdate(owner, {
         msg_type: "comm_msg",

@@ -513,6 +513,8 @@ Saved, legacy and unavailable controls remain static text. Disconnect, kernel
 replacement, rejection or response timeout disables a mounted live view and
 revokes queued work; sent actions are never retried. Unsupported/mixed graphs
 still fall back as a whole pending child-level fallback support.
+When VSCode recreates a view from an older output payload while its notebook
+remains open, the host refreshes its live models from the current scoped mirror.
 
 If html rendering fails, the widget's final state is shown as text
 (e.g. `100% |████| 5/5`), so information is never lost. An
