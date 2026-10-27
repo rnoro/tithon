@@ -515,6 +515,8 @@ revokes queued work; sent actions are never retried. Unsupported/mixed graphs
 still fall back as a whole pending child-level fallback support.
 When VSCode recreates a view from an older output payload while its notebook
 remains open, the host refreshes its live models from the current scoped mirror.
+Each view stays inert until its own refresh completes; an obsolete view's reply
+cannot activate its replacement, and a missing model remains unavailable.
 
 If html rendering fails, the widget's final state is shown as text
 (e.g. `100% |████| 5/5`), so information is never lost. An

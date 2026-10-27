@@ -62,6 +62,17 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
         ].every((id) => received.some((m) => m.type === "test.widget-ready" && m.model === id)),
       "interactive renderer views",
     );
+    await until(
+      async () =>
+        (
+          await Promise.all(
+            ["button", "slider", "float-slider", "text", "dropdown", "checkbox"].map((model) =>
+              action(model, "inspect"),
+            ),
+          )
+        ).every((result) => result.available),
+      "interactive views synchronized",
+    );
     for (let i = 0; i < 5; i++) await action("button", "click");
     for (let i = 0; i < 21; i++) await action("slider", "key");
     await action("float-slider", "key");
@@ -108,10 +119,10 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
         readyBefore,
       "checkbox view remounted",
     );
-    await until(
-      async () => (await action("checkbox", "inspect")).checked === true,
-      "restored checkbox value",
-    );
+    await until(async () => {
+      const result = await action("checkbox", "inspect");
+      return result.available && result.checked === true;
+    }, "restored checkbox value");
     await action("checkbox", "check");
     await until(
       async () => (await query("print('CHECKBOX', checkbox.value)")).includes("CHECKBOX False"),
@@ -128,10 +139,10 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
         readyBeforeReconnect,
       "checkbox view reconnected",
     );
-    await until(
-      async () => (await action("checkbox", "inspect")).checked === false,
-      "reconnected checkbox value",
-    );
+    await until(async () => {
+      const result = await action("checkbox", "inspect");
+      return result.available && result.checked === false;
+    }, "reconnected checkbox value");
     assert.ok(
       (await query("print('CHANGES', checkbox_changes)")).includes("CHANGES [True, False]"),
     );
@@ -149,7 +160,7 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
       async () => (await action("button", "inspect")).interactive === false,
       "stale view disabled after replacement",
     );
-    await action("button", "click");
+    assert.equal((await action("button", "click")).blocked, true);
     assert.ok(
       (await query("print('OLD_CALLBACK', 'clicks' in globals())")).includes("OLD_CALLBACK False"),
     );

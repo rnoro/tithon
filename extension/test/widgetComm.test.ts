@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { LiveWidgetRenderer } from "../src/liveWidgetRenderer";
 import { SessionClient } from "../src/sessionClient";
 import { WidgetComms } from "../src/widgetComm";
@@ -74,25 +74,106 @@ it("shares a live button model between views and drops input on invalidation", a
 });
 
 it("refreshes an existing live model from the scoped snapshot after a remount", async () => {
-  const renderer = new LiveWidgetRenderer(() => {});
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
   const host = document.createElement("div");
   document.body.append(host);
   try {
     await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
     expect(host.querySelector("button")!.textContent).toBe("Click");
+    expect(host.inert).toBe(true);
+    const rendered = sent.find((message) => message.type === "tithon.widget-rendered");
     const current = snapshot();
     current.state.button.state.description = "Current";
-    renderer.receive({ type: "tithon.widget-resync", scope, state: current });
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: "obsolete",
+      state: current,
+    });
+    await settle(20);
+    expect(host.inert).toBe(true);
+    expect(host.querySelector("button")!.textContent).toBe("Click");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: rendered.view_token,
+      state: current,
+    });
     await settle(20);
     expect(host.querySelector("button")!.textContent).toBe("Current");
+    expect(host.inert).toBe(false);
     renderer.invalidate(scope);
     current.state.button.state.description = "Stale";
-    renderer.receive({ type: "tithon.widget-resync", scope, state: current });
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: rendered.view_token,
+      state: current,
+    });
     await settle(20);
     expect(host.querySelector("button")!.textContent).toBe("Current");
   } finally {
     renderer.dispose("button");
     host.remove();
+  }
+});
+
+it("does not enable a remounted view from an earlier view's refresh", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  document.body.append(first, second);
+  try {
+    const payload = { scope, model_id: "button", state: snapshot() };
+    await renderer.render("output", payload, first);
+    const old = sent.find((message) => message.type === "tithon.widget-rendered");
+    await renderer.render("output", payload, second);
+    const current = sent.filter((message) => message.type === "tithon.widget-rendered").at(-1);
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "output",
+      view_token: old.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    expect(second.inert).toBe(true);
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "output",
+      view_token: current.view_token,
+      state: { version_major: 2, version_minor: 0, state: {} },
+    });
+    await settle(20);
+    expect(second.inert).toBe(true);
+    expect(second.textContent).toContain("Widget unavailable");
+  } finally {
+    renderer.dispose("output");
+    first.remove();
+    second.remove();
+  }
+});
+
+it("keeps a view inert and reports an unanswered synchronization", async () => {
+  vi.useFakeTimers();
+  const renderer = new LiveWidgetRenderer(() => {});
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(host.inert).toBe(true);
+    expect(host.textContent).toContain("synchronization timed out");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+    vi.useRealTimers();
   }
 });
 

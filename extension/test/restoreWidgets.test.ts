@@ -96,6 +96,48 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("holds a view refresh until its live connection finishes restoring", async () => {
+  vi.useFakeTimers();
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const postMessage = vi.fn();
+  const controller = harness(postMessage);
+  const owner = "file:///restoring.py";
+  const binding = { session: owner, binding: "binding" };
+  const scope = { ...binding, kernel_id: "kernel" };
+  const state: WidgetState = {
+    state: { check: { state: { _model_name: "CheckboxModel", value: true } } },
+  };
+  const widgets: WidgetState = {
+    renderer_binding: binding,
+    widget_context: { kernel_id: "kernel", active_model_ids: ["check"], states: { kernel: state } },
+  };
+  (controller as any).pendingLive.set(owner, { promise, abort: new AbortController() });
+  (controller as any).resyncWidget(owner, "check", scope, "view", "token");
+  expect(postMessage).not.toHaveBeenCalled();
+  (controller as any).liveSessions.set(owner, { widgets: () => widgets });
+  release();
+  await promise;
+  await Promise.resolve();
+  expect(postMessage).toHaveBeenCalledWith({
+    type: "tithon.widget-resync",
+    scope,
+    state: expect.objectContaining({ state: state.state }),
+    view_id: "view",
+    view_token: "token",
+  });
+});
+
+it("revokes a rendered binding when no connection is restoring", () => {
+  const postMessage = vi.fn();
+  const controller = harness(postMessage);
+  const scope = { session: "file:///closed.py", binding: "closed", kernel_id: "old" };
+  (controller as any).resyncWidget(scope.session, "check", scope, "view", "token");
+  expect(postMessage).toHaveBeenCalledWith({ type: "tithon.widget-invalidate", ...scope });
+});
+
 it.each([false, true])(
   "keeps restore-time widget deltas and honors cancellation=%s",
   async (cancel) => {

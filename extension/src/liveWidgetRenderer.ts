@@ -4,6 +4,8 @@ import type { WidgetScope } from "./richOutput";
 import { type RawWidgetMessage, WidgetComms } from "./widgetComm";
 import { createManager, type WidgetStateSnapshot } from "./widgetRender";
 
+const VIEW_SYNC_TIMEOUT_MS = 60_000;
+
 type Group = {
   scope: WidgetScope;
   manager: HTMLManager;
@@ -17,7 +19,18 @@ type Group = {
 
 export class LiveWidgetRenderer {
   private readonly groups = new Map<string, Group>();
-  private readonly items = new Map<string, { group: Group; host: HTMLElement; view?: any }>();
+  private readonly items = new Map<
+    string,
+    {
+      group: Group;
+      host: HTMLElement;
+      modelId: string;
+      token: string;
+      pending: HTMLElement;
+      timer?: ReturnType<typeof setTimeout>;
+      view?: any;
+    }
+  >();
   private readonly revoked = new Set<string>();
   constructor(private readonly post: (message: unknown) => void) {}
 
@@ -40,7 +53,9 @@ export class LiveWidgetRenderer {
     for (const id of group.items) {
       const host = this.items.get(id)?.host;
       if (!host) continue;
+      clearTimeout(this.items.get(id)?.timer);
       host.inert = true;
+      host.querySelector(".tithon-widget-pending")?.remove();
       for (const element of Array.from(
         host.querySelectorAll<HTMLInputElement>("input,button,select,textarea"),
       ))
@@ -80,10 +95,22 @@ export class LiveWidgetRenderer {
       .then(async () => {
         if (!group.active) return;
         if (state) {
+          const entry = this.items.get(event.view_id);
+          if (!entry || entry.group !== group || entry.token !== event.view_token) return;
           const existing = Object.fromEntries(
             Object.entries(state.state ?? {}).filter(([id]) => group.manager.has_model(id)),
           );
+          if (!(entry.modelId in existing)) {
+            clearTimeout(entry.timer);
+            entry.pending.textContent = "Widget unavailable. Reconnect to refresh.";
+            return;
+          }
           await group.manager.set_state({ ...state, state: existing });
+          if (group.active && this.items.get(event.view_id) === entry) {
+            clearTimeout(entry.timer);
+            entry.pending.remove();
+            entry.host.inert = false;
+          }
           return;
         }
         if (message.header.msg_type === "comm_open") {
@@ -139,7 +166,20 @@ export class LiveWidgetRenderer {
       group = created;
       this.groups.set(key, group);
     }
-    const entry: { group: Group; host: HTMLElement; view?: any } = { group, host };
+    const pending = document.createElement("div");
+    pending.className = "tithon-widget-pending";
+    pending.textContent = "Synchronizing widget…";
+    host.appendChild(pending);
+    host.inert = true;
+    const entry = {
+      group,
+      host,
+      modelId: payload.model_id,
+      token: crypto.randomUUID(),
+      pending,
+      timer: undefined as ReturnType<typeof setTimeout> | undefined,
+      view: undefined as any,
+    };
     this.items.set(id, entry);
     group.items.add(id);
     const target = group;
@@ -161,18 +201,26 @@ export class LiveWidgetRenderer {
     }
     await target.manager.display_view(entry.view, host);
     if (!target.active) this.disable(target);
-    else
+    else {
+      entry.timer = setTimeout(() => {
+        if (this.items.get(id) === entry && target.active)
+          entry.pending.textContent = "Widget synchronization timed out. Reconnect to refresh.";
+      }, VIEW_SYNC_TIMEOUT_MS);
       this.post({
         type: "tithon.widget-rendered",
         model_id: payload.model_id,
         mode: "html",
         scope: target.scope,
+        view_id: id,
+        view_token: entry.token,
       });
+    }
   }
 
   dispose(id: string): void {
     const entry = this.items.get(id);
     if (!entry) return;
+    clearTimeout(entry.timer);
     entry.view?.remove();
     this.items.delete(id);
     entry.group.items.delete(id);

@@ -1026,6 +1026,8 @@ export class TithonNotebookController {
         comm_id?: string;
         scope?: WidgetScope;
         request_id?: string;
+        view_id?: string;
+        view_token?: string;
         data?: unknown;
         buffers?: string[];
       };
@@ -1062,7 +1064,13 @@ export class TithonNotebookController {
       } else if (m?.type === "tithon.widget-rendered") {
         this.widgetRenders.push({ model_id: m.model_id, mode: m.mode });
         if (m.mode === "html" && m.model_id)
-          this.resyncWidget(e.editor.notebook.uri.toString(), m.model_id, m.scope);
+          this.resyncWidget(
+            e.editor.notebook.uri.toString(),
+            m.model_id,
+            m.scope,
+            m.view_id,
+            m.view_token,
+          );
         console.log(`[tithon] widget rendered: ${m.mode} (${m.model_id})`);
       } else if (m?.type === "tithon.widget-updated") {
         this.widgetUpdatesApplied += 1;
@@ -1189,9 +1197,30 @@ export class TithonNotebookController {
   }
 
   /** A mounted renderer may have missed deltas while building its models. */
-  private resyncWidget(owner: string, modelId: string, scope?: WidgetScope): void {
+  private resyncWidget(
+    owner: string,
+    modelId: string,
+    scope?: WidgetScope,
+    viewId?: string,
+    viewToken?: string,
+  ): void {
     const widgets = this.liveSessions.get(owner)?.widgets();
-    if (widgets?.renderer_available === false) return;
+    if (!widgets && viewId && viewToken) {
+      const pending = this.pendingLive.get(owner);
+      if (pending) {
+        void pending.promise
+          .then(() => this.resyncWidget(owner, modelId, scope, viewId, viewToken))
+          .catch(() => undefined);
+      } else if (scope) {
+        void this.widgetMessaging.postMessage({ type: "tithon.widget-invalidate", ...scope });
+      }
+      return;
+    }
+    if (widgets?.renderer_available === false) {
+      if (scope && viewId && viewToken)
+        void this.widgetMessaging.postMessage({ type: "tithon.widget-invalidate", ...scope });
+      return;
+    }
     const context = widgets?.widget_context;
     const resyncKernel =
       scope?.kernel_id === "legacy" &&
@@ -1207,7 +1236,11 @@ export class TithonNotebookController {
       },
       widgets,
     );
-    if (JSON.stringify(scope) !== JSON.stringify(expected)) return;
+    if (JSON.stringify(scope) !== JSON.stringify(expected)) {
+      if (scope && viewId && viewToken)
+        void this.widgetMessaging.postMessage({ type: "tithon.widget-invalidate", ...scope });
+      return;
+    }
     const payload = widgetPayload(
       {
         output_type: "display_data",
@@ -1216,11 +1249,13 @@ export class TithonNotebookController {
       },
       widgets,
     );
-    if (payload?.live && scope) {
+    if (scope && viewId && viewToken) {
       void this.widgetMessaging.postMessage({
         type: "tithon.widget-resync",
         scope,
-        state: payload.state,
+        state: payload?.live ? payload.state : { version_major: 2, version_minor: 0, state: {} },
+        view_id: viewId,
+        view_token: viewToken,
       });
     }
     for (const [commId, model] of Object.entries(payload?.state.state ?? {})) {

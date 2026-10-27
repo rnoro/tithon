@@ -145,6 +145,10 @@ export const activate: ActivationFunction = (context) => {
       host.className = "tithon-widget-host";
       element.appendChild(host);
 
+      if (payload.live && payload.scope && !context.postMessage) {
+        renderFallbackText(payload.state, payload.model_id, host);
+        return;
+      }
       if (payload.live && payload.scope) {
         try {
           await live.render(item.id, { ...payload, scope: payload.scope }, host);
