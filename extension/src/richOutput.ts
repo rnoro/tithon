@@ -279,14 +279,6 @@ function widgetsLiveForOutput(item: OutputItem, widgets: WidgetState | null | un
   );
 }
 
-const INTERACTIVE_MODELS = new Set([
-  "ButtonModel",
-  "IntSliderModel",
-  "FloatSliderModel",
-  "TextModel",
-  "DropdownModel",
-]);
-
 export function isRenderableWidget(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
@@ -332,8 +324,11 @@ function supportedGraph(
     const s = models[id]?.state;
     if (!s) return false; // unknown model: fail closed
     const name = String(s._model_name ?? "");
-    if (!DISPLAY_ONLY_MODELS.has(name) && !(interactive && INTERACTIVE_MODELS.has(name)))
-      return false;
+    const bundledControl =
+      interactive &&
+      s._model_module === "@jupyter-widgets/controls" &&
+      s._view_module === "@jupyter-widgets/controls";
+    if (!DISPLAY_ONLY_MODELS.has(name) && !bundledControl) return false;
     const ch = s.children;
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
     // that isn't an array (a malformed/unexpected shape) fails closed instead of

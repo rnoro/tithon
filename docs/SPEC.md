@@ -499,12 +499,14 @@ bundle (html-manager + ipywidgets controls + CSS inlined). It renders:
 - **live** — raw correlated comm messages update active stock models; saved and
   legacy display-only views retain the state-delta rendering path.
 
-Active Button, IntSlider, FloatSlider, Text and Dropdown models and standard
-containers use a shared live model registry per notebook/kernel/connection,
+Active controls provided by the bundled `@jupyter-widgets/controls` module and
+standard containers use a shared live model registry per notebook/kernel/connection,
 with independent view lifetimes. Stock models receive classic comms during
 construction, including ordered echo/correction and IOPub status callbacks.
 Binary buffers and custom messages use the same path. Live modules are bundled
-base/controls only; no third-party loading is enabled.
+base/controls only; no third-party loading is enabled. Button, IntSlider,
+FloatSlider, Text, Dropdown and Checkbox input have real VSCode coverage; other
+bundled controls use the same rendering path but are not individually verified.
 
 Interactive graphs require current active models and complete dependencies.
 Saved, legacy and unavailable controls remain static text. Disconnect, kernel

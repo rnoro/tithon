@@ -23,6 +23,10 @@ export const activate = (context: any) => {
         const input = host.querySelector<HTMLSelectElement>("select")!;
         input.value = message.value; input.dispatchEvent(new Event("change", {bubbles: true}));
       }
+      if (message.action === "check") {
+        const input = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+        input.click();
+      }
       context.postMessage({type: "test.widget-done", id: message.id,
         text: host.textContent, disabled: host.querySelector<HTMLButtonElement>("button")?.disabled,
         interactive: host.isConnected && !!host.querySelector("button:not([disabled])")});

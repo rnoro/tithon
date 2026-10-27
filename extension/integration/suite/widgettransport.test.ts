@@ -50,9 +50,16 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
   try {
     await until(
       () =>
-        ["button", "slider", "float-slider", "text", "dropdown", "label", "group"].every((id) =>
-          received.some((m) => m.type === "test.widget-ready" && m.model === id),
-        ),
+        [
+          "button",
+          "slider",
+          "float-slider",
+          "text",
+          "dropdown",
+          "checkbox",
+          "label",
+          "group",
+        ].every((id) => received.some((m) => m.type === "test.widget-ready" && m.model === id)),
       "interactive renderer views",
     );
     for (let i = 0; i < 5; i++) await action("button", "click");
@@ -60,13 +67,14 @@ it("routes real DOM input through production host/socket/kernel and revokes stal
     await action("float-slider", "key");
     await action("text", "text", "edited");
     await action("dropdown", "dropdown", "b");
+    await action("checkbox", "check");
     await until(
       async () =>
         (
           await query(
-            "print('STATE', clicks, slider.value, fslider.value, text.value, dropdown.value, label.value)",
+            "print('STATE', clicks, slider.value, fslider.value, text.value, dropdown.value, checkbox.value, label.value)",
           )
-        ).includes("STATE 5 21 1.0 edited b 5"),
+        ).includes("STATE 5 21 1.0 edited b True 5"),
       "Python values from DOM events",
     );
     await until(

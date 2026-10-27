@@ -15,6 +15,7 @@ slider = w.IntSlider(value=0, min=0, max=100, model_id='slider')
 fslider = w.FloatSlider(value=0, min=0, max=100, step=1, model_id='float-slider')
 text = w.Text(value='initial', model_id='text')
 dropdown = w.Dropdown(options=['a', 'b'], model_id='dropdown')
+checkbox = w.Checkbox(value=False, description='Enabled', model_id='checkbox')
 label = w.Label(value='0', model_id='label')
 clicks = 0
 def clicked(_):
@@ -22,8 +23,8 @@ def clicked(_):
     clicks += 1
     label.value = str(clicks)
 button.on_click(clicked)
-group = w.VBox([button, slider, fslider, text, dropdown, label], model_id='group')
-display(button, slider, fslider, text, dropdown, label, group)
+group = w.VBox([button, slider, fslider, text, dropdown, checkbox, label], model_id='group')
+display(button, slider, fslider, text, dropdown, checkbox, label, group)
 PY
 start_daemon || fail "daemon start"
 mkdir -p "$TITHON_HOME/test-extension"
@@ -34,4 +35,4 @@ run_vscode node "$TITHON_HOME/test-extension/out-int/integration/runTest.js" > "
 rc=$?
 tail -40 "$OUT"
 [ "$rc" -eq 0 ] || fail "real DOM transport suite (rc=$rc)"
-echo "RESULT v73 PASS real VSCode DOM Button x5 + Slider keyboard x21 + Text/Dropdown -> Python and Label DOM; replaced kernel revokes stale view"
+echo "RESULT v73 PASS real VSCode DOM Button x5 + Slider keyboard x21 + Text/Dropdown/Checkbox -> Python and Label DOM; replaced kernel revokes stale view"

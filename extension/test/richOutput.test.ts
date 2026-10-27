@@ -5,6 +5,7 @@ import {
   imageRefsOf,
   isDisplayOnlyWidget,
   isOutputAreaView,
+  isRenderableWidget,
   WIDGET_VIEW_MIME,
   type WidgetState,
   widgetFallbackText,
@@ -152,6 +153,35 @@ describe("interactive-widget allow-list (RISKS #4/T8: no client -> kernel comm y
     };
     expect(isDisplayOnlyWidget("box", w)).toBe(false);
   });
+});
+
+it("renders live bundled controls without granting saved or external models input", () => {
+  const checkbox: WidgetState = {
+    state: {
+      check: {
+        state: {
+          _model_name: "CheckboxModel",
+          _model_module: "@jupyter-widgets/controls",
+          _view_module: "@jupyter-widgets/controls",
+          value: false,
+        },
+      },
+    },
+  };
+  const widgets: WidgetState = {
+    widget_context: { kernel_id: "live", active_model_ids: ["check"], states: { live: checkbox } },
+  };
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "check" } },
+    widget_kernel_id: "live",
+  };
+  expect(isRenderableWidget(item, widgets)).toBe(true);
+  widgets.widget_context!.active_model_ids = [];
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+  widgets.widget_context!.active_model_ids = ["check"];
+  checkbox.state!.check.state!._view_module = "external-widget";
+  expect(isRenderableWidget(item, widgets)).toBe(false);
 });
 
 describe("isOutputAreaView — an Output widget's own view is redundant", () => {
