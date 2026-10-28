@@ -5,6 +5,12 @@ import base64
 import json
 import os
 import signal
+import subprocess
+import sys
+import sysconfig
+import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -12,6 +18,7 @@ from test_feature_processes import host as host
 from test_feature_processes import request, run
 from websockets.asyncio.client import unix_connect
 
+from tithon.daemon import Session
 from tithon.widget_transport import MAX_WIDGET_BUFFERS, request_content
 
 CODE = """import ipywidgets as w
@@ -221,6 +228,156 @@ def test_unknown_unattached_stale_and_cross_connection_actions_do_not_spawn(host
             await ws.close()
 
     asyncio.run(check())
+
+
+def test_module_authorization_rejects_reused_pid_with_matching_argv():
+    kernel = SimpleNamespace(
+        kernel_id="original", pid=123, is_alive=lambda: True, _identity=lambda _: "replacement"
+    )
+    mirror = SimpleNamespace(declares_module=lambda _name, _version: True)
+    session = SimpleNamespace(
+        kernel=kernel,
+        _widget_mirrors={"original": mirror},
+        _killed=False,
+        _restarting=False,
+        kc=object(),
+        kernel_status="idle",
+    )
+    request = {
+        "kernel_id": "original",
+        "binding": "client:original",
+        "module": "chart",
+        "version": "^1.0.0",
+    }
+    assert not Session.widget_module_authorized(session, request, "client")
+    kernel._identity = lambda _: "original"
+    assert Session.widget_module_authorized(session, request, "client")
+
+
+def test_module_download_requires_attached_current_kernel_and_declared_version(host):
+    root, work, env, start = host
+    start()
+    sock = root / "home/daemon.sock"
+    frame = {
+        "op": "widget_module",
+        "session": "default",
+        "kernel_id": "missing",
+        "binding": "client-a:missing",
+        "request_id": "module-1",
+        "module": "bqplot",
+        "version": "^0.6.1",
+    }
+    result = asyncio.run(request(sock, frame))
+    assert result["op"] == "widget_module_result" and not result["ok"]
+    assert not list((root / "home").rglob("kernel.json"))
+    run(
+        env,
+        "run",
+        "-c",
+        "import bqplot as bq\nfrom IPython.display import display\nfig=bq.Figure()\ndisplay(fig)",
+    )
+
+    async def check():
+        ws, snap = await connected(sock, "client-a")
+        identity = snap["kernel"]["kernel_id"]
+        valid = {**frame, "kernel_id": identity, "binding": f"client-a:{identity}"}
+        try:
+            for invalid in (
+                {"kernel_id": "stale"},
+                {"binding": "other"},
+                {"session": "other"},
+                {"module": "bqscales"},
+                {"version": "^9.0.0"},
+                {"module": "../secret"},
+            ):
+                await ws.send(json.dumps({**valid, **invalid}))
+                response = await recv(ws)
+                assert response["op"] == "widget_module_result" and not response["ok"]
+            await ws.send(json.dumps(valid))
+            response = await recv(ws)
+            assert response["ok"] and response["name"] == "bqplot"
+            assert response["version"] == "0.6.1"
+            assert 'define(["@jupyter-widgets/base"]' in response["source"][:150]
+        finally:
+            await ws.close()
+
+    asyncio.run(check())
+
+
+def test_module_download_uses_surviving_kernel_environment_after_daemon_switch(host):
+    root, work, env, start = host
+    first = start()
+    run(
+        env,
+        "run",
+        "-c",
+        "import bqplot as bq\nfrom IPython.display import display\ndisplay(bq.Figure())",
+    )
+    sock = root / "home/daemon.sock"
+
+    async def identity():
+        ws, snapshot = await connected(sock, "client-a")
+        await ws.close()
+        return snapshot["kernel"]
+
+    original = asyncio.run(identity())
+    first.kill()
+    first.wait(timeout=10)
+    sock.unlink(missing_ok=True)
+    alternative = root / "alternative"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(alternative)], check=True, timeout=30
+    )
+    sites = list(alternative.glob("lib/python*/site-packages"))
+    assert len(sites) == 1
+    (sites[0] / "tithon-test.pth").write_text(
+        sysconfig.get_path("purelib")
+        + "\n"
+        + str(Path(__file__).resolve().parents[1] / "src")
+        + "\n"
+    )
+    with (root / "alternative-daemon.log").open("ab") as log:
+        other = subprocess.Popen(
+            [str(alternative / "bin/python"), "-m", "tithon", "daemon"],
+            cwd=work,
+            env=env,
+            stdout=log,
+            stderr=log,
+        )
+    try:
+        deadline = time.monotonic() + 20
+        while not sock.exists():
+            if other.poll() is not None or time.monotonic() >= deadline:
+                pytest.fail((root / "alternative-daemon.log").read_text())
+            time.sleep(0.05)
+
+        async def check():
+            ws, snapshot = await connected(sock, "client-a")
+            try:
+                assert snapshot["kernel"]["pid"] == original["pid"]
+                assert snapshot["kernel"]["kernel_id"] == original["kernel_id"]
+                await ws.send(
+                    json.dumps(
+                        {
+                            "op": "widget_module",
+                            "session": "default",
+                            "kernel_id": original["kernel_id"],
+                            "binding": f"client-a:{original['kernel_id']}",
+                            "request_id": "after-reattach",
+                            "module": "bqplot",
+                            "version": "^0.6.1",
+                        }
+                    )
+                )
+                response = await recv(ws)
+                assert response["ok"] and response["version"] == "0.6.1", response
+            finally:
+                await ws.close()
+
+        asyncio.run(check())
+    finally:
+        other.terminate()
+        other.wait(timeout=10)
 
 
 @pytest.mark.parametrize(

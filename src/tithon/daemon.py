@@ -40,6 +40,7 @@ from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
 from .kernel import KernelHandle
+from .widget_modules import read_kernel_widget_module
 from .widget_transport import (
     MAX_WIDGET_PENDING,
     WIDGET_REQUEST_TTL,
@@ -1285,6 +1286,33 @@ class Session:
             raise
         self.touch()
         return message_id
+
+    def widget_module_authorized(self, request: dict, binding: str) -> bool:
+        """Resolve modules only for a live model on the attached kernel."""
+        identity = self.kernel.kernel_id
+        name, version = request.get("module"), request.get("version")
+        mirror = self._widget_mirrors.get(identity)
+        if (
+            self._killed
+            or self._restarting
+            or self.kc is None
+            or self.kernel_status == "dead"
+            or not isinstance(self.kernel.pid, int)
+            or not self.kernel.is_alive()
+            or request.get("kernel_id") != identity
+            or request.get("binding") != f"{binding}:{identity}"
+            or not isinstance(name, str)
+            or len(name) > 214
+            or not isinstance(version, str)
+            or len(version) > 128
+            or mirror is None
+            or not mirror.declares_module(name, version)
+        ):
+            return False
+        try:
+            return self.kernel._identity(self.kernel.pid) == identity
+        except (OSError, psutil.Error, ValueError, TypeError):
+            return False
 
     def _handle_iopub(self, msg: dict) -> None:
         msg_type = msg["header"]["msg_type"]
@@ -2573,6 +2601,34 @@ class Daemon:
                             "ok": False,
                             "message": str(error),
                         }
+                    await ws.send(json.dumps(reply))
+                    continue
+                if op == "widget_module":
+                    request_id = msg.get("request_id")
+                    reply = {"op": "widget_module_result", "request_id": request_id}
+                    try:
+                        if (
+                            not isinstance(request_id, str)
+                            or not 1 <= len(request_id) <= 128
+                            or session is None
+                            or sub is None
+                            or sub.dropped
+                            or widget_binding is None
+                            or msg.get("session") != session.session_id
+                            or not session.widget_module_authorized(msg, widget_binding)
+                        ):
+                            raise ValueError("Widget module request is unavailable")
+                        module = await asyncio.to_thread(
+                            read_kernel_widget_module,
+                            session.kernel,
+                            msg["kernel_id"],
+                            msg["module"],
+                        )
+                        if sub.dropped or not session.widget_module_authorized(msg, widget_binding):
+                            raise ValueError("Widget module request is unavailable")
+                        reply.update(ok=True, **module)
+                    except (ValueError, TypeError) as error:
+                        reply.update(ok=False, message=str(error))
                     await ws.send(json.dumps(reply))
                     continue
                 # A connection is bound to one session, fixed on the first op.

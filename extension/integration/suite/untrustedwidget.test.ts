@@ -75,6 +75,25 @@ it("blocks custom widget code in a restricted workspace without disabling stock 
     assert.ok(
       !received.some((entry) => entry.type === "test.widget-ready" && entry.model === "custom"),
     );
+    await until(
+      () =>
+        notebook
+          .cellAt(2)
+          .outputs.some((output) =>
+            output.items.some(
+              (item) =>
+                item.mime === "text/plain" &&
+                Buffer.from(item.data).toString().includes("FigureModel"),
+            ),
+          ),
+      "third-party widget fallback",
+    );
+    assert.ok(
+      !received.some(
+        (entry) => entry.type === "test.widget-ready" && entry.model === "untrusted-figure",
+      ),
+    );
+    assert.ok(!received.some((entry) => entry.type === "tithon.widget-load-module"));
     assert.ok((await query("print('CUSTOM_EVENTS', events)")).includes("CUSTOM_EVENTS []"));
     await action("click");
     await until(

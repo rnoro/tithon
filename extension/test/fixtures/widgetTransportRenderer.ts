@@ -32,11 +32,29 @@ export const activate = (context: any) => {
         const input = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
         input.click();
       }
+      if (message.action === "brush") {
+        const overlay = host.querySelector<SVGElement>("rect.overlay");
+        if (!overlay) throw new Error("No brush overlay");
+        const rect = overlay.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) throw new Error("Brush has no visible area");
+        const x = rect.left + rect.width * 0.25;
+        const y = rect.top + rect.height * 0.5;
+        overlay.dispatchEvent(new MouseEvent("mousedown", {view: window, bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y}));
+        window.dispatchEvent(new MouseEvent("mousemove", {view: window, bubbles: true, buttons: 1, clientX: x + rect.width * 0.4, clientY: y}));
+        window.dispatchEvent(new MouseEvent("mouseup", {view: window, bubbles: true, button: 0, clientX: x + rect.width * 0.4, clientY: y}));
+      }
+      if (message.action === "debugError") {
+        for (const item of host.querySelectorAll(".jupyter-widgets-error-widget")) {
+          (item.parentElement as HTMLElement | null)?.click();
+        }
+      }
       context.postMessage({type: "test.widget-done", id: message.id,
         text: host.textContent, disabled: host.querySelector<HTMLButtonElement>("button")?.disabled,
         checked: host.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked,
         anyCreated: (globalThis as any).__tithonAnyCreated || 0,
         anyDestroyed: (globalThis as any).__tithonAnyDestroyed || 0,
+        svgCount: host.querySelectorAll("svg").length,
+        errorCount: host.querySelectorAll(".jupyter-widgets-error-widget").length,
         available, interactive: available && host.isConnected && !!host.querySelector("button:not([disabled])")});
     } catch (error) { context.postMessage({type: "test.widget-error", id: message.id, error: String(error)}); }
   });

@@ -256,6 +256,45 @@ it("admits anywidget code only in a trusted, active, complete model graph", () =
   expect(isRenderableWidget(item, widgets)).toBe(false);
 });
 
+it("admits external models only for trusted complete live graphs", () => {
+  const state: WidgetState = {
+    state: {
+      figure: {
+        model_module: "bqplot",
+        state: {
+          _model_name: "FigureModel",
+          _model_module: "bqplot",
+          _view_module: "bqplot",
+          scales: "IPY_MODEL_scale",
+        },
+      },
+      scale: {
+        model_module: "bqscales",
+        state: { _model_name: "LinearScaleModel", _model_module: "bqscales" },
+      },
+    },
+  };
+  const widgets: WidgetState = {
+    allow_custom_widgets: true,
+    widget_context: {
+      kernel_id: "live",
+      active_model_ids: ["figure", "scale"],
+      states: { live: state },
+    },
+  };
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "figure" } },
+    widget_kernel_id: "live",
+  };
+  expect(isRenderableWidget(item, widgets)).toBe(true);
+  widgets.allow_custom_widgets = false;
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+  widgets.allow_custom_widgets = true;
+  widgets.widget_context!.active_model_ids = ["figure"];
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+});
+
 describe("isOutputAreaView — an Output widget's own view is redundant", () => {
   const view = (modelId: string): OutputItem => ({
     output_type: "display_data",

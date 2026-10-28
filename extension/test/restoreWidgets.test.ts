@@ -37,6 +37,9 @@ vi.mock("../src/sessionClient", () => ({
       return undefined;
     }
     async sendWidgetMessage() {}
+    async fetchWidgetModule() {
+      throw new Error("No widget module fixture");
+    }
     executions() {
       return [];
     }
@@ -56,6 +59,7 @@ vi.mock("../src/sessionClient", () => ({
 }));
 vi.mock("vscode", () => ({
   workspace: {
+    isTrusted: true,
     getWorkspaceFolder: () => undefined,
     onDidChangeNotebookDocument: () => ({ dispose() {} }),
   },
@@ -128,6 +132,41 @@ it("holds a view refresh until its live connection finishes restoring", async ()
     view_id: "view",
     view_token: "token",
   });
+});
+
+it("holds a module request until its matching live connection finishes restoring", async () => {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const postMessage = vi.fn();
+  const controller = harness(postMessage);
+  const owner = "file:///restoring.py";
+  const scope = { session: owner, binding: "binding", kernel_id: "kernel" };
+  const editor = {};
+  const module = { name: "bqplot", version: "0.6.1", source: "define([]);" };
+  const fetchWidgetModule = vi.fn().mockResolvedValue(module);
+  (controller as any).pendingLive.set(owner, { promise, abort: new AbortController() });
+  (controller as any).loadWidgetModule(owner, editor, scope, "request", "bqplot", "^0.6.1");
+  expect(fetchWidgetModule).not.toHaveBeenCalled();
+  (controller as any).liveSessions.set(owner, {
+    fetchWidgetModule,
+    widgets: () => ({ renderer_binding: scope, widget_context: { kernel_id: "kernel" } }),
+  });
+  release();
+  await promise;
+  await vi.waitFor(() =>
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        type: "tithon.widget-module-result",
+        scope,
+        request_id: "request",
+        module,
+      },
+      editor,
+    ),
+  );
+  expect(fetchWidgetModule).toHaveBeenCalledWith(scope, "bqplot", "^0.6.1");
 });
 
 it("revokes a rendered binding when no connection is restoring", () => {

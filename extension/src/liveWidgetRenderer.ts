@@ -1,6 +1,7 @@
 /** One live model registry per connection/kernel; output items own views only. */
 import type { WidgetScope } from "./richOutput";
 import { type RawWidgetMessage, WidgetComms } from "./widgetComm";
+import { WidgetModuleLoader } from "./widgetModuleLoader";
 import { createManager, type WidgetStateSnapshot } from "./widgetRender";
 
 const VIEW_SYNC_TIMEOUT_MS = 60_000;
@@ -9,6 +10,7 @@ type Group = {
   scope: WidgetScope;
   manager: ReturnType<typeof createManager>;
   comms: WidgetComms;
+  modules: WidgetModuleLoader;
   allowCustom: boolean;
   failedModels: Set<string>;
   serial: Promise<void>;
@@ -52,6 +54,7 @@ export class LiveWidgetRenderer {
   private disable(group: Group, reason = "Connection ended. Reconnect to refresh widgets."): void {
     group.active = false;
     group.comms.dispose();
+    group.modules.dispose();
     for (const id of group.items) {
       const host = this.items.get(id)?.host;
       if (!host) continue;
@@ -90,6 +93,11 @@ export class LiveWidgetRenderer {
   }
 
   receive(event: any): void {
+    if (event?.type === "tithon.widget-module-result") {
+      const group = event.scope ? this.groups.get(this.key(event.scope)) : undefined;
+      if (group?.active) group.modules.receive(event);
+      return;
+    }
     if (
       event?.type !== "tithon.widget-message" &&
       event?.type !== "tithon.widget-error" &&
@@ -144,7 +152,7 @@ export class LiveWidgetRenderer {
               typeof moduleName === "string" &&
               moduleName !== "@jupyter-widgets/base" &&
               moduleName !== "@jupyter-widgets/controls" &&
-              !(moduleName === "anywidget" && group.allowCustom)
+              !group.allowCustom
             )
               return;
             if (!group.manager.has_model(id)) {
@@ -198,10 +206,16 @@ export class LiveWidgetRenderer {
       const comms = new WidgetComms(payload.scope, this.post, (reason) =>
         this.disable(created, reason),
       );
+      const modules = new WidgetModuleLoader(payload.scope, this.post);
       created = {
         scope: payload.scope,
         comms,
-        manager: createManager((id) => comms.comm(id), payload.allow_custom_widgets === true),
+        modules,
+        manager: createManager(
+          (id) => comms.comm(id),
+          payload.allow_custom_widgets === true,
+          (name, version) => modules.load(name, version),
+        ),
         allowCustom: payload.allow_custom_widgets === true,
         failedModels: new Set(),
         active: !this.revoked.has(this.binding(payload.scope)),
@@ -210,7 +224,10 @@ export class LiveWidgetRenderer {
         queuedBytes: 0,
         items: new Set(),
       };
-      if (!created.active) comms.dispose();
+      if (!created.active) {
+        comms.dispose();
+        modules.dispose();
+      }
       group = created;
       this.groups.set(key, group);
     }
@@ -281,6 +298,7 @@ export class LiveWidgetRenderer {
     if (!entry.group.items.size) {
       entry.group.active = false;
       entry.group.comms.dispose();
+      entry.group.modules.dispose();
       this.groups.delete(this.key(entry.group.scope));
       void entry.group.serial
         .catch(() => undefined)

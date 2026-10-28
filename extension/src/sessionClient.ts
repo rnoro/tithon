@@ -146,6 +146,56 @@ export class SessionClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  private readonly widgetModules = new Map<
+    string,
+    {
+      resolve: (module: { name: string; version: string; source: string }) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+
+  fetchWidgetModule(
+    scope: WidgetScope,
+    name: string,
+    version: string,
+  ): Promise<{ name: string; version: string; source: string }> {
+    const widgets = this.widgets();
+    if (
+      !this.isConnected() ||
+      widgets?.renderer_available === false ||
+      scope.session !== this.session ||
+      scope.binding !== widgets?.renderer_binding?.binding ||
+      scope.kernel_id !== widgets?.widget_context?.kernel_id ||
+      this.widgetModules.size >= 16
+    )
+      return Promise.reject(new Error("Widget connection is unavailable"));
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.widgetModules.delete(requestId);
+        reject(new Error("Widget module request timed out"));
+      }, 30000);
+      this.widgetModules.set(requestId, { resolve, reject, timer });
+      try {
+        this.ws!.send(
+          JSON.stringify({
+            op: "widget_module",
+            session: this.session,
+            binding: scope.binding,
+            kernel_id: scope.kernel_id,
+            request_id: requestId,
+            module: name,
+            version,
+          }),
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        this.widgetModules.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
 
   /** Acknowledges sending only; callback completion arrives as correlated IOPub. */
   sendWidgetMessage(
@@ -234,6 +284,11 @@ export class SessionClient {
       pending.reject(new Error("Widget connection ended; sent actions are not retried"));
     }
     this.widgetAcks.clear();
+    for (const pending of this.widgetModules.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Widget connection ended"));
+    }
+    this.widgetModules.clear();
   }
 
   /** A cell blocked on input()/getpass(), if any: {exec_id, prompt, password}.
@@ -519,6 +574,23 @@ export class SessionClient {
 
   private handle(m: any): void {
     switch (m.op) {
+      case "widget_module_result": {
+        const pending = this.widgetModules.get(m.request_id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.widgetModules.delete(m.request_id);
+          if (
+            m.ok &&
+            typeof m.name === "string" &&
+            typeof m.version === "string" &&
+            typeof m.source === "string" &&
+            m.source.length <= 4 * 1024 * 1024
+          )
+            pending.resolve({ name: m.name, version: m.version, source: m.source });
+          else pending.reject(new Error(m.message || "Widget module unavailable"));
+        }
+        break;
+      }
       case "widget_ack": {
         const pending = this.widgetAcks.get(m.request_id);
         if (pending) {

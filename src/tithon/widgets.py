@@ -72,6 +72,18 @@ class WidgetMirror:
     def has_model(self, comm_id: str) -> bool:
         return comm_id in self._models
 
+    def declares_module(self, name: str, version: str) -> bool:
+        """Only live models may authorize a frontend module request."""
+        for model in self._models.values():
+            state = model["state"]
+            for kind in ("model", "view"):
+                if (
+                    state.get(f"_{kind}_module") == name
+                    and state.get(f"_{kind}_module_version") == version
+                ):
+                    return True
+        return False
+
     def would_accept(self, msg_type: str, content: dict) -> bool:
         """Predict apply()'s accept/reject WITHOUT mutating — must stay in sync
         with apply()'s own guard clauses. Lets a caller journal before

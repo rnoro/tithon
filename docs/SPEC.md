@@ -512,8 +512,21 @@ FloatSlider, Text, Dropdown and Checkbox input have real VSCode coverage; other
 bundled controls use the same rendering path but are not individually verified.
 Anywidget 0.11.x models require an active current-kernel graph and a trusted
 VSCode workspace; saved and untrusted custom widget models remain text. The
-renderer supports anywidget's ESM and composition through its upstream frontend;
-other third-party widget modules are not loaded. A model whose comm callback
+renderer supports anywidget's ESM and composition through its upstream frontend.
+For other live modules it can load an installed classic AMD `index.js` with
+dependencies on the bundled base/controls modules. The kernel's interpreter
+path and startup environment determine the prefix even after a daemon reattaches
+under another Python. Later changes to the kernel's `sys.path` are not reflected;
+replacing or retargeting the interpreter path can change the probed environment.
+The classic bundle and Lab package metadata must both match SHA-256 entries in
+the same installed Python distribution's RECORD; the bundle must also export a
+matching package version, and that version must satisfy the requested range.
+These checks establish consistency with that
+installation, not independent publisher authenticity. File reads are bounded
+and confined beneath the environment without following symlinks. Module requests
+require an attached current kernel and a module/version declared by a live model.
+CDN loading, arbitrary AMD dependency mappings and Lab-only bundles are not
+implemented. A model whose comm callback
 fails is isolated from unrelated views, while transport-wide errors invalidate
 the shared connection. Disposing the last view closes the manager's models and
 invokes their widget lifecycle cleanup.
@@ -521,8 +534,10 @@ invokes their widget lifecycle cleanup.
 Interactive graphs require current active models and complete dependencies.
 Saved, legacy and unavailable controls remain static text. Disconnect, kernel
 replacement, rejection or response timeout disables a mounted live view and
-revokes queued work; sent actions are never retried. Unsupported/mixed graphs
-still fall back as a whole pending child-level fallback support.
+revokes queued work; sent actions are never retried. In a trusted live container,
+an unavailable module renders an error widget while supported siblings remain
+active. Incomplete graphs and saved or untrusted mixed graphs may still fall
+back as a whole.
 When VSCode recreates a view from an older output payload while its notebook
 remains open, the host refreshes its live models from the current scoped mirror.
 Each view stays inert until its own refresh completes; an obsolete view's reply
@@ -869,8 +884,8 @@ does not have.
   explicit interaction ownership/routing. The captured contents render as
   notebook outputs in the owning cell; dedicated Output views/layout and
   `Output.outputs` trait operations such as `append_stdout` remain pending (#23).
-  Mixed unsupported-child fallback and third-party modules other than anywidget
-  remain pending (#28).
+  Broader third-party module formats and dependency discovery, and partial
+  fallback for incomplete, saved or untrusted mixed graphs remain pending (#28).
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
@@ -918,7 +933,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 widget mirror + render + kernel-scoped history
+make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -955,6 +970,7 @@ Capability → what it guarantees → how it is verified:
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
 | Widget callback outputs | Cross-cell stdout/HTML/PNG/errors, scoped clear, same-kernel crash recovery | `v74` (actual processes and client folds), `v75` (real VSCode DOM callbacks) |
 | Custom widget runtime | Trusted anywidget composition, communication, reconnect and isolated failure; restricted workspace executes no custom widget code | `v76`, `v77` (real VSCode) |
+| Installed classic widgets | Scoped local AMD modules, live bqplot brush, mixed views and reconnect | `v72` (module checks), `v78` (real VSCode) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |

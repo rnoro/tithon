@@ -68,6 +68,7 @@ dev = [
     "ipywidgets",
     "anywidget==0.11.0",
     "ruff>=0.9",
+    "bqplot==0.13.1",
 ]
 
 [tool.pytest.ini_options]

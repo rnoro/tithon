@@ -153,9 +153,13 @@ export const activate: ActivationFunction = (context) => {
       if (payload.live && payload.scope) {
         try {
           await live.render(item.id, { ...payload, scope: payload.scope }, host);
-        } catch {
+        } catch (error) {
           live.dispose(item.id);
           renderFallbackText(payload.state, payload.model_id, host);
+          const note = document.createElement("div");
+          note.className = "tithon-widget-status";
+          note.textContent = `Widget unavailable: ${String((error as Error)?.message ?? error)}`;
+          host.appendChild(note);
         }
         return;
       }

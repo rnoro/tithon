@@ -911,6 +911,7 @@ export class TithonNotebookController {
       diag: () => LiveDiag;
       widgets: () => WidgetState | null;
       sendWidgetMessage: SessionClient["sendWidgetMessage"];
+      fetchWidgetModule: SessionClient["fetchWidgetModule"];
     }
   >();
 
@@ -1034,8 +1035,31 @@ export class TithonNotebookController {
         view_token?: string;
         data?: unknown;
         buffers?: string[];
+        module_name?: string;
+        module_version?: string;
       };
-      if (m?.type === "tithon.widget-send") {
+      if (m?.type === "tithon.widget-load-module") {
+        const owner = e.editor.notebook.uri.toString();
+        const scope = m.scope;
+        if (
+          !vscode.workspace.isTrusted ||
+          !scope ||
+          scope.session !== owner ||
+          typeof m.request_id !== "string" ||
+          m.request_id.length > 128 ||
+          typeof m.module_name !== "string" ||
+          typeof m.module_version !== "string"
+        )
+          return;
+        this.loadWidgetModule(
+          owner,
+          e.editor,
+          scope,
+          m.request_id,
+          m.module_name,
+          m.module_version,
+        );
+      } else if (m?.type === "tithon.widget-send") {
         const owner = e.editor.notebook.uri.toString();
         const client = this.liveSessions.get(owner);
         const scope = m.scope;
@@ -1198,6 +1222,74 @@ export class TithonNotebookController {
     if (!this.widgetFlushTimer) {
       this.widgetFlushTimer = setTimeout(() => this.flushWidgetUpdates(), 50);
     }
+  }
+
+  /** Wait for the matching session to finish restoring before resolving modules. */
+  private loadWidgetModule(
+    owner: string,
+    editor: vscode.NotebookEditor,
+    scope: WidgetScope,
+    requestId: string,
+    name: string,
+    version: string,
+  ): void {
+    if (!vscode.workspace.isTrusted) {
+      void this.widgetMessaging.postMessage({ type: "tithon.widget-invalidate", ...scope }, editor);
+      return;
+    }
+    const client = this.liveSessions.get(owner);
+    if (!client) {
+      const pending = this.pendingLive.get(owner);
+      if (pending) {
+        void pending.promise
+          .then(() => this.loadWidgetModule(owner, editor, scope, requestId, name, version))
+          .catch(() => {
+            void this.widgetMessaging.postMessage(
+              { type: "tithon.widget-invalidate", ...scope },
+              editor,
+            );
+          });
+      } else {
+        void this.widgetMessaging.postMessage(
+          { type: "tithon.widget-invalidate", ...scope },
+          editor,
+        );
+      }
+      return;
+    }
+    void client.fetchWidgetModule(scope, name, version).then(
+      (module) => {
+        const widgets = client.widgets();
+        if (
+          !vscode.workspace.isTrusted ||
+          this.liveSessions.get(owner) !== client ||
+          widgets?.renderer_available === false ||
+          widgets?.renderer_binding?.binding !== scope.binding ||
+          widgets?.widget_context?.kernel_id !== scope.kernel_id
+        )
+          return;
+        void this.widgetMessaging.postMessage(
+          {
+            type: "tithon.widget-module-result",
+            scope,
+            request_id: requestId,
+            module,
+          },
+          editor,
+        );
+      },
+      (error) => {
+        void this.widgetMessaging.postMessage(
+          {
+            type: "tithon.widget-module-result",
+            scope,
+            request_id: requestId,
+            error: String(error.message ?? error),
+          },
+          editor,
+        );
+      },
+    );
   }
 
   /** A mounted renderer may have missed deltas while building its models. */
@@ -2031,6 +2123,7 @@ export class TithonNotebookController {
     diag: () => LiveDiag;
     widgets: () => WidgetState | null;
     sendWidgetMessage: SessionClient["sendWidgetMessage"];
+    fetchWidgetModule: SessionClient["fetchWidgetModule"];
   }> {
     await ensureDaemon(this.sockPath); // auto-start the host daemon if needed
     if (signal?.aborted) throw new Error("Output restoration cancelled");
@@ -2272,6 +2365,7 @@ export class TithonNotebookController {
         activeCells: () => sink.activeCells(),
         widgets: () => rendererWidgetState(client.widgets()),
         sendWidgetMessage: client.sendWidgetMessage.bind(client),
+        fetchWidgetModule: client.fetchWidgetModule.bind(client),
         hasPendingFlush: () => live.hasPendingFlush(),
         diag: () => ({
           syncSeq: client.syncSeq,

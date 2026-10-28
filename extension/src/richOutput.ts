@@ -306,7 +306,7 @@ export function isRenderableWidget(
         moduleName === "@jupyter-widgets/controls"
       )
         continue;
-      if (moduleName === "anywidget" && allowCustom) continue;
+      if (typeof moduleName === "string" && allowCustom) continue;
       return false;
     }
   }
@@ -354,7 +354,7 @@ function supportedGraph(
       s._model_module === "@jupyter-widgets/controls" &&
       s._view_module === "@jupyter-widgets/controls";
     const customWidget =
-      allowCustom && s._model_module === "anywidget" && s._view_module === "anywidget";
+      allowCustom && typeof s._model_module === "string" && typeof s._view_module === "string";
     if (!DISPLAY_ONLY_MODELS.has(name) && !bundledControl && !customWidget) return false;
     const ch = s.children;
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE

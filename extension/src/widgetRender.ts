@@ -43,6 +43,7 @@ export class TithonWidgetManager extends HTMLManager {
   constructor(
     private readonly commFor?: (id: string) => any,
     private allowCustom = false,
+    private readonly loadModule?: (name: string, version: string) => Promise<any>,
   ) {
     super();
   }
@@ -68,7 +69,8 @@ export class TithonWidgetManager extends HTMLManager {
       if (!satisfies("0.11.0", moduleVersion))
         throw new Error(`Unsupported widget module ${moduleName}@${moduleVersion}`);
       mod = anywidget;
-    }
+    } else if (this.commFor && this.allowCustom && this.loadModule)
+      mod = await this.loadModule(moduleName, moduleVersion);
     if (mod) {
       if (mod[className]) return mod[className];
       throw new Error(`Class ${className} not found in ${moduleName}@${moduleVersion}`);
@@ -81,8 +83,9 @@ export class TithonWidgetManager extends HTMLManager {
 export function createManager(
   commFor?: (id: string) => any,
   allowCustom = false,
+  loadModule?: (name: string, version: string) => Promise<any>,
 ): TithonWidgetManager {
-  return new TithonWidgetManager(commFor, allowCustom);
+  return new TithonWidgetManager(commFor, allowCustom, loadModule);
 }
 
 /** Find the first model id in the snapshot whose model_name matches. */
