@@ -95,6 +95,36 @@ describe("widget text fallback (design §3.3)", () => {
     expect(widgetFallbackText("missing", tqdmWidgets)).toBeUndefined();
     expect(widgetFallbackText("hbox", null)).toBeUndefined();
   });
+
+  it("identifies unavailable children alongside supported content in mixed containers", () => {
+    const w: WidgetState = {
+      state: {
+        box: {
+          state: {
+            _model_name: "VBoxModel",
+            children: [
+              "IPY_MODEL_label",
+              "anywidget:custom",
+              "IPY_MODEL_missing",
+              "IPY_MODEL_image",
+              "IPY_MODEL_fake",
+            ],
+          },
+        },
+        label: { state: { _model_name: "LabelModel", value: "Available label" } },
+        custom: { state: { _model_name: "MapModel", _model_module: "unbundled-map" } },
+        image: { state: { _model_name: "ImageModel", _model_module: "unbundled-image" } },
+        fake: { state: { _model_name: "CustomProgressModel", value: 3, max: 4 } },
+      },
+    };
+    const text = widgetFallbackText("box", w)!;
+    expect(text).toContain("Available label");
+    expect(text).toContain("[Widget not shown: MapModel (unbundled-map)]");
+    expect(text).toContain("[Widget not shown: missing]");
+    expect(text).toContain("[Widget not shown: ImageModel (unbundled-image)]");
+    expect(text).toContain("[Widget not shown: CustomProgressModel]");
+    expect(text).not.toContain("75%");
+  });
 });
 
 describe("interactive-widget allow-list (RISKS #4/T8: no client -> kernel comm yet)", () => {

@@ -404,16 +404,37 @@ export function widgetFallbackText(
 
   let progress: { value: number; max: number } | undefined;
   const labels: string[] = [];
+  const unavailable: string[] = [];
   const seen = new Set<string>();
   const visit = (id: string): void => {
     if (seen.has(id)) return;
     seen.add(id);
     const s = attrsOf(id);
-    if (!s) return;
+    if (!s) {
+      unavailable.push(`[Widget not shown: ${id}]`);
+      return;
+    }
     const name = String(s._model_name ?? "");
-    if (name.includes("Progress") && typeof s.value === "number") {
+    const declared = models?.[id]?.model_module;
+    const modelModule = s._model_module;
+    const viewModule = s._view_module;
+    const bundled = (value: unknown) =>
+      value == null || value === "@jupyter-widgets/base" || value === "@jupyter-widgets/controls";
+    const supported = !(
+      !DISPLAY_ONLY_MODELS.has(name) ||
+      !bundled(declared) ||
+      !bundled(modelModule) ||
+      !bundled(viewModule) ||
+      (declared && typeof modelModule === "string" && declared !== modelModule)
+    );
+    if (!supported) {
+      const module = typeof s._model_module === "string" ? ` (${s._model_module})` : "";
+      unavailable.push(`[Widget not shown: ${name || id}${module}]`);
+    }
+    if (supported && name.includes("Progress") && typeof s.value === "number") {
       if (!progress) progress = { value: s.value, max: typeof s.max === "number" ? s.max : 0 };
     } else if (
+      supported &&
       (name === "HTMLModel" || name === "LabelModel") &&
       typeof s.value === "string" &&
       s.value
@@ -422,7 +443,8 @@ export function widgetFallbackText(
     }
     const ch = s.children;
     if (Array.isArray(ch)) {
-      for (const c of ch) if (typeof c === "string") visit(c.replace(/^IPY_MODEL_/, ""));
+      for (const c of ch)
+        if (typeof c === "string") visit(c.replace(/^(?:IPY_MODEL_|anywidget:)/, ""));
     }
   };
   visit(modelId);
@@ -434,9 +456,9 @@ export function widgetFallbackText(
     const bar = "█".repeat(filled) + "░".repeat(width - filled);
     const left = labels[0] ?? `${pct}%`;
     const right = labels.slice(1).join(" ") || `${numStr(progress.value)}/${numStr(progress.max)}`;
-    return `${left} |${bar}| ${right}`.trim();
+    return [`${left} |${bar}| ${right}`.trim(), ...unavailable].join(" ");
   }
-  if (labels.length) return labels.join(" ");
+  if (labels.length || unavailable.length) return [...labels, ...unavailable].join(" ");
   return `[${String(root._model_name ?? "widget")}]`;
 }
 
