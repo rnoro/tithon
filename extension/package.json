@@ -27,7 +27,7 @@
     "url": "https://github.com/rnoro/tithon/issues"
   },
   "homepage": "https://github.com/rnoro/tithon#readme",
-  "description": "Tithon VSCode extension — percent-format notebook + matplotlib/tqdm output + output restore",
+  "description": "Tithon VSCode extension - Persistent Jupyter kernel execution and live output streaming in VSCode",
   "engines": {
     "vscode": "^1.85.0"
   },
