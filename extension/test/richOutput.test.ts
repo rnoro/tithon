@@ -184,6 +184,48 @@ it("renders live bundled controls without granting saved or external models inpu
   expect(isRenderableWidget(item, widgets)).toBe(false);
 });
 
+it("admits anywidget code only in a trusted, active, complete model graph", () => {
+  const state: WidgetState = {
+    state: {
+      root: {
+        model_module: "anywidget",
+        state: {
+          _model_name: "AnyModel",
+          _model_module: "anywidget",
+          _view_module: "anywidget",
+          nested: "anywidget:child",
+        },
+      },
+      child: {
+        model_module: "anywidget",
+        state: { _model_name: "AnyModel", _model_module: "anywidget", _view_module: "anywidget" },
+      },
+    },
+  };
+  const widgets: WidgetState = {
+    allow_custom_widgets: true,
+    widget_context: {
+      kernel_id: "live",
+      active_model_ids: ["root", "child"],
+      states: { live: state },
+    },
+  };
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "root" } },
+    widget_kernel_id: "live",
+  };
+  expect(isRenderableWidget(item, widgets)).toBe(true);
+  widgets.allow_custom_widgets = false;
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+  widgets.allow_custom_widgets = true;
+  widgets.widget_context!.active_model_ids = ["root"];
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+  widgets.widget_context!.active_model_ids = ["root", "child"];
+  state.state!.child.model_module = "other-module";
+  expect(isRenderableWidget(item, widgets)).toBe(false);
+});
+
 describe("isOutputAreaView — an Output widget's own view is redundant", () => {
   const view = (modelId: string): OutputItem => ({
     output_type: "display_data",
@@ -249,6 +291,22 @@ describe("widgetPayload — only the models this view reaches", () => {
     const p = widgetPayload(view("barA"), mirror)!;
     expect(p.model_id).toBe("barA");
     expect(Object.keys(p.state.state!).sort()).toEqual(["barA", "layoutA", "progA", "styleA"]);
+  });
+
+  it("includes anywidget composition references nested in model state", () => {
+    const state: WidgetState = {
+      state: {
+        root: { state: { nested: [{ child: "anywidget:child" }] } },
+        child: { state: { layout: "IPY_MODEL_layout" } },
+        layout: { state: {} },
+        unrelated: { state: {} },
+      },
+    };
+    expect(Object.keys(widgetPayload(view("root"), state)!.state.state!).sort()).toEqual([
+      "child",
+      "layout",
+      "root",
+    ]);
   });
 
   it("leaves another cell's widgets out — html-manager instantiates every model it is given", () => {

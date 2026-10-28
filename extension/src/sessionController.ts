@@ -103,6 +103,10 @@ interface RenderCtx {
   widgets: WidgetState | null;
 }
 
+function rendererWidgetState(widgets: WidgetState | null): WidgetState | null {
+  return widgets ? { ...widgets, allow_custom_widgets: vscode.workspace.isTrusted === true } : null;
+}
+
 /**
  * Convert one folded output item into VSCode notebook output item(s). Usually a
  * single item; a widget yields two (the live renderer payload + a text fallback
@@ -306,7 +310,7 @@ export class VSCodeCellSink implements CellSink {
   private ctx(): RenderCtx {
     return {
       image: (id) => this.client.cachedArtifact(id)?.bytes,
-      widgets: this.client.widgets(),
+      widgets: rendererWidgetState(this.client.widgets()),
     };
   }
 
@@ -1991,7 +1995,7 @@ export class TithonNotebookController {
       );
       const ctx: RenderCtx = {
         image: (id) => client.cachedArtifact(id)?.bytes,
-        widgets: client.widgets(),
+        widgets: rendererWidgetState(client.widgets()),
       };
       for (const [cellIndex, att] of attachments) {
         let cell: vscode.NotebookCell;
@@ -2266,7 +2270,7 @@ export class TithonNotebookController {
         dispose: () => cleanup(),
         refresh,
         activeCells: () => sink.activeCells(),
-        widgets: () => client.widgets(),
+        widgets: () => rendererWidgetState(client.widgets()),
         sendWidgetMessage: client.sendWidgetMessage.bind(client),
         hasPendingFlush: () => live.hasPendingFlush(),
         diag: () => ({

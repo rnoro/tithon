@@ -160,6 +160,7 @@ export interface WidgetState {
   widget_context?: WidgetContext;
   renderer_binding?: { session: string; binding: string };
   renderer_available?: boolean;
+  allow_custom_widgets?: boolean;
 }
 
 /** Payload carried by a {@link TITHON_WIDGET_MIME} output item. */
@@ -168,6 +169,7 @@ export interface TithonWidgetPayload {
   state: WidgetState;
   scope?: WidgetScope;
   live?: boolean;
+  allow_custom_widgets?: boolean;
 }
 
 /** Resolve saved outputs against their own kernel's mirror, including model-id collisions. */
@@ -197,12 +199,14 @@ export function widgetScopeForOutput(
 }
 
 /** Prefix ipywidgets uses to reference one model from another's trait value. */
-const MODEL_REF = "IPY_MODEL_";
+const MODEL_REFS = ["IPY_MODEL_", "anywidget:"];
 
 /** Model ids `state` references, anywhere in its nested arrays/objects. */
 function referencedModels(state: unknown, out: Set<string>): void {
   if (typeof state === "string") {
-    if (state.startsWith(MODEL_REF)) out.add(state.slice(MODEL_REF.length));
+    for (const prefix of MODEL_REFS) {
+      if (state.startsWith(prefix)) out.add(state.slice(prefix.length));
+    }
     return;
   }
   if (Array.isArray(state)) {
@@ -257,6 +261,7 @@ export function widgetPayload(
   return {
     model_id: id,
     ...(scope ? { scope } : {}),
+    ...(source?.allow_custom_widgets ? { allow_custom_widgets: true } : {}),
     live:
       complete &&
       widgetsLiveForOutput(item, source) &&
@@ -286,7 +291,26 @@ export function isRenderableWidget(
   const id = widgetModelIdOf(item);
   if (!id) return false;
   const state = widgetStateForOutput(item, widgets);
-  return supportedGraph(id, state, widgetPayload(item, widgets)?.live === true);
+  const payload = widgetPayload(item, widgets);
+  const live = payload?.live === true;
+  const allowCustom = live && widgets?.allow_custom_widgets === true;
+  for (const entry of Object.values(payload?.state.state ?? {})) {
+    const attrs = entry.state ?? {};
+    const declared = entry.model_module;
+    const modelModule = attrs._model_module;
+    if (declared && typeof modelModule === "string" && declared !== modelModule) return false;
+    for (const moduleName of [declared ?? modelModule, attrs._view_module]) {
+      if (
+        moduleName == null ||
+        moduleName === "@jupyter-widgets/base" ||
+        moduleName === "@jupyter-widgets/controls"
+      )
+        continue;
+      if (moduleName === "anywidget" && allowCustom) continue;
+      return false;
+    }
+  }
+  return supportedGraph(id, state, live, allowCustom);
 }
 
 const DISPLAY_ONLY_MODELS = new Set([
@@ -307,13 +331,14 @@ export function isDisplayOnlyWidget(
   modelId: string,
   widgets: WidgetState | null | undefined,
 ): boolean {
-  return supportedGraph(modelId, widgets, false);
+  return supportedGraph(modelId, widgets, false, false);
 }
 
 function supportedGraph(
   modelId: string,
   widgets: WidgetState | null | undefined,
   interactive: boolean,
+  allowCustom: boolean,
 ): boolean {
   const models = widgets?.state;
   if (!models) return false;
@@ -328,7 +353,9 @@ function supportedGraph(
       interactive &&
       s._model_module === "@jupyter-widgets/controls" &&
       s._view_module === "@jupyter-widgets/controls";
-    if (!DISPLAY_ONLY_MODELS.has(name) && !bundledControl) return false;
+    const customWidget =
+      allowCustom && s._model_module === "anywidget" && s._view_module === "anywidget";
+    if (!DISPLAY_ONLY_MODELS.has(name) && !bundledControl && !customWidget) return false;
     const ch = s.children;
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
     // that isn't an array (a malformed/unexpected shape) fails closed instead of

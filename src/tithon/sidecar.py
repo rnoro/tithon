@@ -28,7 +28,7 @@ import os
 from pathlib import Path
 
 from .journal import Journal
-from .widgets import WidgetMirror
+from .widgets import MODEL_REFERENCE_PREFIXES, WidgetMirror
 
 #: Bumped when the on-disk shape changes incompatibly. A reader that does not
 #: recognize the version ignores the file rather than importing a shape it would
@@ -68,8 +68,11 @@ def saved_snapshot(snapshot: dict) -> dict:
         return output
 
     def rewrite(value, scope):
-        if isinstance(value, str) and value.startswith("IPY_MODEL_"):
-            return "IPY_MODEL_" + model_id(scope, value[len("IPY_MODEL_") :])
+        if isinstance(value, str):
+            for prefix in MODEL_REFERENCE_PREFIXES:
+                if value.startswith(prefix):
+                    return prefix + model_id(scope, value[len(prefix) :])
+            return value
         if isinstance(value, list):
             return [rewrite(item, scope) for item in value]
         if not isinstance(value, dict):

@@ -140,6 +140,19 @@ Outputs are matched to cells by content hash, so they survive edits and reopens.
 An output whose cell was edited after it ran is flagged stale. The source file itself
 stays pure source — outputs never touch the file, so diffs stay clean.
 
+The widget renderer supports standard bundled ipywidgets and anywidget 0.11.x
+models installed in the kernel environment. Custom widget JavaScript runs only
+for a live kernel in a trusted VS Code workspace; saved or untrusted custom
+widgets fall back to text. Reconnection restores synchronized model traits and
+does not replay clicks. A widget's browser-only state and transient custom
+messages are not generally recoverable; other third-party widget modules and
+dedicated `Output` layout support remain in progress.
+
+In a local VS Code check with PyGWalker 0.5.0.1, the default `pyg.walk` Data
+view with kernel computation displayed its data again after reconnecting. An
+unsaved chart created in the browser did not survive reopening the view;
+PyGWalker's saved-spec options and alternate anywidget frontend were not tested.
+
 Workspace settings can isolate storage and bound automatic reconnects:
 
 ```json

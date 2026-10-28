@@ -8,6 +8,8 @@ import pytest
 
 from tithon import notebook, sidecar
 from tithon.daemon import Session
+from tithon.folding import ExecutionFold
+from tithon.widgets import WidgetMirror
 
 VIEW = "application/vnd.jupyter.widget-view+json"
 
@@ -114,6 +116,40 @@ def test_saved_projection_preserves_nested_output_text_and_user_metadata():
         if outputs:
             assert outputs[-2]["text"] == "IPY_MODEL_child"
             assert outputs[-1]["data"]["text/plain"] == "IPY_MODEL_child"
+
+
+def test_saved_projection_namespaces_nested_anywidget_references():
+    snapshot = scoped_snapshot()
+    for state in snapshot["widget_context"]["states"].values():
+        state["state"]["same"]["state"]["nested"] = [{"child": "anywidget:child"}]
+    saved = sidecar.saved_snapshot(snapshot)
+    models = saved["widgets"]["state"]
+    for execution in saved["executions"]:
+        root_id = execution["outputs"][0]["data"][VIEW]["model_id"]
+        root = models[root_id]["state"]
+        assert root["nested"][0]["child"].removeprefix("anywidget:") == root["children"][
+            0
+        ].removeprefix("IPY_MODEL_")
+
+
+def test_callback_owner_follows_anywidget_references(tmp_path):
+    session = Session("file:///widget.pynb", tmp_path / "session", tmp_path)
+    mirror = WidgetMirror()
+    mirror.apply(
+        "comm_open",
+        {
+            "comm_id": "root",
+            "target_name": "jupyter.widget",
+            "data": {"state": {"child": "anywidget:child"}},
+        },
+    )
+    session._widget_mirrors["kernel"] = mirror
+    fold = ExecutionFold()
+    fold.apply(
+        "display_data", {"data": {VIEW: {"model_id": "root"}}, "_tithon_kernel_id": "kernel"}
+    )
+    session._folds["execution"] = fold
+    assert session._widget_output_execution("child", "kernel") == "execution"
 
 
 def test_malformed_scoped_sidecar_is_ignored_before_import(tmp_path):

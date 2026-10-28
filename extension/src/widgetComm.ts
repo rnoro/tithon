@@ -13,8 +13,9 @@ export class WidgetComms {
   private readonly comms = new Map<string, any>();
   private readonly pending = new Map<
     string,
-    { callbacks: any; timer: ReturnType<typeof setTimeout> }
+    { commId: string; callbacks: any; timer: ReturnType<typeof setTimeout> }
   >();
+  private readonly unavailable = new Set<string>();
   private active = true;
 
   constructor(
@@ -39,7 +40,7 @@ export class WidgetComms {
       },
       close: () => "",
       send: (data: unknown, callbacks: any = {}, _metadata: unknown = {}, buffers: any[] = []) => {
-        if (!this.active) throw new Error("Widget connection ended");
+        if (!this.active || this.unavailable.has(id)) throw new Error("Widget connection ended");
         if (this.pending.size >= 64) {
           this.fail("Too many pending widget messages. Reconnect to refresh.");
           throw new Error("Too many pending widget messages");
@@ -66,7 +67,7 @@ export class WidgetComms {
           () => this.fail("Widget response is uncertain; reconnect to refresh state"),
           60000,
         );
-        this.pending.set(requestId, { callbacks, timer });
+        this.pending.set(requestId, { commId: id, callbacks, timer });
         this.post({
           type: "tithon.widget-send",
           scope: this.scope,
@@ -110,6 +111,17 @@ export class WidgetComms {
   fail(message: string): void {
     this.dispose();
     this.failed(message);
+  }
+
+  disableComm(id: string): void {
+    this.unavailable.add(id);
+    this.comms.delete(id);
+    for (const [requestId, request] of this.pending) {
+      if (request.commId === id) {
+        clearTimeout(request.timer);
+        this.pending.delete(requestId);
+      }
+    }
   }
 
   dispose(): void {

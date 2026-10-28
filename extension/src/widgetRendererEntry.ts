@@ -37,6 +37,7 @@ interface WidgetPayload {
   state: WidgetStateSnapshot;
   scope?: WidgetScope;
   live?: boolean;
+  allow_custom_widgets?: boolean;
 }
 interface UpdateMessage {
   type: "tithon.widget-update";

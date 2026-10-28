@@ -24,6 +24,7 @@ import base64
 WIDGET_TARGET = "jupyter.widget"
 WIDGET_VIEW = "application/vnd.jupyter.widget-view+json"
 LEGACY_SCOPE = "legacy"
+MODEL_REFERENCE_PREFIXES = ("IPY_MODEL_", "anywidget:")
 
 
 def legacy_widget_content(content: dict) -> dict:

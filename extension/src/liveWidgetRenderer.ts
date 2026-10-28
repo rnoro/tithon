@@ -1,5 +1,4 @@
 /** One live model registry per connection/kernel; output items own views only. */
-import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
 import type { WidgetScope } from "./richOutput";
 import { type RawWidgetMessage, WidgetComms } from "./widgetComm";
 import { createManager, type WidgetStateSnapshot } from "./widgetRender";
@@ -8,8 +7,10 @@ const VIEW_SYNC_TIMEOUT_MS = 60_000;
 
 type Group = {
   scope: WidgetScope;
-  manager: HTMLManager;
+  manager: ReturnType<typeof createManager>;
   comms: WidgetComms;
+  allowCustom: boolean;
+  failedModels: Set<string>;
   serial: Promise<void>;
   active: boolean;
   queued: number;
@@ -25,6 +26,7 @@ export class LiveWidgetRenderer {
       group: Group;
       host: HTMLElement;
       modelId: string;
+      models: Set<string>;
       token: string;
       pending: HTMLElement;
       timer?: ReturnType<typeof setTimeout>;
@@ -65,6 +67,24 @@ export class LiveWidgetRenderer {
         note.className = "tithon-widget-status";
         note.textContent = reason;
         host.appendChild(note);
+      }
+    }
+  }
+
+  private failModel(group: Group, modelId: string): void {
+    group.failedModels.add(modelId);
+    group.comms.disableComm(modelId);
+    for (const id of group.items) {
+      const entry = this.items.get(id);
+      if (!entry?.models.has(modelId)) continue;
+      clearTimeout(entry.timer);
+      entry.host.inert = true;
+      entry.pending.remove();
+      if (!entry.host.querySelector(".tithon-widget-status")) {
+        const note = document.createElement("div");
+        note.className = "tithon-widget-status";
+        note.textContent = "Widget failed. Reconnect to retry.";
+        entry.host.appendChild(note);
       }
     }
   }
@@ -113,18 +133,39 @@ export class LiveWidgetRenderer {
           }
           return;
         }
-        if (message.header.msg_type === "comm_open") {
-          const id = message.content.comm_id;
-          if (!group.manager.has_model(id)) {
-            const buffers = message.buffers.map(
-              (b) => new DataView(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)).buffer),
-            );
-            await group.manager.handle_comm_open(group.comms.comm(id), {
-              ...message,
-              buffers,
-            } as any);
-          }
-        } else await group.comms.receive(message);
+        const commId = message.content?.comm_id;
+        const commType = message.header.msg_type;
+        if (typeof commId === "string" && group.failedModels.has(commId)) return;
+        try {
+          if (commType === "comm_open") {
+            const id = message.content.comm_id;
+            const moduleName = message.content?.data?.state?._model_module;
+            if (
+              typeof moduleName === "string" &&
+              moduleName !== "@jupyter-widgets/base" &&
+              moduleName !== "@jupyter-widgets/controls" &&
+              !(moduleName === "anywidget" && group.allowCustom)
+            )
+              return;
+            if (!group.manager.has_model(id)) {
+              const buffers = message.buffers.map(
+                (b) => new DataView(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)).buffer),
+              );
+              await group.manager.handle_comm_open(group.comms.comm(id), {
+                ...message,
+                buffers,
+              } as any);
+            }
+          } else await group.comms.receive(message);
+        } catch (error) {
+          if (
+            typeof commId !== "string" ||
+            !["comm_open", "comm_msg", "comm_close"].includes(commType)
+          )
+            throw error;
+          this.failModel(group, commId);
+          return;
+        }
         if (group.active && message.header.msg_type === "comm_msg")
           this.post({
             type: "tithon.widget-updated",
@@ -141,7 +182,12 @@ export class LiveWidgetRenderer {
 
   async render(
     id: string,
-    payload: { scope: WidgetScope; state: WidgetStateSnapshot; model_id: string },
+    payload: {
+      scope: WidgetScope;
+      state: WidgetStateSnapshot;
+      model_id: string;
+      allow_custom_widgets?: boolean;
+    },
     host: HTMLElement,
   ): Promise<void> {
     this.dispose(id);
@@ -155,7 +201,9 @@ export class LiveWidgetRenderer {
       created = {
         scope: payload.scope,
         comms,
-        manager: createManager((id) => comms.comm(id)),
+        manager: createManager((id) => comms.comm(id), payload.allow_custom_widgets === true),
+        allowCustom: payload.allow_custom_widgets === true,
+        failedModels: new Set(),
         active: !this.revoked.has(this.binding(payload.scope)),
         serial: Promise.resolve(),
         queued: 0,
@@ -166,6 +214,8 @@ export class LiveWidgetRenderer {
       group = created;
       this.groups.set(key, group);
     }
+    group.allowCustom = payload.allow_custom_widgets === true;
+    group.manager.setCustomAllowed(group.allowCustom);
     const pending = document.createElement("div");
     pending.className = "tithon-widget-pending";
     pending.textContent = "Synchronizing widget…";
@@ -175,6 +225,7 @@ export class LiveWidgetRenderer {
       group,
       host,
       modelId: payload.model_id,
+      models: new Set(Object.keys(payload.state.state)),
       token: crypto.randomUUID(),
       pending,
       timer: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -183,7 +234,9 @@ export class LiveWidgetRenderer {
     this.items.set(id, entry);
     group.items.add(id);
     const target = group;
-    target.serial = target.serial.then(async () => {
+    const loading = target.serial.then(async () => {
+      if ([...entry.models].some((modelId) => target.failedModels.has(modelId)))
+        throw new Error("Widget model is unavailable");
       const missing = Object.fromEntries(
         Object.entries(payload.state.state).filter(
           ([modelId]) => !target.manager.has_model(modelId),
@@ -191,7 +244,8 @@ export class LiveWidgetRenderer {
       );
       await target.manager.set_state({ ...payload.state, state: missing } as any);
     });
-    await target.serial;
+    target.serial = loading.catch(() => undefined);
+    await loading;
     if (this.items.get(id) !== entry) return;
     const model = await target.manager.get_model(payload.model_id);
     entry.view = await target.manager.create_view(model!);
@@ -228,6 +282,10 @@ export class LiveWidgetRenderer {
       entry.group.active = false;
       entry.group.comms.dispose();
       this.groups.delete(this.key(entry.group.scope));
+      void entry.group.serial
+        .catch(() => undefined)
+        .then(() => entry.group.manager.clear_state())
+        .catch(() => undefined);
     }
   }
 }

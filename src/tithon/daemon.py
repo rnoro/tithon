@@ -46,7 +46,7 @@ from .widget_transport import (
     raw_message,
     request_content,
 )
-from .widgets import LEGACY_SCOPE, WIDGET_VIEW, WidgetMirror, is_comm
+from .widgets import LEGACY_SCOPE, MODEL_REFERENCE_PREFIXES, WIDGET_VIEW, WidgetMirror, is_comm
 
 log = logging.getLogger("tithon.daemon")
 
@@ -1153,8 +1153,11 @@ class Session:
         models = mirror.snapshot()["state"]
 
         def references(value):
-            if isinstance(value, str) and value.startswith("IPY_MODEL_"):
-                yield value[len("IPY_MODEL_") :]
+            if isinstance(value, str):
+                for prefix in MODEL_REFERENCE_PREFIXES:
+                    if value.startswith(prefix):
+                        yield value[len(prefix) :]
+                        break
             elif isinstance(value, list):
                 for item in value:
                     yield from references(item)

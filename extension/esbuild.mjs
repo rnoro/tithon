@@ -16,6 +16,7 @@
  * would replace the `dist/extension.js` tsc just emitted.
  */
 import * as esbuild from "esbuild";
+import widgetModules from "./widgetModules.cjs";
 
 const rendererOnly = process.argv[2] === "renderer";
 
@@ -45,6 +46,7 @@ await esbuild.build({
   bundle: true,
   platform: "browser",
   format: "esm",
+  plugins: [widgetModules.esbuildPlugin()],
   target: "es2020",
   loader: {
     ".css": "text", // injected as a <style> by the renderer entry

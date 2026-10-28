@@ -359,6 +359,7 @@
     "@biomejs/biome": "2.5.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.11.0",
+    "@types/semver": "7.8.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
     "@vscode/test-electron": "^3.0.0",
@@ -374,6 +375,8 @@
     "@jupyter-widgets/base": "^6.0.11",
     "@jupyter-widgets/controls": "^5.0.12",
     "@jupyter-widgets/html-manager": "^1.0.14",
+    "anywidget": "0.11.0",
+    "semver": "7.8.4",
     "ws": "^8.21.0"
   }
 }

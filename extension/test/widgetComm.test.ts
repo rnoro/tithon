@@ -3,9 +3,24 @@ import { expect, it, vi } from "vitest";
 import { LiveWidgetRenderer } from "../src/liveWidgetRenderer";
 import { SessionClient } from "../src/sessionClient";
 import { WidgetComms } from "../src/widgetComm";
+import { createManager } from "../src/widgetRender";
 import { fakeDaemonRaw, settle } from "./fakeDaemon";
 
 const scope = { session: "file:///widget.pynb", binding: "client:kernel", kernel_id: "kernel" };
+
+it("loads the bundled anywidget frontend only with live trusted authority and a compatible version", async () => {
+  const denied = createManager(() => ({}));
+  await expect((denied as any).loadClass("AnyModel", "anywidget", "~0.11.*")).rejects.toThrow();
+  const trusted = createManager(() => ({}), true);
+  await expect((trusted as any).loadClass("AnyModel", "anywidget", "~0.11.*")).resolves.toBeTypeOf(
+    "function",
+  );
+  await expect((trusted as any).loadClass("AnyModel", "anywidget", "~0.10.*")).rejects.toThrow(
+    "Unsupported",
+  );
+  const saved = createManager(undefined, true);
+  await expect((saved as any).loadClass("AnyModel", "anywidget", "~0.11.*")).rejects.toBeDefined();
+});
 
 function snapshot() {
   return {
@@ -65,6 +80,33 @@ it("shares a live button model between views and drops input on invalidation", a
     expect(late.querySelector("button")!.disabled).toBe(true);
     renderer.dispose("late");
     late.remove();
+  } finally {
+    renderer.dispose("first");
+    renderer.dispose("second");
+    first.remove();
+    second.remove();
+  }
+});
+
+it("cleans model resources only after the final shared view is disposed", async () => {
+  const renderer = new LiveWidgetRenderer(() => {});
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  document.body.append(first, second);
+  try {
+    const payload = { scope, model_id: "button", state: snapshot() };
+    await renderer.render("first", payload, first);
+    await renderer.render("second", payload, second);
+    const group = [...(renderer as any).groups.values()][0] as any;
+    const model = await group.manager.get_model("button");
+    let destroyed = 0;
+    model.on("destroy", () => destroyed++);
+    renderer.dispose("first");
+    await settle(20);
+    expect(destroyed).toBe(0);
+    renderer.dispose("second");
+    await settle(20);
+    expect(destroyed).toBe(1);
   } finally {
     renderer.dispose("first");
     renderer.dispose("second");
@@ -177,6 +219,87 @@ it("keeps a view inert and reports an unanswered synchronization", async () => {
   }
 });
 
+it("does not disable existing controls when an untrusted external model opens", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    const ready = sent.find((message) => message.type === "tithon.widget-rendered");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: ready.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: {
+        header: { msg_type: "comm_open" },
+        parent_header: {},
+        metadata: {},
+        buffers: [],
+        content: { comm_id: "external", data: { state: { _model_module: "anywidget" } } },
+      },
+    });
+    await settle(20);
+    expect(host.inert).toBe(false);
+    host.querySelector("button")!.click();
+    expect(sent.some((message) => message.type === "tithon.widget-send")).toBe(true);
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
+it("isolates a model callback failure from unrelated live controls", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    const ready = sent.find((message) => message.type === "tithon.widget-rendered");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: ready.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    const group = [...(renderer as any).groups.values()][0] as any;
+    group.comms.comm("broken").on_msg(() => Promise.reject(new Error("broken widget")));
+    const raw = (id: string, state: Record<string, unknown>) => ({
+      header: { msg_type: "comm_msg" },
+      parent_header: {},
+      metadata: {},
+      buffers: [],
+      content: { comm_id: id, data: { method: "update", state } },
+    });
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: raw("broken", { value: 1 }),
+    });
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: raw("button", { description: "Healthy" }),
+    });
+    await settle(30);
+    expect(host.inert).toBe(false);
+    expect(host.querySelector("button")!.textContent).toBe("Healthy");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
 it("delivers raw binary custom and correlated idle callbacks in order", async () => {
   const posted: any[] = [],
     received: any[] = [],
@@ -214,6 +337,33 @@ it("delivers raw binary custom and correlated idle callbacks in order", async ()
   expect(callbacks).toEqual(["busy", "idle"]);
   comms.dispose();
   expect(() => comm.send({ method: "custom" })).toThrow("ended");
+});
+
+it("discards pending work only for the failed comm", async () => {
+  const failed: string[] = [];
+  const posted: any[] = [];
+  const comms = new WidgetComms(
+    scope,
+    (message) => posted.push(message),
+    (reason) => failed.push(reason),
+  );
+  const broken = comms.comm("broken");
+  const healthy = comms.comm("healthy");
+  broken.send({ method: "custom" });
+  const healthyId = healthy.send({ method: "custom" });
+  comms.disableComm("broken");
+  expect(() => broken.send({ method: "custom" })).toThrow("ended");
+  await comms.receive({
+    header: { msg_type: "status" },
+    parent_header: { msg_id: healthyId },
+    metadata: {},
+    buffers: [],
+    content: { execution_state: "idle" },
+  });
+  expect(() => healthy.send({ method: "custom" })).not.toThrow();
+  expect(failed).toEqual([]);
+  expect(posted).toHaveLength(3);
+  comms.dispose();
 });
 
 it("sends on the attached client binding and never retries a disconnected action", async () => {

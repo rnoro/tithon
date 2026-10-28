@@ -13,6 +13,7 @@
  * breaking change is caught before it reaches users on stable.
  */
 
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { downloadAndUnzipVSCode, runTests } from "@vscode/test-electron";
@@ -38,6 +39,19 @@ async function main(): Promise<void> {
   const home = process.env.TITHON_HOME;
   if (!home) throw new Error("TITHON_HOME not set");
   const userDataDir = path.resolve(home, "vscode-user");
+  const untrusted = process.env.TITHON_TEST_UNTRUSTED === "1";
+  if (untrusted) {
+    const userDir = path.join(userDataDir, "User");
+    fs.mkdirSync(userDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(userDir, "settings.json"),
+      JSON.stringify({
+        "security.workspace.trust.enabled": true,
+        "security.workspace.trust.startupPrompt": "never",
+        "security.workspace.trust.untrustedFiles": "open",
+      }),
+    );
+  }
   // The editor profile does not isolate the tunnel singleton used by its CLI.
   process.env.VSCODE_CLI_DATA_DIR = path.resolve(home, "vscode-cli");
 
@@ -75,34 +89,56 @@ async function main(): Promise<void> {
         : downloaded;
   }
 
+  const launchArgs = [
+    workspace,
+    "--no-sandbox",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--disable-updates",
+    "--skip-welcome",
+    "--skip-release-notes",
+    ...(untrusted ? [] : ["--disable-workspace-trust"]),
+    ...extArgs,
+    ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
+  ];
+  const extensionTestsEnv = {
+    TITHON_HOME: process.env.TITHON_HOME ?? "",
+    TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
+    TITHON_HELPER: process.env.TITHON_HELPER ?? "",
+    TITHON_SUITE: process.env.TITHON_SUITE ?? "",
+    // "1" leaves `tithon.confirmDestructiveActions` at its shipped default, so
+    // the suite that verifies the modal gate sees what a user sees. Every other
+    // suite drives restart/terminate unattended, so the bootstrap turns it off.
+    TITHON_CONFIRM_DESTRUCTIVE: process.env.TITHON_CONFIRM_DESTRUCTIVE ?? "",
+    TITHON_CONFIRM_TARGET: process.env.TITHON_CONFIRM_TARGET ?? "",
+  };
+  if (untrusted) {
+    // test-electron always adds --disable-workspace-trust; this run must not.
+    const executable = vscodeExecutablePath ?? (await downloadAndUnzipVSCode(version));
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        executable,
+        [
+          ...launchArgs,
+          `--extensionDevelopmentPath=${extensionDevelopmentPath}`,
+          `--extensionTestsPath=${extensionTestsPath}`,
+        ],
+        { env: { ...process.env, ...extensionTestsEnv }, stdio: "inherit" },
+      );
+      child.once("error", reject);
+      child.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`VSCode exit ${code}`)),
+      );
+    });
+    return;
+  }
   await runTests({
     version,
     vscodeExecutablePath,
     extensionDevelopmentPath,
     extensionTestsPath,
-    launchArgs: [
-      workspace,
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-updates",
-      "--skip-welcome",
-      "--skip-release-notes",
-      "--disable-workspace-trust",
-      ...extArgs,
-      ...(userDataDir ? [`--user-data-dir=${userDataDir}`] : []),
-    ],
-    extensionTestsEnv: {
-      TITHON_HOME: process.env.TITHON_HOME ?? "",
-      TITHON_FIXTURE: process.env.TITHON_FIXTURE ?? "",
-      TITHON_HELPER: process.env.TITHON_HELPER ?? "",
-      TITHON_SUITE: process.env.TITHON_SUITE ?? "",
-      // "1" leaves `tithon.confirmDestructiveActions` at its shipped default, so
-      // the suite that verifies the modal gate sees what a user sees. Every other
-      // suite drives restart/terminate unattended, so the bootstrap turns it off.
-      TITHON_CONFIRM_DESTRUCTIVE: process.env.TITHON_CONFIRM_DESTRUCTIVE ?? "",
-      TITHON_CONFIRM_TARGET: process.env.TITHON_CONFIRM_TARGET ?? "",
-    },
+    launchArgs,
+    extensionTestsEnv,
   });
 }
 
