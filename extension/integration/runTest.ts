@@ -92,7 +92,9 @@ async function main(): Promise<void> {
   const launchArgs = [
     workspace,
     "--no-sandbox",
-    "--disable-gpu",
+    ...(process.env.TITHON_TEST_WEBGL === "1"
+      ? ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+      : ["--disable-gpu"]),
     "--disable-dev-shm-usage",
     "--disable-updates",
     "--skip-welcome",

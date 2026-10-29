@@ -44,6 +44,13 @@ export interface ArtifactBytes {
   bytes: Uint8Array;
 }
 
+export type WidgetInstalledModule = {
+  name: string;
+  version: string;
+  source: string;
+  dependencies?: Record<string, string>;
+};
+
 function unixWsUrl(sockPath: string): string {
   return `ws+unix://${sockPath}:/`;
 }
@@ -149,7 +156,7 @@ export class SessionClient {
   private readonly widgetModules = new Map<
     string,
     {
-      resolve: (module: { name: string; version: string; source: string }) => void;
+      resolve: (module: WidgetInstalledModule) => void;
       reject: (error: Error) => void;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -159,7 +166,7 @@ export class SessionClient {
     scope: WidgetScope,
     name: string,
     version: string,
-  ): Promise<{ name: string; version: string; source: string }> {
+  ): Promise<WidgetInstalledModule> {
     const widgets = this.widgets();
     if (
       !this.isConnected() ||
@@ -584,9 +591,25 @@ export class SessionClient {
             typeof m.name === "string" &&
             typeof m.version === "string" &&
             typeof m.source === "string" &&
-            m.source.length <= 4 * 1024 * 1024
+            m.source.length <= 4 * 1024 * 1024 &&
+            (m.dependencies === undefined ||
+              (m.dependencies &&
+                typeof m.dependencies === "object" &&
+                !Array.isArray(m.dependencies) &&
+                Object.keys(m.dependencies).length <= 8 &&
+                Object.values(m.dependencies).every((source) => typeof source === "string") &&
+                Object.values(m.dependencies).reduce(
+                  (size: number, source) => size + (source as string).length,
+                  m.source.length,
+                ) <=
+                  4 * 1024 * 1024))
           )
-            pending.resolve({ name: m.name, version: m.version, source: m.source });
+            pending.resolve({
+              name: m.name,
+              version: m.version,
+              source: m.source,
+              dependencies: m.dependencies,
+            });
           else pending.reject(new Error(m.message || "Widget module unavailable"));
         }
         break;

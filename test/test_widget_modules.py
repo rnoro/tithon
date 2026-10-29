@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tithon.widget_mapping import classic_mappings
 from tithon.widget_modules import read_kernel_widget_module, read_widget_module
 
 
@@ -27,6 +28,14 @@ def installed(prefix, name, version, source):
             data = path.read_bytes()
             digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
             writer.writerow([os.path.relpath(path, site), f"sha256={digest}", len(data)])
+
+
+def record_extra(prefix, name, path):
+    site = prefix / "lib/python3.13/site-packages"
+    data = path.read_bytes()
+    digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip("=")
+    with (site / f"{name}-1.0.dist-info/RECORD").open("a", newline="") as stream:
+        csv.writer(stream).writerow([os.path.relpath(path, site), f"sha256={digest}", len(data)])
 
 
 def test_reads_installed_frontend_and_its_javascript_version(tmp_path):
@@ -104,6 +113,61 @@ def test_rejects_fifo_without_blocking(tmp_path):
     script.unlink()
     os.mkfifo(script)
     with pytest.raises(ValueError):
+        read_widget_module(tmp_path, "chart")
+
+
+def test_extracts_literal_requirejs_mappings_without_executing_code():
+    source = """define(() => {
+        window.requirejs.config({map: {'*': {
+            chart: 'nbextensions/chart/index', three: 'nbextensions/chart/three'
+        }}});
+    });"""
+    assert classic_mappings(source) == {
+        "chart": "nbextensions/chart/index",
+        "three": "nbextensions/chart/three",
+    }
+    assert classic_mappings("// requirejs.config({map: {'*': {three: 'evil'}}})") == {}
+    assert classic_mappings("requirejs[config]({map: {'*': {three: 'evil'}}})") == {}
+    assert classic_mappings("requirejs.config({map: {'*': {three: dynamic}}})") == {}
+    assert (
+        classic_mappings("requirejs.config({map:{'*':{first:'same/path',second:'same/path.js'}}})")
+        == {}
+    )
+
+
+def test_reads_real_installed_pythreejs_dependency():
+    import sys
+    from pathlib import Path
+
+    result = read_widget_module(Path(sys.prefix), "jupyter-threejs")
+    assert result["version"] == "2.4.1"
+    assert result["dependencies"]["three"].startswith("// threejs.org/license")
+
+
+def test_rejects_mapped_dependency_not_owned_by_distribution(tmp_path):
+    installed(tmp_path, "chart", "1.0.0", "x")
+    folder = tmp_path / "share/jupyter/nbextensions/chart"
+    (folder / "extension.js").write_text(
+        "requirejs.config({map:{'*':{chart:'nbextensions/chart/index',"
+        "three:'nbextensions/chart/three'}}})"
+    )
+    record_extra(tmp_path, "chart", folder / "extension.js")
+    (folder / "three.js").write_text("malicious")
+    with pytest.raises(ValueError, match="distribution"):
+        read_widget_module(tmp_path, "chart")
+
+
+@pytest.mark.parametrize(
+    "target", ["nbextensions/chart/../secret", "https://evil/x", "nbextensions/other/x"]
+)
+def test_rejects_dependency_paths_outside_own_extension(tmp_path, target):
+    installed(tmp_path, "chart", "1.0.0", "x")
+    folder = tmp_path / "share/jupyter/nbextensions/chart"
+    (folder / "extension.js").write_text(
+        f"requirejs.config({{map:{{'*':{{chart:'nbextensions/chart/index',three:'{target}'" + "}}})"
+    )
+    record_extra(tmp_path, "chart", folder / "extension.js")
+    with pytest.raises(ValueError, match="dependency path"):
         read_widget_module(tmp_path, "chart")
 
 

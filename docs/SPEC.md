@@ -514,7 +514,16 @@ Anywidget 0.11.x models require an active current-kernel graph and a trusted
 VSCode workspace; saved and untrusted custom widget models remain text. The
 renderer supports anywidget's ESM and composition through its upstream frontend.
 For other live modules it can load an installed classic AMD `index.js` with
-dependencies on the bundled base/controls modules. The kernel's interpreter
+dependencies on the bundled base/controls modules and on files named by a
+literal requirejs map in that module's own `extension.js`. This is static
+syntax discovery; it does not establish that the configuration executes or
+that a locally shadowed `requirejs` refers to the global loader. Mapped files
+must stay under the same extension directory and belong to the same distribution;
+at most eight dependencies and 4 MiB of combined source are accepted. The
+renderer executes classic AMD definitions without forcing ESM strict mode,
+supports `exports` and `module`, and rejects cyclic or asynchronous factories.
+The loader does not support dynamic assets addressed through `module.uri`.
+The kernel's interpreter
 path and startup environment determine the prefix even after a daemon reattaches
 under another Python. Later changes to the kernel's `sys.path` are not reflected;
 replacing or retargeting the interpreter path can change the probed environment.
@@ -525,8 +534,8 @@ These checks establish consistency with that
 installation, not independent publisher authenticity. File reads are bounded
 and confined beneath the environment without following symlinks. Module requests
 require an attached current kernel and a module/version declared by a live model.
-CDN loading, arbitrary AMD dependency mappings and Lab-only bundles are not
-implemented. A model whose comm callback
+CDN loading, arbitrary AMD mappings and aliases, cross-distribution dependencies,
+and Lab-only bundles are not implemented. A model whose comm callback
 fails is isolated from unrelated views, while transport-wide errors invalidate
 the shared connection. Disposing the last view closes the manager's models and
 invokes their widget lifecycle cleanup.
@@ -933,7 +942,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 widget mirror + render + kernel-scoped history
+make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 v79 widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -970,7 +979,7 @@ Capability → what it guarantees → how it is verified:
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
 | Widget callback outputs | Cross-cell stdout/HTML/PNG/errors, scoped clear, same-kernel crash recovery | `v74` (actual processes and client folds), `v75` (real VSCode DOM callbacks) |
 | Custom widget runtime | Trusted anywidget composition, communication, reconnect and isolated failure; restricted workspace executes no custom widget code | `v76`, `v77` (real VSCode) |
-| Installed classic widgets | Scoped local AMD modules, live bqplot brush, mixed views and reconnect | `v72` (module checks), `v78` (real VSCode) |
+| Installed classic widgets | Scoped local AMD modules, bqplot brush, mapped pythreejs dependency and reconnect | `v72` (module checks), `v78`, `v79` (real VSCode) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |

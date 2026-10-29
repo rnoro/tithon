@@ -2,6 +2,11 @@
 import { activate as production } from "../../src/widgetRendererEntry";
 
 export const activate = (context: any) => {
+  const originalError = console.error.bind(console);
+  console.error = (...args: any[]) => {
+    context.postMessage({ type: "test.widget-console", text: args.map((arg) => String(arg?.stack ?? arg)).join(" ") });
+    originalError(...args);
+  };
   const renderer = production(context);
   const hosts = new Map<string, HTMLElement>();
   context.onDidReceiveMessage((message: any) => {
@@ -10,7 +15,7 @@ export const activate = (context: any) => {
       const host = hosts.get(message.model);
       if (!host) throw new Error(`No rendered view for ${message.model}`);
       const available = !host.querySelector<HTMLElement>(".tithon-widget-host")?.inert;
-      if (message.action !== "inspect" && !available) {
+      if (!["inspect", "debugDump", "debugError"].includes(message.action) && !available) {
         context.postMessage({type: "test.widget-done", id: message.id, blocked: true});
         return;
       }
@@ -43,6 +48,16 @@ export const activate = (context: any) => {
         window.dispatchEvent(new MouseEvent("mousemove", {view: window, bubbles: true, buttons: 1, clientX: x + rect.width * 0.4, clientY: y}));
         window.dispatchEvent(new MouseEvent("mouseup", {view: window, bubbles: true, button: 0, clientX: x + rect.width * 0.4, clientY: y}));
       }
+      if (message.action === "orbit") {
+        const canvas = host.querySelector<HTMLCanvasElement>("canvas");
+        if (!canvas) throw new Error("No 3D canvas");
+        const rect = canvas.getBoundingClientRect();
+        const x = rect.left + rect.width * 0.5;
+        const y = rect.top + rect.height * 0.5;
+        canvas.dispatchEvent(new MouseEvent("mousedown", {view: window, bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y}));
+        document.dispatchEvent(new MouseEvent("mousemove", {view: window, bubbles: true, buttons: 1, clientX: x + 50, clientY: y + 20}));
+        document.dispatchEvent(new MouseEvent("mouseup", {view: window, bubbles: true, button: 0, clientX: x + 50, clientY: y + 20}));
+      }
       if (message.action === "debugError") {
         for (const item of host.querySelectorAll(".jupyter-widgets-error-widget")) {
           (item.parentElement as HTMLElement | null)?.click();
@@ -54,6 +69,10 @@ export const activate = (context: any) => {
         anyCreated: (globalThis as any).__tithonAnyCreated || 0,
         anyDestroyed: (globalThis as any).__tithonAnyDestroyed || 0,
         svgCount: host.querySelectorAll("svg").length,
+        canvasCount: host.querySelectorAll("canvas").length,
+        canvasWidth: host.querySelector<HTMLCanvasElement>("canvas")?.width,
+        canvasStyleWidth: host.querySelector<HTMLCanvasElement>("canvas")?.style.width,
+        html: message.action === "debugDump" ? host.innerHTML.slice(0, 4000) : undefined,
         errorCount: host.querySelectorAll(".jupyter-widgets-error-widget").length,
         available, interactive: available && host.isConnected && !!host.querySelector("button:not([disabled])")});
     } catch (error) { context.postMessage({type: "test.widget-error", id: message.id, error: String(error)}); }

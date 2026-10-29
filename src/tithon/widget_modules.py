@@ -16,6 +16,7 @@ from pathlib import Path
 import psutil
 
 from .kernel import KernelHandle
+from .widget_mapping import classic_mappings
 
 MAX_WIDGET_MODULE_BYTES = 4 * 1024 * 1024
 _PACKAGE = re.compile(r"(?:@[a-zA-Z0-9][a-zA-Z0-9._-]*/)?[a-zA-Z0-9][a-zA-Z0-9._-]*\Z")
@@ -104,7 +105,7 @@ def kernel_environment(executable: str, environment: dict[str, str], workdir: Pa
         raise ValueError("Kernel environment is unavailable") from error
 
 
-def read_widget_module(prefix: Path, name: str) -> dict[str, str]:
+def read_widget_module(prefix: Path, name: str) -> dict:
     """Return a bounded classic bundle with its verified installation version."""
     if not isinstance(name, str) or len(name) > 214 or not _PACKAGE.fullmatch(name):
         raise ValueError("Invalid widget module name")
@@ -119,21 +120,58 @@ def read_widget_module(prefix: Path, name: str) -> dict[str, str]:
         if metadata.get("name") != name or not isinstance(version, str) or not version:
             raise ValueError("Widget module metadata does not match")
         source_bytes = _read_within(prefix, source_parts, MAX_WIDGET_MODULE_BYTES)
-        if not _owned_by_one_distribution(
-            prefix,
-            {
-                prefix.joinpath(*manifest_parts): manifest_bytes,
-                prefix.joinpath(*source_parts): source_bytes,
-            },
-        ):
+        files = {
+            prefix.joinpath(*manifest_parts): manifest_bytes,
+            prefix.joinpath(*source_parts): source_bytes,
+        }
+        dependencies: dict[str, str] = {}
+        extension_parts = (*base, "nbextensions", *module, "extension.js")
+        try:
+            extension = _read_within(prefix, extension_parts, 65536)
+        except ValueError:
+            extension = b""
+        if extension:
+            mapping_files = {**files, prefix.joinpath(*extension_parts): extension}
+            if not _owned_by_one_distribution(prefix, mapping_files):
+                raise ValueError("Widget module files do not match one installed distribution")
+            mapping = classic_mappings(extension.decode("utf-8"))
+            root_path = f"nbextensions/{name}/index"
+            if mapping.get(name) in (root_path, f"{root_path}.js"):
+                if len(mapping) > 9:
+                    raise ValueError("Too many widget dependencies")
+                total = len(source_bytes)
+                for dependency, mapped in mapping.items():
+                    if dependency == name:
+                        continue
+                    if not _PACKAGE.fullmatch(dependency):
+                        raise ValueError("Invalid widget dependency name")
+                    relative = mapped.removesuffix(".js").split("/")
+                    if (
+                        relative[: len(module) + 1] != ["nbextensions", *module]
+                        or len(relative) <= len(module) + 1
+                        or any(not _PACKAGE.fullmatch(part) for part in relative[1:])
+                    ):
+                        raise ValueError("Invalid widget dependency path")
+                    parts = (*base, *relative[:-1], relative[-1] + ".js")
+                    data = _read_within(prefix, parts, MAX_WIDGET_MODULE_BYTES)
+                    total += len(data)
+                    if total > MAX_WIDGET_MODULE_BYTES:
+                        raise ValueError("Installed widget modules are too large")
+                    files[prefix.joinpath(*parts)] = data
+                    dependencies[dependency] = data.decode("utf-8")
+                files = {**files, prefix.joinpath(*extension_parts): extension}
+        if not _owned_by_one_distribution(prefix, files):
             raise ValueError("Widget module files do not match one installed distribution")
         source = source_bytes.decode("utf-8")
     except (UnicodeError, json.JSONDecodeError, AttributeError) as error:
         raise ValueError("Installed widget module metadata or source is invalid") from error
-    return {"name": name, "version": version, "source": source}
+    result = {"name": name, "version": version, "source": source}
+    if dependencies:
+        result["dependencies"] = dependencies
+    return result
 
 
-def read_kernel_widget_module(kernel: KernelHandle, identity: str, name: str) -> dict[str, str]:
+def read_kernel_widget_module(kernel: KernelHandle, identity: str, name: str) -> dict:
     """Resolve the environment only from the process identified by this kernel binding."""
     pid = kernel.pid
     try:

@@ -143,4 +143,35 @@ describe("installed widget module requests", () => {
       URL.revokeObjectURL = originalRevoke;
     }
   });
+
+  it("rejects cyclic mapped dependencies without running their factories", async () => {
+    const loader = new WidgetModuleLoader(scope, vi.fn());
+    const create = URL.createObjectURL;
+    const revoke = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:test");
+    URL.revokeObjectURL = vi.fn();
+    const factory = vi.fn();
+    const append = vi.spyOn(document.head, "append").mockImplementation((...nodes) => {
+      const script = nodes[0] as HTMLScriptElement;
+      const slots = Object.getOwnPropertyNames(globalThis).filter((key) =>
+        key.startsWith("__tithon_widget_"),
+      );
+      const define = (globalThis as any)[slots[slots.length - 1]];
+      queueMicrotask(() => {
+        define(["three"], factory);
+        script.onload?.(new Event("load"));
+      });
+    });
+    try {
+      await expect(
+        (loader as any).importAmd("root", { three: "dependency" }, ["root"]),
+      ).rejects.toThrow("Unsupported widget dependency three");
+      expect(factory).not.toHaveBeenCalled();
+    } finally {
+      loader.dispose();
+      append.mockRestore();
+      URL.createObjectURL = create;
+      URL.revokeObjectURL = revoke;
+    }
+  });
 });

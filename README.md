@@ -141,14 +141,14 @@ An output whose cell was edited after it ran is flagged stale. The source file i
 stays pure source — outputs never touch the file, so diffs stay clean.
 
 The widget renderer supports standard bundled ipywidgets, anywidget 0.11.x, and
-some installed classic AMD widgets with bundled base/controls dependencies and
-matching frontend metadata and version exports. That path is verified with
-bqplot 0.13.1. Custom widget JavaScript runs only
+some installed classic AMD widgets with matching frontend metadata and version
+exports, including certain locally mapped dependencies. That path is verified
+with bqplot 0.13.1 and pythreejs 2.4.2. Custom widget JavaScript runs only
 for a live kernel in a trusted VS Code workspace; saved or untrusted custom
 widgets fall back to text. Reconnection restores synchronized model traits and
 does not replay clicks. A widget's browser-only state and transient custom
-messages are not generally recoverable. CDN loading, other AMD dependencies,
-Lab-only widget bundles and dedicated `Output` layout support remain in progress.
+messages are not generally recoverable. CDN loading, broader AMD dependency
+discovery, Lab-only bundles and dedicated `Output` layout support remain in progress.
 
 In a local VS Code check with PyGWalker 0.5.0.1, the default `pyg.walk` Data
 view with kernel computation displayed its data again after reconnecting. An
