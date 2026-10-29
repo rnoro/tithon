@@ -906,7 +906,7 @@ does not have.
   notebook outputs in the owning cell; dedicated Output views/layout and
   `Output.outputs` trait operations such as `append_stdout` remain pending (#23).
   Broader third-party module formats and dependency discovery, live controls in
-  restricted mixed graphs, and richer partial historical views remain pending (#28).
+  restricted mixed graphs, and richer partial historical views remain pending (#30).
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
