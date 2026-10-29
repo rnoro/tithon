@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.6](https://github.com/rnoro/tithon/compare/v0.2.5...v0.2.6) (2026-10-29)
+
+
+### Features
+
+* **extension:** configure daemon home and reconnect attempts ([#26](https://github.com/rnoro/tithon/issues/26)) ([4694779](https://github.com/rnoro/tithon/commit/46947790e46fe09b4e8cd455871fab4deb63d50e))
+* **notebook:** add dedicated Python Notebook files ([a836d36](https://github.com/rnoro/tithon/commit/a836d3615fc8ed57f01a8fd585eafabf57596e79))
+* **widgets:** connect controls to the live kernel ([dfda27d](https://github.com/rnoro/tithon/commit/dfda27db5d27ee147ed2d0d8352b8ce588b88010))
+* **widgets:** isolate state by kernel incarnation ([f568190](https://github.com/rnoro/tithon/commit/f56819081da6967f8f944b28fb1a6af056daaa15))
+* **widgets:** load installed classic widget modules ([49c1f46](https://github.com/rnoro/tithon/commit/49c1f4627d756bf1c728085615fe1cece88b40ff))
+* **widgets:** resolve mapped AMD dependencies ([876fa76](https://github.com/rnoro/tithon/commit/876fa761b1a972742f111b8108eea14bea51df99))
+* **widgets:** route callback output to persistent cell areas ([9512104](https://github.com/rnoro/tithon/commit/9512104c1370b8bc151660eebf6e7728ee9ebe0c))
+* **widgets:** show partial read-only mixed outputs ([7963b8c](https://github.com/rnoro/tithon/commit/7963b8c0d7697ada7b6cf5431075f9d077e7ae91))
+* **widgets:** support interactive and third-party widgets ([7ba2177](https://github.com/rnoro/tithon/commit/7ba217730469ec6f1a8656fff809b2732fb3fcb4))
+* **widgets:** support trusted anywidget models ([7f485f6](https://github.com/rnoro/tithon/commit/7f485f6a121750983ca67de7cb2814c14e8d3f4e))
+
 ## [0.2.5](https://github.com/rnoro/tithon/compare/v0.2.4...v0.2.5) (2026-10-07)
 
 
