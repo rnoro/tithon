@@ -1,5 +1,18 @@
 /** Test-only DOM driver wrapping the production renderer in a disposable extension. */
 import { activate as production } from "../../src/widgetRendererEntry";
+import * as controls from "@jupyter-widgets/controls";
+import { createManager } from "../../src/widgetRender";
+
+const originalButtonRender = controls.ButtonView.prototype.render;
+const originalButtonInitialize = controls.ButtonModel.prototype.initialize;
+controls.ButtonModel.prototype.initialize = function (...args: any[]) {
+  if (args[1]?.model_id === "throwing-model") throw new Error("intentional model failure");
+  return originalButtonInitialize.apply(this, args as any);
+};
+controls.ButtonView.prototype.render = function (...args: any[]) {
+  if (this.model.model_id === "throwing-button") throw new Error("intentional view failure");
+  return originalButtonRender.apply(this, args as []);
+};
 
 export const activate = (context: any) => {
   const originalError = console.error.bind(console);
@@ -9,7 +22,7 @@ export const activate = (context: any) => {
   };
   const renderer = production(context);
   const hosts = new Map<string, HTMLElement>();
-  context.onDidReceiveMessage((message: any) => {
+  context.onDidReceiveMessage(async (message: any) => {
     if (message.type !== "test.widget-action") return;
     try {
       const host = hosts.get(message.model);
@@ -57,6 +70,9 @@ export const activate = (context: any) => {
         canvas.dispatchEvent(new MouseEvent("mousedown", {view: window, bubbles: true, button: 0, buttons: 1, clientX: x, clientY: y}));
         document.dispatchEvent(new MouseEvent("mousemove", {view: window, bubbles: true, buttons: 1, clientX: x + 50, clientY: y + 20}));
         document.dispatchEvent(new MouseEvent("mouseup", {view: window, bubbles: true, button: 0, clientX: x + 50, clientY: y + 20}));
+      }
+      if (message.action === "displayError") {
+        await createManager().display_view(Promise.reject(new Error("intentional display failure")), host);
       }
       if (message.action === "debugError") {
         for (const item of host.querySelectorAll(".jupyter-widgets-error-widget")) {

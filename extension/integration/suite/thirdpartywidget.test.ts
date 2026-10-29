@@ -74,6 +74,23 @@ it("loads installed bqplot and bqscales, updates and reconnects a live figure", 
     const missing = await action("inspect", "missing");
     assert.ok(missing.errorCount > 0, missing.text);
     await until(() => ready("mixed") > 0, "mixed container mounted");
+    await until(() => ready("view-errors") > 0, "view error container mounted");
+    await until(async () => {
+      const result = await action("inspect", "view-errors");
+      return result.available && result.errorCount > 0 && result.text.includes("Keep working");
+    }, "view error isolated alongside supported button");
+    const errorView = await action("debugError", "view-errors");
+    assert.ok(errorView.text.includes("intentional view failure"), errorView.text);
+    await action("displayError", "view-errors");
+    const displayError = await action("debugError", "view-errors");
+    assert.ok(displayError.text.includes("intentional display failure"), displayError.text);
+    await until(() => ready("model-errors") > 0, "model error container mounted");
+    await until(async () => {
+      const result = await action("inspect", "model-errors");
+      return result.available && result.errorCount > 0 && result.text.includes("Keep working");
+    }, "model error isolated alongside supported button");
+    const modelError = await action("debugError", "model-errors");
+    assert.ok(modelError.text.includes("intentional model failure"), modelError.text);
     await until(async () => {
       const result = await action("inspect", "mixed");
       return result.available && result.errorCount > 0 && result.text.includes("Keep working");
@@ -100,6 +117,8 @@ it("loads installed bqplot and bqscales, updates and reconnects a live figure", 
     );
     const count = ready();
     const mixedCount = ready("mixed");
+    const errorsCount = ready("view-errors");
+    const modelErrorsCount = ready("model-errors");
     await vscode.commands.executeCommand("tithon.retryRestore");
     await until(() => ready() > count, "figure reconnected");
     await until(async () => {
@@ -107,6 +126,11 @@ it("loads installed bqplot and bqscales, updates and reconnects a live figure", 
       return result.available && result.svgCount > 0 && result.text.includes("Updated title");
     }, "current state after reconnect");
     await until(() => ready("mixed") > mixedCount, "mixed container reconnected");
+    await until(() => ready("view-errors") > errorsCount, "view error container reconnected");
+    await until(
+      () => ready("model-errors") > modelErrorsCount,
+      "model error container reconnected",
+    );
     await until(async () => {
       const result = await action("inspect", "mixed");
       return result.available && result.errorCount > 0 && result.text.includes("Keep working");
@@ -127,9 +151,38 @@ it("loads installed bqplot and bqscales, updates and reconnects a live figure", 
       async () => (await query("print('CLICKS', clicks)")).includes("CLICKS 3"),
       "mixed button after replacement",
     );
+    await until(async () => {
+      const result = await action("inspect", "view-errors");
+      return result.available && result.errorCount > 0 && result.text.includes("Keep working");
+    }, "view error isolation after reconnect");
+    await action("click", "view-errors");
+    await until(
+      async () => (await query("print('CLICKS', clicks)")).includes("CLICKS 4"),
+      "supported sibling after view failure and reconnect",
+    );
+    await until(async () => {
+      const result = await action("inspect", "model-errors");
+      return result.available && result.errorCount > 0 && result.text.includes("Keep working");
+    }, "model error isolation after reconnect");
+    await action("click", "model-errors");
+    await until(
+      async () => (await query("print('CLICKS', clicks)")).includes("CLICKS 5"),
+      "supported sibling after model failure and reconnect",
+    );
+    await action("displayError", "view-errors");
+    const restoredDisplayError = await action("debugError", "view-errors");
+    assert.ok(restoredDisplayError.text.includes("intentional display failure"));
     assert.ok((await query("print('SELECTED', len(selector.selected))")).includes("SELECTED 2"));
     await vscode.commands.executeCommand("tithon.restartKernel");
     await until(async () => (await inspect()).available === false, "old figure revoked");
+    await until(
+      async () => (await action("inspect", "view-errors")).available === false,
+      "old mixed view revoked",
+    );
+    await until(
+      async () => (await action("inspect", "model-errors")).available === false,
+      "old model error view revoked",
+    );
   } finally {
     listener.dispose();
   }

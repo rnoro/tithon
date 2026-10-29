@@ -544,8 +544,9 @@ Interactive graphs require current active models and complete dependencies.
 Saved, legacy and unavailable controls remain static text. Disconnect, kernel
 replacement, rejection or response timeout disables a mounted live view and
 revokes queued work; sent actions are never retried. In a trusted live container,
-an unavailable module renders an error widget while supported siblings remain
-active. Incomplete graphs and saved or untrusted mixed graphs may still fall
+an unavailable module or a failing model/view renders an error widget while
+supported siblings remain active. Error views retain the original failure.
+Incomplete graphs and saved or untrusted mixed graphs may still fall
 back as a whole.
 When VSCode recreates a view from an older output payload while its notebook
 remains open, the host refreshes its live models from the current scoped mirror.
@@ -979,7 +980,7 @@ Capability → what it guarantees → how it is verified:
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
 | Widget callback outputs | Cross-cell stdout/HTML/PNG/errors, scoped clear, same-kernel crash recovery | `v74` (actual processes and client folds), `v75` (real VSCode DOM callbacks) |
 | Custom widget runtime | Trusted anywidget composition, communication, reconnect and isolated failure; restricted workspace executes no custom widget code | `v76`, `v77` (real VSCode) |
-| Installed classic widgets | Scoped local AMD modules, bqplot brush, mapped pythreejs dependency and reconnect | `v72` (module checks), `v78`, `v79` (real VSCode) |
+| Installed classic widgets | Scoped local AMD modules, bqplot brush, model/view failure isolation, mapped pythreejs dependency and reconnect | `v72` (module checks), `v78`, `v79` (real VSCode) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |

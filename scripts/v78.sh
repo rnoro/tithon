@@ -33,7 +33,11 @@ def clicked(_):
     clicks += 1
 button.on_click(clicked)
 mixed = w.VBox([button, missing], model_id='mixed')
-display(fig, missing, mixed)
+throwing = w.Button(description='Throwing', model_id='throwing-button')
+view_errors = w.VBox([button, throwing], model_id='view-errors')
+throwing_model = w.Button(description='Throwing model', model_id='throwing-model')
+model_errors = w.VBox([button, throwing_model], model_id='model-errors')
+display(fig, missing, mixed, view_errors, model_errors)
 PY
 start_daemon || fail "daemon start"
 mkdir -p "$TITHON_HOME/test-extension"
@@ -44,4 +48,4 @@ run_vscode node "$TITHON_HOME/test-extension/out-int/integration/runTest.js" > "
 rc=$?
 tail -60 "$OUT"
 [ "$rc" -eq 0 ] || fail "real third-party widget suite (rc=$rc)"
-echo "RESULT v78 PASS real VSCode bqplot/bqscales, brush input, mixed controls, dynamic children, reconnect and replacement"
+echo "RESULT v78 PASS real VSCode bqplot/bqscales, brush input, model/view error isolation, mixed controls, dynamic children, reconnect and replacement"
