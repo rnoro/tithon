@@ -6,6 +6,7 @@ import {
   isDisplayOnlyWidget,
   isOutputAreaView,
   isRenderableWidget,
+  partialWidgetPayload,
   WIDGET_VIEW_MIME,
   type WidgetState,
   widgetFallbackText,
@@ -15,6 +16,265 @@ import {
 
 const ref = (id: string) => ({
   $tithon_artifact: { artifact_id: id, mime: "image/png", rel_path: `p/${id}.png`, sha256: id },
+});
+
+it("projects supported saved children without custom code or live authority", () => {
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "box" } },
+  };
+  const state: WidgetState = {
+    version_major: 2,
+    version_minor: 0,
+    state: {
+      box: {
+        model_name: "VBoxModel",
+        model_module: "@jupyter-widgets/controls",
+        model_module_version: "2.0.0",
+        state: {
+          _model_name: "VBoxModel",
+          _model_module: "@jupyter-widgets/controls",
+          _model_module_version: "2.0.0",
+          _view_name: "VBoxView",
+          _view_module: "@jupyter-widgets/controls",
+          _view_module_version: "2.0.0",
+          children: ["IPY_MODEL_label", "IPY_MODEL_custom", "IPY_MODEL_missing"],
+        },
+      },
+      label: {
+        model_name: "LabelModel",
+        model_module: "@jupyter-widgets/controls",
+        model_module_version: "2.0.0",
+        state: {
+          _model_name: "LabelModel",
+          _model_module: "@jupyter-widgets/controls",
+          _model_module_version: "2.0.0",
+          _view_name: "LabelView",
+          _view_module: "@jupyter-widgets/controls",
+          _view_module_version: "2.0.0",
+          value: "Safe label",
+        },
+      },
+      custom: {
+        model_name: "AnyModel",
+        model_module: "anywidget",
+        state: { _model_name: "AnyModel", _model_module: "anywidget", _esm: "unsafe code" },
+      },
+    },
+  };
+  const before = JSON.stringify(state);
+  const result = partialWidgetPayload(item, state)!;
+  expect(result.partial_tree?.kind).toBe("container");
+  expect(result.live).toBe(false);
+  expect(result.scope).toBeUndefined();
+  expect(JSON.stringify(result.partial_tree)).toContain("Safe label");
+  expect(JSON.stringify(result)).not.toContain("unsafe code");
+  expect(Object.keys(result.state.state!)).not.toContain("custom");
+  expect(JSON.stringify(result)).toContain('"reason":"missing"');
+  expect(JSON.stringify(result)).toContain('"reason":"unsupported"');
+  expect(JSON.stringify(state)).toBe(before);
+  const withoutEnumeration = new Proxy(state.state!, {
+    ownKeys() {
+      throw new Error("unrelated models must not be enumerated");
+    },
+  });
+  expect(partialWidgetPayload(item, { ...state, state: withoutEnumeration })?.partial_tree).toEqual(
+    result.partial_tree,
+  );
+  expect(partialWidgetPayload(item, { ...state, version_major: undefined })).toBeUndefined();
+  expect(partialWidgetPayload(item, { ...state, version_minor: 1 })).toBeUndefined();
+  expect(partialWidgetPayload(item, { ...state, version_major: 3 })).toBeUndefined();
+  const boxState = state.state!.box.state!;
+  const shared = { safe: "value" };
+  boxState.extra = [shared, shared];
+  expect(partialWidgetPayload(item, state)?.partial_tree).toEqual(result.partial_tree);
+  let nested: unknown = "value";
+  for (let index = 0; index < 100; index++) nested = { nested };
+  boxState.extra = nested;
+  expect(partialWidgetPayload(item, state)).toBeUndefined();
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  boxState.extra = cyclic;
+  expect(partialWidgetPayload(item, state)).toBeUndefined();
+  delete boxState.extra;
+  state.state!.progress = {
+    model_name: "FloatProgressModel",
+    model_module: "@jupyter-widgets/controls",
+    model_module_version: "2.0.0",
+    state: {
+      _model_name: "FloatProgressModel",
+      _model_module: "@jupyter-widgets/controls",
+      _model_module_version: "2.0.0",
+      _view_name: "ProgressView",
+      _view_module: "@jupyter-widgets/controls",
+      _view_module_version: "2.0.0",
+      min: -Number.MAX_VALUE,
+      max: Number.MAX_VALUE,
+      value: 0,
+    },
+  };
+  boxState.children = ["IPY_MODEL_progress", "IPY_MODEL_missing"];
+  expect(partialWidgetPayload(item, state)).toBeUndefined();
+});
+
+it("rejects partial projections with missing non-child dependencies or cycles", () => {
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "box" } },
+  };
+  const box = {
+    model_name: "VBoxModel",
+    model_module: "@jupyter-widgets/controls",
+    model_module_version: "2.0.0",
+    state: {
+      _model_name: "VBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      _model_module_version: "2.0.0",
+      _view_name: "VBoxView",
+      _view_module: "@jupyter-widgets/controls",
+      _view_module_version: "2.0.0",
+      children: ["IPY_MODEL_missing"],
+      layout: "IPY_MODEL_absent-layout",
+    },
+  };
+  expect(
+    partialWidgetPayload(item, { version_major: 2, version_minor: 0, state: { box } }),
+  ).toBeUndefined();
+  box.state.layout = "";
+  box.state.children = ["IPY_MODEL_box", "IPY_MODEL_missing"];
+  expect(
+    partialWidgetPayload(item, { version_major: 2, version_minor: 0, state: { box } }),
+  ).toBeUndefined();
+});
+
+it("keeps partial output within its historical scope and rejects unsafe roles and buffers", () => {
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "box" } },
+    widget_kernel_id: "old",
+  };
+  const entry = (name: string, view: string) => ({
+    model_name: name,
+    model_module: "@jupyter-widgets/controls",
+    model_module_version: "2.0.0",
+    state: {
+      _model_name: name,
+      _model_module: "@jupyter-widgets/controls",
+      _model_module_version: "2.0.0",
+      _view_name: view,
+      _view_module: "@jupyter-widgets/controls",
+      _view_module_version: "2.0.0",
+    } as Record<string, unknown>,
+  });
+  const box = entry("VBoxModel", "VBoxView");
+  box.state.children = ["IPY_MODEL_label", "IPY_MODEL_constructor"];
+  const label = entry("LabelModel", "LabelView");
+  label.state.value = "historical";
+  const old: WidgetState = { version_major: 2, version_minor: 0, state: { box, label } };
+  const current: WidgetState = {
+    version_major: 2,
+    version_minor: 0,
+    state: { box, label: { ...label, state: { ...label.state, value: "current" } } },
+  };
+  const widgets: WidgetState = {
+    widget_context: {
+      kernel_id: "new",
+      active_model_ids: ["box", "label"],
+      states: { old, new: current },
+    },
+  };
+  const result = partialWidgetPayload(item, widgets)!;
+  expect(JSON.stringify(result.partial_tree)).toContain("historical");
+  expect(JSON.stringify(result.partial_tree)).not.toContain("current");
+  expect(JSON.stringify(result.partial_tree)).toContain('"reason":"missing"');
+  expect(result.scope).toBeUndefined();
+  box.state.layout = "IPY_MODEL_label";
+  expect(partialWidgetPayload(item, widgets)).toBeUndefined();
+  delete box.state.layout;
+  box.state._view_name = "ButtonView";
+  expect(partialWidgetPayload(item, widgets)).toBeUndefined();
+  box.state._view_name = "VBoxView";
+  box.state.extra = Array(5000).fill(0);
+  expect(partialWidgetPayload(item, widgets)).toBeUndefined();
+  delete box.state.extra;
+  (box as any).buffers = [{ encoding: "base64", path: ["children"], data: "eA==" }];
+  expect(partialWidgetPayload(item, widgets)).toBeUndefined();
+});
+
+it("bounds the number of expanded partial views", () => {
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "box" } },
+  };
+  const box = {
+    model_name: "VBoxModel",
+    model_module: "@jupyter-widgets/controls",
+    model_module_version: "2.0.0",
+    state: {
+      _model_name: "VBoxModel",
+      _model_module: "@jupyter-widgets/controls",
+      _model_module_version: "2.0.0",
+      _view_name: "VBoxView",
+      _view_module: "@jupyter-widgets/controls",
+      _view_module_version: "2.0.0",
+      children: Array(129).fill("IPY_MODEL_missing"),
+    },
+  };
+  expect(
+    partialWidgetPayload(item, { version_major: 2, version_minor: 0, state: { box } }),
+  ).toBeUndefined();
+});
+
+it("bounds the normal graph scan before selecting a partial fallback", () => {
+  const item: OutputItem = {
+    output_type: "display_data",
+    data: { [WIDGET_VIEW_MIME]: { model_id: "box" } },
+  };
+  let nested: unknown = "value";
+  for (let index = 0; index < 100; index++) nested = { nested };
+  const state = { state: { box: { state: { _model_name: "VBoxModel", nested } } } };
+  expect(widgetPayload(item, state)).toBeUndefined();
+  expect(isRenderableWidget(item, state)).toBe(false);
+  const throwingState = new Proxy(
+    { _model_name: "VBoxModel" },
+    {
+      ownKeys() {
+        throw new Error("cannot enumerate");
+      },
+    },
+  );
+  const exotic = { state: { box: { state: throwingState } } };
+  expect(widgetPayload(item, exotic)).toBeUndefined();
+  expect(partialWidgetPayload(item, exotic)).toBeUndefined();
+  expect(isRenderableWidget(item, exotic)).toBe(false);
+  const throwingLookup = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("cannot read");
+      },
+    },
+  );
+  expect(isRenderableWidget(item, { state: throwingLookup })).toBe(false);
+  expect(isOutputAreaView(item, { state: throwingLookup })).toBe(false);
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  expect(widgetPayload(item, { state: { box: { state: cyclic } } })).toBeUndefined();
+  const shared = { value: "safe" };
+  expect(
+    widgetPayload(item, { state: { box: { state: { items: [shared, shared] } } } }),
+  ).toBeDefined();
+});
+
+it("renders a deeply nested text fallback without recursive stack growth", () => {
+  const states: NonNullable<WidgetState["state"]> = {};
+  for (let index = 0; index < 10000; index++) {
+    states[String(index)] = {
+      state: { _model_name: "VBoxModel", children: [`IPY_MODEL_${index + 1}`] },
+    };
+  }
+  states["10000"] = { state: { _model_name: "LabelModel", value: "Deep label" } };
+  expect(widgetFallbackText("0", { state: states })).toContain("Deep label");
 });
 
 describe("image detection (matplotlib)", () => {

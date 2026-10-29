@@ -93,6 +93,31 @@ it("blocks custom widget code in a restricted workspace without disabling stock 
         (entry) => entry.type === "test.widget-ready" && entry.model === "untrusted-figure",
       ),
     );
+    await until(
+      () =>
+        received.some(
+          (entry) => entry.type === "test.widget-ready" && entry.model === "untrusted-mixed",
+        ),
+      "mixed container rendered without custom code",
+    );
+    const mixedId = ++serial;
+    await channel.postMessage({
+      type: "test.widget-action",
+      model: "untrusted-mixed",
+      action: "inspect",
+      id: mixedId,
+    });
+    await until(() => received.some((entry) => entry.id === mixedId), "mixed container inspection");
+    const mixed = received.find((entry) => entry.id === mixedId);
+    assert.equal(mixed.type, "test.widget-done", mixed.error);
+    assert.ok(mixed.text.includes("Safe label"), mixed.text);
+    assert.ok(mixed.text.includes("3/10"), mixed.text);
+    assert.ok(mixed.text.includes("Widget not shown"), mixed.text);
+    assert.ok(!mixed.text.includes("unexpected JavaScript execution"), mixed.text);
+    assert.equal(mixed.interactive, false);
+    assert.equal(mixed.available, false);
+    assert.equal(mixed.statusAccessible, true);
+    assert.ok(mixed.text.includes("read-only snapshot (not live)"), mixed.text);
     assert.ok(!received.some((entry) => entry.type === "tithon.widget-load-module"));
     assert.ok((await query("print('CUSTOM_EVENTS', events)")).includes("CUSTOM_EVENTS []"));
     await action("click");
@@ -100,6 +125,59 @@ it("blocks custom widget code in a restricted workspace without disabling stock 
       async () => (await query("print('CLICKS', clicks)")).includes("CLICKS 1"),
       "stock widget remains active",
     );
+    const previous = received.filter(
+      (entry) => entry.type === "test.widget-ready" && entry.model === "untrusted-mixed",
+    ).length;
+    const oldPid = (await query("import os; print('KERNEL_PID', os.getpid())")).match(
+      /KERNEL_PID (\d+)/,
+    )?.[1];
+    assert.ok(oldPid);
+    await vscode.commands.executeCommand("tithon.restartKernel");
+    const newPid = (await query("import os; print('KERNEL_PID', os.getpid())")).match(
+      /KERNEL_PID (\d+)/,
+    )?.[1];
+    assert.ok(newPid && newPid !== oldPid, "kernel must actually be replaced");
+    await vscode.commands.executeCommand("tithon.retryRestore");
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    await vscode.window.showNotebookDocument(notebook);
+    try {
+      await until(
+        () =>
+          received.filter(
+            (entry) => entry.type === "test.widget-ready" && entry.model === "untrusted-mixed",
+          ).length > previous,
+        "historical mixed container restored",
+      );
+    } catch (error) {
+      console.log(
+        "[v77] historical output:",
+        JSON.stringify(
+          notebook.cellAt(3).outputs.map((output) =>
+            output.items.map((item) => ({
+              mime: item.mime,
+              text: Buffer.from(item.data).toString().slice(0, 1000),
+            })),
+          ),
+        ),
+      );
+      throw error;
+    }
+    const restoredId = ++serial;
+    await channel.postMessage({
+      type: "test.widget-action",
+      model: "untrusted-mixed",
+      action: "inspect",
+      id: restoredId,
+    });
+    await until(() => received.some((entry) => entry.id === restoredId), "historical inspection");
+    const restored = received.find((entry) => entry.id === restoredId);
+    assert.ok(restored.text.includes("Safe label"), restored.text);
+    assert.ok(restored.text.includes("3/10"), restored.text);
+    assert.ok(restored.text.includes("Widget not shown"), restored.text);
+    assert.equal(restored.interactive, false);
+    assert.equal(restored.available, false);
+    assert.equal(restored.statusAccessible, true);
+    assert.ok(!received.some((entry) => entry.type === "tithon.widget-load-module"));
   } finally {
     listener.dispose();
   }

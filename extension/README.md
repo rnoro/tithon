@@ -127,6 +127,8 @@ stays pure source — outputs never touch the file, so diffs stay clean.
   restores synchronized traits without replaying clicks. Browser-only state and
   transient custom messages are not generally recoverable. CDN loading, broader
   dependency discovery, Lab-only bundles and dedicated `Output` layout remain in progress.
+  Some mixed saved or untrusted containers show supported labels and progress
+  bars in a clearly marked read-only snapshot with omissions indicated.
 - **Shareable outputs** — the folded output state is kept as text in
   `<project>/.tithon/` (images referenced as deduplicated files, not embedded).
   Commit it and whoever clones the repository opens the file with your results

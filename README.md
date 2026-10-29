@@ -149,6 +149,8 @@ widgets fall back to text. Reconnection restores synchronized model traits and
 does not replay clicks. A widget's browser-only state and transient custom
 messages are not generally recoverable. CDN loading, broader AMD dependency
 discovery, Lab-only bundles and dedicated `Output` layout support remain in progress.
+For some mixed saved or untrusted containers, supported labels and progress bars
+remain visible in a clearly marked read-only snapshot with omissions indicated.
 
 In a local VS Code check with PyGWalker 0.5.0.1, the default `pyg.walk` Data
 view with kernel computation displayed its data again after reconnecting. An

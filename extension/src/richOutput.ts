@@ -170,6 +170,7 @@ export interface TithonWidgetPayload {
   scope?: WidgetScope;
   live?: boolean;
   allow_custom_widgets?: boolean;
+  partial_tree?: PartialWidgetNode;
 }
 
 /** Resolve saved outputs against their own kernel's mirror, including model-id collisions. */
@@ -200,21 +201,55 @@ export function widgetScopeForOutput(
 
 /** Prefix ipywidgets uses to reference one model from another's trait value. */
 const MODEL_REFS = ["IPY_MODEL_", "anywidget:"];
+const MAX_WIDGET_GRAPH_MODELS = 16384;
+const MAX_WIDGET_GRAPH_VALUES = 1000000;
+const MAX_WIDGET_GRAPH_DEPTH = 64;
 
 /** Model ids `state` references, anywhere in its nested arrays/objects. */
-function referencedModels(state: unknown, out: Set<string>): void {
-  if (typeof state === "string") {
-    for (const prefix of MODEL_REFS) {
-      if (state.startsWith(prefix)) out.add(state.slice(prefix.length));
+function referencedModels(
+  state: unknown,
+  out: Set<string>,
+  budget: { remaining: number },
+): boolean {
+  const queue: Array<{ value: unknown; depth: number; exit?: boolean }> = [
+    { value: state, depth: 0 },
+  ];
+  const active = new Set<object>();
+  const complete = new Set<object>();
+  try {
+    while (queue.length) {
+      if (--budget.remaining < 0) return false;
+      const { value, depth, exit } = queue.pop()!;
+      if (depth > MAX_WIDGET_GRAPH_DEPTH) return false;
+      if (exit && value && typeof value === "object") {
+        active.delete(value);
+        complete.add(value);
+        continue;
+      }
+      if (typeof value === "string") {
+        for (const prefix of MODEL_REFS) {
+          if (value.startsWith(prefix)) {
+            out.add(value.slice(prefix.length));
+            if (out.size > MAX_WIDGET_GRAPH_MODELS) return false;
+          }
+        }
+      } else if (value && typeof value === "object") {
+        if (active.has(value)) return false;
+        if (complete.has(value)) continue;
+        active.add(value);
+        queue.push({ value, depth, exit: true });
+        for (const key in value) {
+          if (--budget.remaining < 0) return false;
+          const descriptor = Object.getOwnPropertyDescriptor(value, key);
+          if (!descriptor) continue;
+          if (!("value" in descriptor)) return false;
+          queue.push({ value: descriptor.value, depth: depth + 1 });
+        }
+      }
     }
-    return;
-  }
-  if (Array.isArray(state)) {
-    for (const v of state) referencedModels(v, out);
-    return;
-  }
-  if (state && typeof state === "object") {
-    for (const v of Object.values(state as Record<string, unknown>)) referencedModels(v, out);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -237,26 +272,47 @@ export function widgetPayload(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): TithonWidgetPayload | undefined {
+  try {
+    return buildWidgetPayload(item, widgets);
+  } catch {
+    return undefined;
+  }
+}
+
+function buildWidgetPayload(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): TithonWidgetPayload | undefined {
   const source = widgets;
   const scope = widgetScopeForOutput(item, widgets);
   widgets = widgetStateForOutput(item, widgets);
   const id = widgetModelIdOf(item);
   const models = widgets?.state;
-  if (!id || !models?.[id]) return undefined;
-  const reachable: Record<string, WidgetStateEntry> = {};
+  if (!id || !models || !Object.getOwnPropertyDescriptor(models, id)?.value) return undefined;
+  const reachable: Record<string, WidgetStateEntry> = Object.create(null);
   const queue = [id];
+  const queued = new Set(queue);
+  const budget = { remaining: MAX_WIDGET_GRAPH_VALUES };
   let complete = true;
   while (queue.length) {
     const next = queue.pop()!;
     if (reachable[next]) continue;
-    if (!models[next]) {
+    const entry = Object.getOwnPropertyDescriptor(models, next)?.value as
+      | WidgetStateEntry
+      | undefined;
+    if (!entry) {
       complete = false;
       continue;
     }
-    reachable[next] = models[next];
+    reachable[next] = entry;
     const refs = new Set<string>();
-    referencedModels(models[next].state, refs);
-    for (const r of refs) if (!reachable[r]) queue.push(r);
+    if (!referencedModels(entry.state, refs, budget)) return undefined;
+    for (const r of refs) {
+      if (queued.has(r)) continue;
+      if (queued.size >= MAX_WIDGET_GRAPH_MODELS) return undefined;
+      queued.add(r);
+      queue.push(r);
+    }
   }
   return {
     model_id: id,
@@ -288,10 +344,19 @@ export function isRenderableWidget(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): boolean {
+  try {
+    return checkRenderableWidget(item, widgets);
+  } catch {
+    return false;
+  }
+}
+
+function checkRenderableWidget(item: OutputItem, widgets: WidgetState | null | undefined): boolean {
   const id = widgetModelIdOf(item);
   if (!id) return false;
   const state = widgetStateForOutput(item, widgets);
   const payload = widgetPayload(item, widgets);
+  if (!payload) return false;
   const live = payload?.live === true;
   const allowCustom = live && widgets?.allow_custom_widgets === true;
   for (const entry of Object.values(payload?.state.state ?? {})) {
@@ -326,6 +391,198 @@ const DISPLAY_ONLY_MODELS = new Set([
   "GridBoxModel",
 ]);
 
+export type PartialWidgetNode =
+  | { kind: "container"; direction: "row" | "column"; children: PartialWidgetNode[] }
+  | { kind: "label"; text: string }
+  | { kind: "progress"; value: number; min: number; max: number }
+  | { kind: "omitted"; reason: "missing" | "unsupported" };
+
+const PARTIAL_VIEWS: Record<string, string> = {
+  BoxModel: "BoxView",
+  HBoxModel: "HBoxView",
+  VBoxModel: "VBoxView",
+  GridBoxModel: "GridBoxView",
+  LabelModel: "LabelView",
+  IntProgressModel: "ProgressView",
+  FloatProgressModel: "ProgressView",
+};
+const PARTIAL_CONTAINERS = new Set(["BoxModel", "HBoxModel", "VBoxModel", "GridBoxModel"]);
+
+/** Project only plain, read-only widget data; no manager or custom code receives it. */
+export function partialWidgetPayload(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): TithonWidgetPayload | undefined {
+  try {
+    return buildPartialWidgetPayload(item, widgets);
+  } catch {
+    return undefined;
+  }
+}
+
+function buildPartialWidgetPayload(
+  item: OutputItem,
+  widgets: WidgetState | null | undefined,
+): TithonWidgetPayload | undefined {
+  const id = widgetModelIdOf(item);
+  const snapshot = widgetStateForOutput(item, widgets);
+  const source = snapshot?.state;
+  if (!id || !source || snapshot?.version_major !== 2 || snapshot.version_minor !== 0)
+    return undefined;
+  let hidden = false;
+  let nodes = 0;
+  let inspected = 0;
+  const stack = new Set<string>();
+  const model = (modelId: string): WidgetStateEntry | undefined =>
+    Object.getOwnPropertyDescriptor(source, modelId)?.value;
+  const references = (value: unknown): Set<string> | undefined => {
+    const refs = new Set<string>();
+    const queue: Array<{ value: unknown; depth: number; exit?: boolean }> = [{ value, depth: 1 }];
+    const active = new Set<object>();
+    const complete = new Set<object>();
+    let count = 0;
+    while (queue.length) {
+      if (++count > 4096 || ++inspected > 16384) return undefined;
+      const { value: current, depth, exit } = queue.pop()!;
+      if (depth > MAX_WIDGET_GRAPH_DEPTH) return undefined;
+      if (exit && current && typeof current === "object") {
+        active.delete(current);
+        complete.add(current);
+        continue;
+      }
+      if (typeof current === "string") {
+        for (const prefix of MODEL_REFS) {
+          if (current.startsWith(prefix)) refs.add(current.slice(prefix.length));
+        }
+      } else if (current && typeof current === "object") {
+        if (active.has(current)) return undefined;
+        if (complete.has(current)) continue;
+        active.add(current);
+        queue.push({ value: current, depth, exit: true });
+        for (const key in current) {
+          if (++inspected > 16384 || queue.length + count >= 4096) return undefined;
+          const descriptor = Object.getOwnPropertyDescriptor(current, key);
+          if (!descriptor) continue;
+          if (["__proto__", "constructor", "prototype"].includes(key) || !("value" in descriptor))
+            return undefined;
+          queue.push({ value: descriptor.value, depth: depth + 1 });
+        }
+      }
+    }
+    return refs;
+  };
+  const valid = (
+    entry: WidgetStateEntry | undefined,
+    name: string,
+    module: string,
+    view: string,
+    viewModule: string,
+  ) => {
+    const state = entry?.state;
+    return !!(
+      state &&
+      !entry?.buffers?.length &&
+      entry?.model_name === name &&
+      entry.model_module === module &&
+      entry.model_module_version === "2.0.0" &&
+      state._model_name === name &&
+      state._model_module === module &&
+      state._model_module_version === "2.0.0" &&
+      state._view_name === view &&
+      state._view_module === viewModule &&
+      state._view_module_version === "2.0.0"
+    );
+  };
+  const dependenciesValid = (state: Record<string, unknown>, name: string): boolean => {
+    for (const key in state) {
+      if (++inspected > 16384) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(state, key);
+      if (!descriptor) continue;
+      if (["__proto__", "constructor", "prototype"].includes(key) || !("value" in descriptor))
+        return false;
+      const value = descriptor.value;
+      if (key === "children") continue;
+      const refs = references(value);
+      if (!refs) return false;
+      if (!refs.size) continue;
+      if (
+        (key !== "layout" && key !== "style") ||
+        typeof value !== "string" ||
+        !value.startsWith("IPY_MODEL_") ||
+        refs.size !== 1
+      )
+        return false;
+      const dep = model(value.slice("IPY_MODEL_".length));
+      const depName =
+        key === "layout"
+          ? "LayoutModel"
+          : name === "LabelModel"
+            ? "LabelStyleModel"
+            : name.endsWith("ProgressModel")
+              ? "ProgressStyleModel"
+              : "";
+      const depModule = key === "layout" ? "@jupyter-widgets/base" : "@jupyter-widgets/controls";
+      const depView = key === "layout" ? "LayoutView" : "StyleView";
+      if (!depName || !valid(dep, depName, depModule, depView, "@jupyter-widgets/base"))
+        return false;
+      const nested = references(dep!.state);
+      if (!nested || nested.size) return false;
+    }
+    return true;
+  };
+  const visit = (modelId: string, depth: number): PartialWidgetNode | undefined => {
+    if (++nodes > 128 || depth > 16 || stack.has(modelId)) return undefined;
+    const entry = model(modelId);
+    const name = entry?.model_name ?? "";
+    const view = Object.keys(PARTIAL_VIEWS).includes(name) ? PARTIAL_VIEWS[name] : undefined;
+    if (
+      !view ||
+      !valid(entry, name, "@jupyter-widgets/controls", view, "@jupyter-widgets/controls")
+    ) {
+      hidden = true;
+      return { kind: "omitted", reason: entry ? "unsupported" : "missing" };
+    }
+    const state = entry!.state!;
+    if (!dependenciesValid(state, name)) return undefined;
+    if (PARTIAL_CONTAINERS.has(name)) {
+      if (!Array.isArray(state.children)) return undefined;
+      stack.add(modelId);
+      const children: PartialWidgetNode[] = [];
+      for (const child of state.children) {
+        if (typeof child !== "string" || !child.startsWith("IPY_MODEL_")) return undefined;
+        const childNode = visit(child.slice("IPY_MODEL_".length), depth + 1);
+        if (!childNode) return undefined;
+        children.push(childNode);
+      }
+      stack.delete(modelId);
+      return { kind: "container", direction: name === "HBoxModel" ? "row" : "column", children };
+    }
+    if (state.children !== undefined) return undefined;
+    if (name === "LabelModel") {
+      if (typeof state.value !== "string" || state.value.length > 16384) return undefined;
+      return { kind: "label", text: state.value };
+    }
+    if (
+      ![state.value, state.min, state.max].every((n) => typeof n === "number" && Number.isFinite(n))
+    )
+      return undefined;
+    const value = state.value as number,
+      min = state.min as number,
+      max = state.max as number;
+    if (max <= min || !Number.isFinite(max - min)) return undefined;
+    return { kind: "progress", value, min, max };
+  };
+  if (!PARTIAL_CONTAINERS.has(model(id)?.model_name ?? "")) return undefined;
+  const tree = visit(id, 0);
+  if (tree?.kind !== "container" || !hidden) return undefined;
+  return {
+    model_id: id,
+    partial_tree: tree,
+    live: false,
+    state: { version_major: 2, version_minor: 0, state: {} },
+  };
+}
+
 /** Classify graphs that remain renderable without live input authority. */
 export function isDisplayOnlyWidget(
   modelId: string,
@@ -340,13 +597,32 @@ function supportedGraph(
   interactive: boolean,
   allowCustom: boolean,
 ): boolean {
+  try {
+    return checkSupportedGraph(modelId, widgets, interactive, allowCustom);
+  } catch {
+    return false;
+  }
+}
+
+function checkSupportedGraph(
+  modelId: string,
+  widgets: WidgetState | null | undefined,
+  interactive: boolean,
+  allowCustom: boolean,
+): boolean {
   const models = widgets?.state;
   if (!models) return false;
   const seen = new Set<string>();
-  const check = (id: string): boolean => {
-    if (seen.has(id)) return true; // a cycle can't introduce a NEW interactive node
+  const queue = [modelId];
+  const queued = new Set(queue);
+  let edges = 0;
+  while (queue.length) {
+    const id = queue.pop()!;
+    if (seen.has(id)) continue;
+    if (seen.size >= MAX_WIDGET_GRAPH_MODELS) return false;
     seen.add(id);
-    const s = models[id]?.state;
+    const s = (Object.getOwnPropertyDescriptor(models, id)?.value as WidgetStateEntry | undefined)
+      ?.state;
     if (!s) return false; // unknown model: fail closed
     const name = String(s._model_name ?? "");
     const bundledControl =
@@ -360,15 +636,18 @@ function supportedGraph(
     // `undefined` (a leaf widget) means no descendants to check. Anything ELSE
     // that isn't an array (a malformed/unexpected shape) fails closed instead of
     // silently being treated as childless.
-    if (ch === undefined) return true;
+    if (ch === undefined) continue;
     if (!Array.isArray(ch)) return false;
     for (const c of ch) {
-      if (typeof c !== "string") return false;
-      if (!check(c.replace(/^IPY_MODEL_/, ""))) return false;
+      if (++edges > MAX_WIDGET_GRAPH_VALUES || typeof c !== "string") return false;
+      const childId = c.replace(/^(?:IPY_MODEL_|anywidget:)/, "");
+      if (queued.has(childId)) continue;
+      if (queued.size >= MAX_WIDGET_GRAPH_MODELS) return false;
+      queued.add(childId);
+      queue.push(childId);
     }
-    return true;
-  };
-  return check(modelId);
+  }
+  return true;
 }
 
 function unescapeHtml(s: string): string {
@@ -397,8 +676,21 @@ export function widgetFallbackText(
   modelId: string,
   widgets: WidgetState | null | undefined,
 ): string | undefined {
+  try {
+    return buildWidgetFallbackText(modelId, widgets);
+  } catch {
+    return undefined;
+  }
+}
+
+function buildWidgetFallbackText(
+  modelId: string,
+  widgets: WidgetState | null | undefined,
+): string | undefined {
   const models = widgets?.state;
-  const attrsOf = (id: string): Record<string, unknown> | undefined => models?.[id]?.state;
+  const entryOf = (id: string): WidgetStateEntry | undefined =>
+    models ? Object.getOwnPropertyDescriptor(models, id)?.value : undefined;
+  const attrsOf = (id: string): Record<string, unknown> | undefined => entryOf(id)?.state;
   const root = attrsOf(modelId);
   if (!root) return undefined;
 
@@ -406,16 +698,23 @@ export function widgetFallbackText(
   const labels: string[] = [];
   const unavailable: string[] = [];
   const seen = new Set<string>();
-  const visit = (id: string): void => {
-    if (seen.has(id)) return;
+  const queue = [modelId];
+  let edges = 0;
+  while (queue.length) {
+    const id = queue.pop()!;
+    if (seen.has(id)) continue;
+    if (seen.size >= MAX_WIDGET_GRAPH_MODELS) {
+      unavailable.push("[Additional widgets not shown]");
+      break;
+    }
     seen.add(id);
     const s = attrsOf(id);
     if (!s) {
       unavailable.push(`[Widget not shown: ${id}]`);
-      return;
+      continue;
     }
     const name = String(s._model_name ?? "");
-    const declared = models?.[id]?.model_module;
+    const declared = entryOf(id)?.model_module;
     const modelModule = s._model_module;
     const viewModule = s._view_module;
     const bundled = (value: unknown) =>
@@ -443,11 +742,15 @@ export function widgetFallbackText(
     }
     const ch = s.children;
     if (Array.isArray(ch)) {
-      for (const c of ch)
-        if (typeof c === "string") visit(c.replace(/^(?:IPY_MODEL_|anywidget:)/, ""));
+      const count = Math.min(ch.length, MAX_WIDGET_GRAPH_MODELS - edges);
+      if (count < ch.length) unavailable.push("[Additional widgets not shown]");
+      for (let index = count - 1; index >= 0; index--) {
+        const child = ch[index];
+        if (typeof child === "string") queue.push(child.replace(/^(?:IPY_MODEL_|anywidget:)/, ""));
+      }
+      edges += count;
     }
-  };
-  visit(modelId);
+  }
 
   if (progress) {
     const pct = progress.max > 0 ? Math.round((progress.value / progress.max) * 100) : 0;
@@ -478,10 +781,14 @@ export function isOutputAreaView(
   item: OutputItem,
   widgets: WidgetState | null | undefined,
 ): boolean {
-  const id = widgetModelIdOf(item);
-  if (!id) return false;
-  return (
-    String(widgetStateForOutput(item, widgets)?.state?.[id]?.state?._model_name ?? "") ===
-    "OutputModel"
-  );
+  try {
+    const id = widgetModelIdOf(item);
+    if (!id) return false;
+    return (
+      String(widgetStateForOutput(item, widgets)?.state?.[id]?.state?._model_name ?? "") ===
+      "OutputModel"
+    );
+  } catch {
+    return false;
+  }
 }

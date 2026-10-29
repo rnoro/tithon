@@ -23,6 +23,7 @@ import {
   isOutputAreaView,
   isRenderableWidget,
   mergeBufferEntries,
+  partialWidgetPayload,
   TITHON_WIDGET_MIME,
   WIDGET_VIEW_MIME,
   type WidgetBufferEntry,
@@ -157,7 +158,7 @@ function toOutputItems(o: OutputItem, ctx?: RenderCtx): vscode.NotebookCellOutpu
         // Interactive graphs require complete active dependencies (see isRenderableWidget).
         const payload = isRenderableWidget(o, ctx?.widgets)
           ? widgetPayload(o, ctx?.widgets ?? null)
-          : undefined;
+          : partialWidgetPayload(o, ctx?.widgets ?? null);
         if (payload) {
           const items = [vscode.NotebookCellOutputItem.json(payload, TITHON_WIDGET_MIME)];
           const fb = widgetFallbackText(modelId, widgetStateForOutput(o, ctx?.widgets));

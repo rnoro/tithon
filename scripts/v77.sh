@@ -32,6 +32,9 @@ display(custom)
 import bqplot as bq
 figure = bq.Figure(title='Restricted bqplot', model_id='untrusted-figure')
 display(figure)
+# %%
+mixed = w.VBox([w.Label(value='Safe label'), w.IntProgress(value=3, max=10), custom], model_id='untrusted-mixed')
+display(mixed)
 PY
 start_daemon || fail "daemon start"
 "$PY" - "$TITHON_HOME/daemon.sock" "$FIX" <<'PY' || fail "seed notebook session"
@@ -70,4 +73,4 @@ run_vscode node "$TITHON_HOME/test-extension/out-int/integration/runTest.js" > "
 rc=$?
 tail -40 "$OUT"
 [ "$rc" -eq 0 ] || fail "untrusted workspace suite (rc=$rc)"
-echo "RESULT v77 PASS untrusted VSCode workspace rejects anywidget and external modules and preserves live stock controls"
+echo "RESULT v77 PASS untrusted custom code blocked, live stock controls and read-only mixed snapshot preserved across kernel replacement"

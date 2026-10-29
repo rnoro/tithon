@@ -88,6 +88,7 @@ export const activate = (context: any) => {
         canvasCount: host.querySelectorAll("canvas").length,
         canvasWidth: host.querySelector<HTMLCanvasElement>("canvas")?.width,
         canvasStyleWidth: host.querySelector<HTMLCanvasElement>("canvas")?.style.width,
+        statusAccessible: !!host.querySelector('[role="status"]:not([inert] *)'),
         html: message.action === "debugDump" ? host.innerHTML.slice(0, 4000) : undefined,
         errorCount: host.querySelectorAll(".jupyter-widgets-error-widget").length,
         available, interactive: available && host.isConnected && !!host.querySelector("button:not([disabled])")});

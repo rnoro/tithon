@@ -8,7 +8,7 @@
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
 import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
 import { LiveWidgetRenderer } from "./liveWidgetRenderer";
-import type { WidgetBufferEntry, WidgetScope } from "./richOutput";
+import type { PartialWidgetNode, WidgetBufferEntry, WidgetScope } from "./richOutput";
 import {
   createManager,
   renderFallbackText,
@@ -38,6 +38,62 @@ interface WidgetPayload {
   scope?: WidgetScope;
   live?: boolean;
   allow_custom_widgets?: boolean;
+  partial_tree?: PartialWidgetNode;
+}
+
+function validPartialTree(value: unknown): value is PartialWidgetNode {
+  const queue: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 0 }];
+  let count = 0;
+  let omitted = false;
+  while (queue.length) {
+    const { node, depth } = queue.pop()!;
+    if (++count > 128 || depth > 16 || !node || typeof node !== "object" || Array.isArray(node))
+      return false;
+    const item = node as Record<string, unknown>;
+    if (item.kind === "container") {
+      if (
+        (item.direction !== "row" && item.direction !== "column") ||
+        !Array.isArray(item.children) ||
+        item.children.length + count > 128
+      )
+        return false;
+      queue.push(...item.children.map((child) => ({ node: child, depth: depth + 1 })));
+    } else if (item.kind === "label") {
+      if (typeof item.text !== "string" || item.text.length > 16384) return false;
+    } else if (item.kind === "progress") {
+      if (
+        ![item.value, item.min, item.max].every(
+          (n) => typeof n === "number" && Number.isFinite(n),
+        ) ||
+        (item.max as number) <= (item.min as number) ||
+        !Number.isFinite((item.max as number) - (item.min as number))
+      )
+        return false;
+    } else if (item.kind === "omitted") {
+      if (item.reason !== "missing" && item.reason !== "unsupported") return false;
+      omitted = true;
+    } else return false;
+  }
+  return (value as { kind?: unknown }).kind === "container" && omitted;
+}
+
+function renderPartial(node: PartialWidgetNode): HTMLElement {
+  const element = document.createElement("div");
+  if (node.kind === "container") {
+    element.style.display = "flex";
+    element.style.flexDirection = node.direction;
+    for (const child of node.children) element.appendChild(renderPartial(child));
+  } else if (node.kind === "label") {
+    element.textContent = node.text;
+  } else if (node.kind === "progress") {
+    const progress = document.createElement("progress");
+    progress.max = node.max - node.min;
+    progress.value = Math.max(node.min, Math.min(node.max, node.value)) - node.min;
+    element.append(progress, document.createTextNode(` ${node.value}/${node.max}`));
+  } else {
+    element.textContent = `[Widget not shown: ${node.reason}]`;
+  }
+  return element;
 }
 interface UpdateMessage {
   type: "tithon.widget-update";
@@ -146,6 +202,28 @@ export const activate: ActivationFunction = (context) => {
       host.className = "tithon-widget-host";
       element.appendChild(host);
 
+      if ("partial_tree" in payload) {
+        host.inert = true;
+        if (!validPartialTree(payload.partial_tree)) {
+          host.textContent = "[Invalid widget snapshot]";
+          return;
+        }
+        const notice = document.createElement("div");
+        notice.className = "tithon-widget-status";
+        notice.setAttribute("role", "status");
+        notice.textContent =
+          "Simplified read-only snapshot (not live); some widgets are not shown.";
+        const content = document.createElement("div");
+        content.appendChild(renderPartial(payload.partial_tree));
+        const accessible = document.createElement("span");
+        accessible.style.cssText =
+          "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap";
+        accessible.textContent = ` ${content.textContent ?? ""}`;
+        notice.appendChild(accessible);
+        element.insertBefore(notice, host);
+        host.appendChild(content);
+        return;
+      }
       if (payload.live && payload.scope && !context.postMessage) {
         renderFallbackText(payload.state, payload.model_id, host);
         return;

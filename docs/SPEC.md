@@ -546,8 +546,19 @@ replacement, rejection or response timeout disables a mounted live view and
 revokes queued work; sent actions are never retried. In a trusted live container,
 an unavailable module or a failing model/view renders an error widget while
 supported siblings remain active. Error views retain the original failure.
-Incomplete graphs and saved or untrusted mixed graphs may still fall
-back as a whole.
+When a mixed saved, untrusted or incomplete graph cannot be rendered live,
+supported protocol-2.0.0 Box/HBox/VBox/GridBox, Label and progress children
+can instead be shown as a simplified, explicitly non-live read-only snapshot.
+Only validated built-in layout/style references are accepted; all other visual
+children receive fixed omission labels, and no widget manager, custom code,
+binary buffers or scoped delta updates are used by this projection. HTML,
+math and image widgets are omitted, and unrecognized internal dependencies
+still cause whole-output text fallback.
+Widget graph discovery is limited to 16,384 models, one million inspected
+values/properties and 64 nested trait levels; oversized graphs fall back to text.
+Partial snapshots have tighter limits of 128 visual nodes, 16 container levels,
+4,096 values per trait scan and 16,384 inspected entries overall; exceeding
+these limits also falls back to text.
 When VSCode recreates a view from an older output payload while its notebook
 remains open, the host refreshes its live models from the current scoped mirror.
 Each view stays inert until its own refresh completes; an obsolete view's reply
@@ -894,8 +905,8 @@ does not have.
   explicit interaction ownership/routing. The captured contents render as
   notebook outputs in the owning cell; dedicated Output views/layout and
   `Output.outputs` trait operations such as `append_stdout` remain pending (#23).
-  Broader third-party module formats and dependency discovery, and partial
-  fallback for incomplete, saved or untrusted mixed graphs remain pending (#28).
+  Broader third-party module formats and dependency discovery, live controls in
+  restricted mixed graphs, and richer partial historical views remain pending (#28).
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
