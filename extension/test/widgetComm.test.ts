@@ -1,0 +1,583 @@
+// @vitest-environment jsdom
+import { expect, it, vi } from "vitest";
+import { LiveWidgetRenderer } from "../src/liveWidgetRenderer";
+import { SessionClient } from "../src/sessionClient";
+import { WidgetComms } from "../src/widgetComm";
+import { createManager } from "../src/widgetRender";
+import { fakeDaemonRaw, settle } from "./fakeDaemon";
+
+const scope = { session: "file:///widget.pynb", binding: "client:kernel", kernel_id: "kernel" };
+
+it("loads the bundled anywidget frontend only with live trusted authority and a compatible version", async () => {
+  const denied = createManager(() => ({}));
+  await expect((denied as any).loadClass("AnyModel", "anywidget", "~0.11.*")).rejects.toThrow();
+  const trusted = createManager(() => ({}), true);
+  await expect((trusted as any).loadClass("AnyModel", "anywidget", "~0.11.*")).resolves.toBeTypeOf(
+    "function",
+  );
+  await expect((trusted as any).loadClass("AnyModel", "anywidget", "~0.10.*")).rejects.toThrow(
+    "Unsupported",
+  );
+  const saved = createManager(undefined, true);
+  await expect((saved as any).loadClass("AnyModel", "anywidget", "~0.11.*")).rejects.toBeDefined();
+});
+
+function snapshot() {
+  return {
+    version_major: 2,
+    version_minor: 0,
+    state: {
+      button: {
+        model_name: "ButtonModel",
+        model_module: "@jupyter-widgets/controls",
+        model_module_version: "2.0.0",
+        state: {
+          _model_name: "ButtonModel",
+          _view_name: "ButtonView",
+          _view_module: "@jupyter-widgets/controls",
+          _view_module_version: "2.0.0",
+          description: "Click",
+        },
+      },
+    },
+  };
+}
+
+it("shares a live button model between views and drops input on invalidation", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((m) => sent.push(m));
+  const first = document.createElement("div"),
+    second = document.createElement("div");
+  document.body.append(first, second);
+  try {
+    const payload = { scope, model_id: "button", state: snapshot() };
+    await renderer.render("first", payload, first);
+    await renderer.render("second", payload, second);
+    first.querySelector("button")!.click();
+    second.querySelector("button")!.click();
+    expect(sent.filter((m) => m.type === "tithon.widget-send")).toHaveLength(2);
+    const raw = {
+      header: { msg_type: "comm_msg" },
+      parent_header: {},
+      metadata: {},
+      buffers: [],
+      content: { comm_id: "button", data: { method: "update", state: { description: "Both" } } },
+    };
+    renderer.receive({ type: "tithon.widget-message", scope, message: raw });
+    await settle(20);
+    expect(first.querySelector("button")!.textContent).toBe("Both");
+    expect(second.querySelector("button")!.textContent).toBe("Both");
+    renderer.dispose("first");
+    second.querySelector("button")!.click();
+    expect(sent.filter((m) => m.type === "tithon.widget-send")).toHaveLength(3);
+    renderer.invalidate(scope);
+    second.querySelector("button")!.click();
+    expect(second.querySelector("button")!.disabled).toBe(true);
+    expect(sent.filter((m) => m.type === "tithon.widget-send")).toHaveLength(3);
+    const late = document.createElement("div");
+    document.body.append(late);
+    await renderer.render("late", payload, late);
+    expect(late.querySelector("button")!.disabled).toBe(true);
+    renderer.dispose("late");
+    late.remove();
+  } finally {
+    renderer.dispose("first");
+    renderer.dispose("second");
+    first.remove();
+    second.remove();
+  }
+});
+
+it("cleans model resources only after the final shared view is disposed", async () => {
+  const renderer = new LiveWidgetRenderer(() => {});
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  document.body.append(first, second);
+  try {
+    const payload = { scope, model_id: "button", state: snapshot() };
+    await renderer.render("first", payload, first);
+    await renderer.render("second", payload, second);
+    const group = [...(renderer as any).groups.values()][0] as any;
+    const model = await group.manager.get_model("button");
+    let destroyed = 0;
+    model.on("destroy", () => destroyed++);
+    renderer.dispose("first");
+    await settle(20);
+    expect(destroyed).toBe(0);
+    renderer.dispose("second");
+    await settle(20);
+    expect(destroyed).toBe(1);
+  } finally {
+    renderer.dispose("first");
+    renderer.dispose("second");
+    first.remove();
+    second.remove();
+  }
+});
+
+it("refreshes an existing live model from the scoped snapshot after a remount", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    expect(host.querySelector("button")!.textContent).toBe("Click");
+    expect(host.inert).toBe(true);
+    const rendered = sent.find((message) => message.type === "tithon.widget-rendered");
+    const current = snapshot();
+    current.state.button.state.description = "Current";
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: "obsolete",
+      state: current,
+    });
+    await settle(20);
+    expect(host.inert).toBe(true);
+    expect(host.querySelector("button")!.textContent).toBe("Click");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: rendered.view_token,
+      state: current,
+    });
+    await settle(20);
+    expect(host.querySelector("button")!.textContent).toBe("Current");
+    expect(host.inert).toBe(false);
+    renderer.invalidate(scope);
+    current.state.button.state.description = "Stale";
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: rendered.view_token,
+      state: current,
+    });
+    await settle(20);
+    expect(host.querySelector("button")!.textContent).toBe("Current");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
+it("does not enable a remounted view from an earlier view's refresh", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const first = document.createElement("div");
+  const second = document.createElement("div");
+  document.body.append(first, second);
+  try {
+    const payload = { scope, model_id: "button", state: snapshot() };
+    await renderer.render("output", payload, first);
+    const old = sent.find((message) => message.type === "tithon.widget-rendered");
+    await renderer.render("output", payload, second);
+    const current = sent.filter((message) => message.type === "tithon.widget-rendered").at(-1);
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "output",
+      view_token: old.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    expect(second.inert).toBe(true);
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "output",
+      view_token: current.view_token,
+      state: { version_major: 2, version_minor: 0, state: {} },
+    });
+    await settle(20);
+    expect(second.inert).toBe(true);
+    expect(second.textContent).toContain("Widget unavailable");
+  } finally {
+    renderer.dispose("output");
+    first.remove();
+    second.remove();
+  }
+});
+
+it("keeps a view inert and reports an unanswered synchronization", async () => {
+  vi.useFakeTimers();
+  const renderer = new LiveWidgetRenderer(() => {});
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(host.inert).toBe(true);
+    expect(host.textContent).toContain("synchronization timed out");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+    vi.useRealTimers();
+  }
+});
+
+it("does not disable existing controls when an untrusted external model opens", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    const ready = sent.find((message) => message.type === "tithon.widget-rendered");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: ready.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: {
+        header: { msg_type: "comm_open" },
+        parent_header: {},
+        metadata: {},
+        buffers: [],
+        content: { comm_id: "external", data: { state: { _model_module: "anywidget" } } },
+      },
+    });
+    await settle(20);
+    expect(host.inert).toBe(false);
+    host.querySelector("button")!.click();
+    expect(sent.some((message) => message.type === "tithon.widget-send")).toBe(true);
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
+it("isolates a model callback failure from unrelated live controls", async () => {
+  const sent: any[] = [];
+  const renderer = new LiveWidgetRenderer((message) => sent.push(message));
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("button", { scope, model_id: "button", state: snapshot() }, host);
+    const ready = sent.find((message) => message.type === "tithon.widget-rendered");
+    renderer.receive({
+      type: "tithon.widget-resync",
+      scope,
+      view_id: "button",
+      view_token: ready.view_token,
+      state: snapshot(),
+    });
+    await settle(20);
+    const group = [...(renderer as any).groups.values()][0] as any;
+    group.comms.comm("broken").on_msg(() => Promise.reject(new Error("broken widget")));
+    const raw = (id: string, state: Record<string, unknown>) => ({
+      header: { msg_type: "comm_msg" },
+      parent_header: {},
+      metadata: {},
+      buffers: [],
+      content: { comm_id: id, data: { method: "update", state } },
+    });
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: raw("broken", { value: 1 }),
+    });
+    renderer.receive({
+      type: "tithon.widget-message",
+      scope,
+      message: raw("button", { description: "Healthy" }),
+    });
+    await settle(30);
+    expect(host.inert).toBe(false);
+    expect(host.querySelector("button")!.textContent).toBe("Healthy");
+  } finally {
+    renderer.dispose("button");
+    host.remove();
+  }
+});
+
+it("delivers raw binary custom and correlated idle callbacks in order", async () => {
+  const posted: any[] = [],
+    received: any[] = [],
+    callbacks: any[] = [];
+  const comms = new WidgetComms(
+    scope,
+    (m) => posted.push(m),
+    () => {},
+  );
+  const comm = comms.comm("image");
+  comm.on_msg((m: any) => received.push(m));
+  const id = comm.send(
+    { method: "custom", content: {} },
+    { iopub: { status: (m: any) => callbacks.push(m.content.execution_state) } },
+    {},
+    [new Uint8Array([0, 255, 7])],
+  );
+  expect(posted[0].buffers).toEqual(["AP8H"]);
+  await comms.receive({
+    header: { msg_type: "comm_msg" },
+    parent_header: { msg_id: id },
+    metadata: {},
+    buffers: ["AP8H"],
+    content: { comm_id: "image", data: { method: "custom", content: { answer: 1 } } },
+  });
+  expect(Array.from(new Uint8Array(received[0].buffers[0].buffer))).toEqual([0, 255, 7]);
+  for (const execution_state of ["busy", "idle"])
+    await comms.receive({
+      header: { msg_type: "status" },
+      parent_header: { msg_id: id },
+      metadata: {},
+      buffers: [],
+      content: { execution_state },
+    });
+  expect(callbacks).toEqual(["busy", "idle"]);
+  comms.dispose();
+  expect(() => comm.send({ method: "custom" })).toThrow("ended");
+});
+
+it("discards pending work only for the failed comm", async () => {
+  const failed: string[] = [];
+  const posted: any[] = [];
+  const comms = new WidgetComms(
+    scope,
+    (message) => posted.push(message),
+    (reason) => failed.push(reason),
+  );
+  const broken = comms.comm("broken");
+  const healthy = comms.comm("healthy");
+  broken.send({ method: "custom" });
+  const healthyId = healthy.send({ method: "custom" });
+  comms.disableComm("broken");
+  expect(() => broken.send({ method: "custom" })).toThrow("ended");
+  await comms.receive({
+    header: { msg_type: "status" },
+    parent_header: { msg_id: healthyId },
+    metadata: {},
+    buffers: [],
+    content: { execution_state: "idle" },
+  });
+  expect(() => healthy.send({ method: "custom" })).not.toThrow();
+  expect(failed).toEqual([]);
+  expect(posted).toHaveLength(3);
+  comms.dispose();
+});
+
+it("sends on the attached client binding and never retries a disconnected action", async () => {
+  const requests: any[] = [];
+  let attached: any;
+  const daemon = await fakeDaemonRaw((ws) => {
+    ws.on("message", (raw) => {
+      const frame = JSON.parse(raw.toString());
+      if (frame.op === "attach") {
+        attached = frame;
+        ws.send(
+          JSON.stringify({
+            op: "snapshot",
+            widgets: snapshot(),
+            kernel: { status: "idle" },
+            widget_context: {
+              kernel_id: "kernel",
+              active_model_ids: ["button"],
+              states: { kernel: snapshot() },
+            },
+          }),
+        );
+        ws.send(JSON.stringify({ op: "sync", seq: 0 }));
+      } else {
+        requests.push(frame);
+        if (frame.op === "widget_message")
+          ws.send(JSON.stringify({ op: "widget_ack", request_id: frame.request_id, ok: true }));
+      }
+    });
+  });
+  const client = new SessionClient(daemon.sock, scope.session);
+  try {
+    await client.attach();
+    const own = { ...scope, binding: client.widgets()!.renderer_binding!.binding };
+    expect(own.binding).toBe(`${attached.widget_binding}:kernel`);
+    await client.sendWidgetMessage(own, "click-one", "button", {
+      method: "custom",
+      content: { event: "click" },
+    });
+    expect(requests[0]).toMatchObject({
+      session: scope.session,
+      binding: own.binding,
+      request_seq: 1,
+    });
+    await expect(
+      client.sendWidgetMessage({ ...own, session: "other" }, "cross", "button", {}),
+    ).rejects.toThrow("unavailable");
+    const event: any = {
+      kind: "widget_status",
+      payload: {
+        kernel_id: "kernel",
+        binding: attached.widget_binding,
+        request_id: "click-one",
+        message: {
+          header: { msg_type: "status" },
+          parent_header: { msg_id: "kernel-request" },
+          content: { execution_state: "idle" },
+        },
+      },
+    };
+    expect(client.widgetMessageForRenderer(event).parent_header.msg_id).toBe("click-one");
+    event.payload.binding = "other-client";
+    expect(client.widgetMessageForRenderer(event)).toBeUndefined();
+    client.close();
+    await expect(client.sendWidgetMessage(own, "late", "button", {})).rejects.toThrow(
+      "unavailable",
+    );
+    expect(requests).toHaveLength(1);
+  } finally {
+    client.close();
+    await daemon.close();
+  }
+});
+
+it("keeps repeated stock slider sends flowing and reconciles kernel correction", async () => {
+  const { createManager } = await import("../src/widgetRender");
+  const posts: any[] = [];
+  const comms = new WidgetComms(
+    scope,
+    (m) => posts.push(m),
+    () => {},
+  );
+  const manager = createManager((id) => comms.comm(id));
+  await manager.set_state({
+    version_major: 2,
+    version_minor: 0,
+    state: {
+      slider: {
+        model_name: "IntSliderModel",
+        model_module: "@jupyter-widgets/controls",
+        model_module_version: "2.0.0",
+        state: { value: 0, max: 100 },
+      },
+    },
+  } as any);
+  const model: any = await manager.get_model("slider");
+  try {
+    for (let value = 1; value <= 21; value++) {
+      model.set("value", value);
+      model.save_changes();
+      const post = posts.at(-1);
+      expect(posts).toHaveLength(value);
+      await comms.receive({
+        header: { msg_type: "comm_msg" },
+        parent_header: { msg_id: post.request_id },
+        metadata: {},
+        buffers: [],
+        content: {
+          comm_id: "slider",
+          data: { method: "echo_update", state: { value }, buffer_paths: [] },
+        },
+      });
+      await comms.receive({
+        header: { msg_type: "status" },
+        parent_header: { msg_id: post.request_id },
+        metadata: {},
+        buffers: [],
+        content: { execution_state: "idle" },
+      });
+    }
+    model.set("value", 999);
+    model.save_changes();
+    const id = posts.at(-1).request_id;
+    for (const [method, value] of [
+      ["echo_update", 999],
+      ["update", 100],
+    ] as const)
+      await comms.receive({
+        header: { msg_type: "comm_msg" },
+        parent_header: { msg_id: id },
+        metadata: {},
+        buffers: [],
+        content: { comm_id: "slider", data: { method, state: { value }, buffer_paths: [] } },
+      });
+    await comms.receive({
+      header: { msg_type: "status" },
+      parent_header: { msg_id: id },
+      metadata: {},
+      buffers: [],
+      content: { execution_state: "idle" },
+    });
+    expect(model.get("value")).toBe(100);
+    expect(model._pending_msgs).toBe(0);
+    expect(model._expectedEchoMsgIds.size).toBe(0);
+  } finally {
+    comms.dispose();
+  }
+});
+
+it("bounds queued raw traffic and disables inputs instead of accumulating updates", async () => {
+  const renderer = new LiveWidgetRenderer(() => {});
+  const host = document.createElement("div");
+  document.body.append(host);
+  try {
+    await renderer.render("bounded", { scope, model_id: "button", state: snapshot() }, host);
+    const message = {
+      header: { msg_type: "comm_msg" },
+      parent_header: {},
+      metadata: {},
+      buffers: [],
+      content: {
+        comm_id: "button",
+        data: { method: "update", state: { description: "x".repeat(8 * 1024 * 1024) } },
+      },
+    };
+    renderer.receive({ type: "tithon.widget-message", scope, message });
+    expect(host.querySelector("button")!.disabled).toBe(true);
+    expect(host.textContent).toContain("exceeded the display buffer");
+    renderer.receive({ type: "tithon.widget-message", scope, message });
+    expect(host.querySelectorAll(".tithon-widget-status")).toHaveLength(1);
+  } finally {
+    renderer.dispose("bounded");
+    host.remove();
+  }
+});
+
+it("deserializes binary trait updates through the stock live ImageModel", async () => {
+  const { createManager } = await import("../src/widgetRender");
+  const comms = new WidgetComms(
+    scope,
+    () => {},
+    () => {},
+  );
+  const manager = createManager((id) => comms.comm(id));
+  try {
+    await manager.set_state({
+      version_major: 2,
+      version_minor: 0,
+      state: {
+        image: {
+          model_name: "ImageModel",
+          model_module: "@jupyter-widgets/controls",
+          model_module_version: "2.0.0",
+          state: { format: "png" },
+          buffers: [{ encoding: "base64", path: ["value"], data: "AQI=" }],
+        },
+      },
+    } as any);
+    const image: any = await manager.get_model("image");
+    await comms.receive({
+      header: { msg_type: "comm_msg" },
+      parent_header: {},
+      metadata: {},
+      buffers: ["AP8H"],
+      content: {
+        comm_id: "image",
+        data: { method: "update", state: {}, buffer_paths: [["value"]] },
+      },
+    });
+    const value = image.get("value");
+    expect(Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))).toEqual([
+      0, 255, 7,
+    ]);
+  } finally {
+    comms.dispose();
+  }
+});

@@ -7,6 +7,8 @@
 !README.md
 !CHANGELOG.md
 !LICENSE
+!THIRD_PARTY_NOTICES.txt
 !icon.png
+!icons/pynb.svg
 !dist/extension.js
 !dist/widgetRenderer.js

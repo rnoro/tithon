@@ -119,8 +119,16 @@ stays pure source — outputs never touch the file, so diffs stay clean.
   file) rebuilds the folded output state into the cells and resumes streaming;
   stdout/stderr, `matplotlib` figures, and rich `display_data` arrive in real
   time, with no manual command.
-- **ipywidgets** — `tqdm` bars and interactive widgets render through a bundled
-  widget renderer and come back at their real state, not their initial value.
+- **ipywidgets** — standard controls, anywidget 0.11.x and some installed classic
+  AMD widgets with matching metadata and version exports, including certain locally
+  mapped dependencies, render through the widget manager; bqplot 0.13.1 and
+  pythreejs 2.4.2 are verified. Custom JavaScript requires a trusted workspace and
+  a live kernel; saved or untrusted custom models fall back to text. Reconnection
+  restores synchronized traits without replaying clicks. Browser-only state and
+  transient custom messages are not generally recoverable. CDN loading, broader
+  dependency discovery, Lab-only bundles and dedicated `Output` layout remain in progress.
+  Some mixed saved or untrusted containers show supported labels and progress
+  bars in a clearly marked read-only snapshot with omissions indicated.
 - **Shareable outputs** — the folded output state is kept as text in
   `<project>/.tithon/` (images referenced as deduplicated files, not embedded).
   Commit it and whoever clones the repository opens the file with your results

@@ -21,12 +21,14 @@ project (see ``import_into``).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
 
 from .journal import Journal
+from .widgets import MODEL_REFERENCE_PREFIXES, WidgetMirror
 
 #: Bumped when the on-disk shape changes incompatibly. A reader that does not
 #: recognize the version ignores the file rather than importing a shape it would
@@ -39,6 +41,81 @@ CELLS_REL = Path(".tithon") / "cells"
 #: machine and would import as a cell that was cut off mid-run on a reader's
 #: machine that never ran it; `skipped` renders as a blank, never-run cell.
 SHAREABLE_STATUS = ("done", "error", "orphaned")
+WIDGET_VIEW = "application/vnd.jupyter.widget-view+json"
+
+
+def saved_snapshot(snapshot: dict) -> dict:
+    """Project scoped widget history into portable, non-authoritative saved state.
+
+    Namespace references even when their model is absent: an unresolved reference
+    must not accidentally resolve to another kernel's model after flattening.
+    """
+    result = copy.deepcopy(snapshot)
+    context = result.pop("widget_context", None)
+    states = context.get("states") if isinstance(context, dict) else None
+    scoped = isinstance(states, dict)
+
+    def model_id(scope: str, identifier: str) -> str:
+        identity = json.dumps([scope, identifier], ensure_ascii=False, separators=(",", ":"))
+        return "saved_" + hashlib.sha256(identity.encode()).hexdigest()
+
+    def rewrite_output(output, scope):
+        if not isinstance(output, dict):
+            return output
+        view = (output.get("data") or {}).get(WIDGET_VIEW)
+        if isinstance(view, dict) and isinstance(view.get("model_id"), str):
+            view["model_id"] = model_id(scope, view["model_id"])
+        return output
+
+    def rewrite(value, scope):
+        if isinstance(value, str):
+            for prefix in MODEL_REFERENCE_PREFIXES:
+                if value.startswith(prefix):
+                    return prefix + model_id(scope, value[len(prefix) :])
+            return value
+        if isinstance(value, list):
+            return [rewrite(item, scope) for item in value]
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: [rewrite_output(output, scope) for output in item]
+            if key == "outputs" and isinstance(item, list)
+            else rewrite(item, scope)
+            for key, item in value.items()
+        }
+
+    if scoped:
+        models = {}
+        for scope, state in states.items():
+            if not isinstance(scope, str) or not isinstance(state, dict):
+                raise ValueError("Invalid scoped widget state")
+            WidgetMirror().hydrate(state)
+            entries = state.get("state", {})
+            if not isinstance(entries, dict):
+                raise ValueError("Invalid scoped widget state")
+            for identifier, entry in entries.items():
+                if not isinstance(identifier, str) or not isinstance(entry, dict):
+                    raise ValueError("Invalid scoped widget model")
+                saved = copy.deepcopy(entry)
+                saved["state"] = rewrite(saved.get("state", {}), scope)
+                models[model_id(scope, identifier)] = saved
+        result["widgets"] = {"version_major": 2, "version_minor": 0, "state": models}
+    for execution in result.get("executions", []):
+        if not isinstance(execution, dict):
+            continue
+        if not isinstance(execution.get("outputs") or [], list):
+            continue
+        outputs = []
+        for output in execution.get("outputs") or []:
+            if not isinstance(output, dict):
+                outputs.append(output)
+                continue
+            scope = output.pop("widget_kernel_id", "saved")
+            if not isinstance(scope, str):
+                scope = "saved"
+            outputs.append(rewrite_output(output, scope) if scoped else output)
+        execution["outputs"] = outputs
+    return result
 
 
 def sidecar_path(workdir: Path, file_path: Path | None) -> Path | None:
@@ -156,6 +233,10 @@ def read(path: Path) -> tuple[dict, str] | None:
         return None
     if not isinstance(doc.get("executions"), list):
         return None
+    try:
+        saved_snapshot(doc)
+    except (TypeError, ValueError, AttributeError):
+        return None
     return doc, hashlib.sha256(raw).hexdigest()
 
 
@@ -223,6 +304,7 @@ def import_into(journal: Journal, workdir: Path, doc: dict) -> int:
     execution still carrying the author's absolute path would be filtered out
     and the cloned outputs would never reach the cells.
     """
+    doc = saved_snapshot(doc)
     count = 0
     for ex in _importable(doc):
         outputs = ex.get("outputs") or []

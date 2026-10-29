@@ -22,6 +22,19 @@ from __future__ import annotations
 import base64
 
 WIDGET_TARGET = "jupyter.widget"
+WIDGET_VIEW = "application/vnd.jupyter.widget-view+json"
+LEGACY_SCOPE = "legacy"
+MODEL_REFERENCE_PREFIXES = ("IPY_MODEL_", "anywidget:")
+
+
+def legacy_widget_content(content: dict) -> dict:
+    """Resolve unversioned raw widget displays to read-only legacy state."""
+    data = content.get("data")
+    if isinstance(data, dict) and WIDGET_VIEW in data and "_tithon_kernel_id" not in content:
+        return {**content, "_tithon_kernel_id": LEGACY_SCOPE}
+    return content
+
+
 #: Public — the single authority for "is this a comm message", shared by
 #: `is_comm()` and `journal.comm_messages_after()`'s SQL filter, so the two
 #: can never silently diverge on a future addition.
@@ -55,6 +68,21 @@ class WidgetMirror:
     def __init__(self) -> None:
         # comm_id -> {"state": {...json attrs...}, "buffers": {path_tuple: bytes}}
         self._models: dict[str, dict] = {}
+
+    def has_model(self, comm_id: str) -> bool:
+        return comm_id in self._models
+
+    def declares_module(self, name: str, version: str) -> bool:
+        """Only live models may authorize a frontend module request."""
+        for model in self._models.values():
+            state = model["state"]
+            for kind in ("model", "view"):
+                if (
+                    state.get(f"_{kind}_module") == name
+                    and state.get(f"_{kind}_module_version") == version
+                ):
+                    return True
+        return False
 
     def would_accept(self, msg_type: str, content: dict) -> bool:
         """Predict apply()'s accept/reject WITHOUT mutating — must stay in sync

@@ -1,25 +1,14 @@
 /**
- * VSCode notebook renderer entrypoint for {@link TITHON_WIDGET_MIME}
- * (`application/vnd.tithon.widget+json`) — the ipywidget renderer that runs
- * inside the notebook webview. The output item is self-contained: it carries the
- * view's `model_id` AND the daemon mirror's widget state, so html-manager can
- * instantiate the model/view with no extension-host round-trip (avoids the
- * render-before-state race). On any failure it degrades to the text fallback.
- *
- * Live updates: the extension host pushes `tithon.widget-update` messages (comm
- * state deltas, optionally carrying binary buffers) over the renderer
- * channel; we apply them to the live model so a tqdm.notebook bar animates, or an
- * Image widget's live-updating pixels stay current. We report the render outcome
- * back so the host (and verify) can confirm html vs fallback.
- *
- * Bundled by esbuild (platform=browser, format=esm) into dist/widgetRenderer.js;
- * the render logic itself is covered under jsdom by test/widget.test.ts.
+ * Notebook widget entrypoint: self-contained snapshots bootstrap each view.
+ * Active models use shared classic comms (see LiveWidgetRenderer); saved and
+ * legacy display models receive scoped state deltas with a text fallback.
  */
 
 // Injected into the webview so the rendered widgets are actually styled.
 import widgetsCss from "@jupyter-widgets/controls/css/widgets.built.css";
 import type { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
-import type { WidgetBufferEntry } from "./richOutput";
+import { LiveWidgetRenderer } from "./liveWidgetRenderer";
+import type { PartialWidgetNode, WidgetBufferEntry, WidgetScope } from "./richOutput";
 import {
   createManager,
   renderFallbackText,
@@ -46,12 +35,72 @@ type ActivationFunction = (context: RendererContext) => {
 interface WidgetPayload {
   model_id: string;
   state: WidgetStateSnapshot;
+  scope?: WidgetScope;
+  live?: boolean;
+  allow_custom_widgets?: boolean;
+  partial_tree?: PartialWidgetNode;
+}
+
+function validPartialTree(value: unknown): value is PartialWidgetNode {
+  const queue: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 0 }];
+  let count = 0;
+  let omitted = false;
+  while (queue.length) {
+    const { node, depth } = queue.pop()!;
+    if (++count > 128 || depth > 16 || !node || typeof node !== "object" || Array.isArray(node))
+      return false;
+    const item = node as Record<string, unknown>;
+    if (item.kind === "container") {
+      if (
+        (item.direction !== "row" && item.direction !== "column") ||
+        !Array.isArray(item.children) ||
+        item.children.length + count > 128
+      )
+        return false;
+      queue.push(...item.children.map((child) => ({ node: child, depth: depth + 1 })));
+    } else if (item.kind === "label") {
+      if (typeof item.text !== "string" || item.text.length > 16384) return false;
+    } else if (item.kind === "progress") {
+      if (
+        ![item.value, item.min, item.max].every(
+          (n) => typeof n === "number" && Number.isFinite(n),
+        ) ||
+        (item.max as number) <= (item.min as number) ||
+        !Number.isFinite((item.max as number) - (item.min as number))
+      )
+        return false;
+    } else if (item.kind === "omitted") {
+      if (item.reason !== "missing" && item.reason !== "unsupported") return false;
+      omitted = true;
+    } else return false;
+  }
+  return (value as { kind?: unknown }).kind === "container" && omitted;
+}
+
+function renderPartial(node: PartialWidgetNode): HTMLElement {
+  const element = document.createElement("div");
+  if (node.kind === "container") {
+    element.style.display = "flex";
+    element.style.flexDirection = node.direction;
+    for (const child of node.children) element.appendChild(renderPartial(child));
+  } else if (node.kind === "label") {
+    element.textContent = node.text;
+  } else if (node.kind === "progress") {
+    const progress = document.createElement("progress");
+    progress.max = node.max - node.min;
+    progress.value = Math.max(node.min, Math.min(node.max, node.value)) - node.min;
+    element.append(progress, document.createTextNode(` ${node.value}/${node.max}`));
+  } else {
+    element.textContent = `[Widget not shown: ${node.reason}]`;
+  }
+  return element;
 }
 interface UpdateMessage {
   type: "tithon.widget-update";
   comm_id: string;
   state: Record<string, unknown>;
   buffers?: WidgetBufferEntry[];
+  scope?: WidgetScope;
 }
 
 let cssInjected = false;
@@ -71,80 +120,158 @@ function injectCss(): void {
 
 export const activate: ActivationFunction = (context) => {
   injectCss();
-  // Live managers by output-item id, so a comm update reaches the right widget.
-  const managers = new Map<string, HTMLManager>();
-  // Per (output-item, comm_id) promise chain: `set_state()` is async, so a
-  // fire-and-forget call per message lets an OLDER update's promise resolve
-  // AFTER a newer one — restoring stale state/buffers — whenever two
-  // `tithon.widget-update` messages for the same model arrive close together.
-  // Chaining off the prior promise for the SAME (item, comm_id) pair enforces
-  // arrival order without blocking updates to a DIFFERENT model.
+  const live = new LiveWidgetRenderer((message) => context.postMessage?.(message));
+  const managers = new Map<
+    string,
+    { manager: HTMLManager; scope?: WidgetScope; active: boolean }
+  >();
   const updateChains = new Map<string, Promise<void>>();
+  // Revocation also covers outputs mounted after their connection/kernel ended.
+  // Library work already in flight may finish on its historical host.
+  const revokedBindings = new Set<string>();
+  const bindingKey = (scope: { session?: string; binding?: string }) =>
+    JSON.stringify([scope.session, scope.binding]);
+  const sameScope = (a?: WidgetScope, b?: WidgetScope) =>
+    a?.session === b?.session && a?.kernel_id === b?.kernel_id && a?.binding === b?.binding;
+
+  const invalidateItem = (id: string) => {
+    const entry = managers.get(id);
+    if (entry) entry.active = false;
+    managers.delete(id);
+    for (const key of updateChains.keys()) {
+      if (key.startsWith(`${id}\u0000`)) updateChains.delete(key);
+    }
+  };
 
   context.onDidReceiveMessage?.((msg: unknown) => {
+    live.receive(msg);
+    const invalidation = msg as { type?: string; session?: string; binding?: string };
+    if (invalidation?.type === "tithon.widget-invalidate") {
+      revokedBindings.add(bindingKey(invalidation));
+      live.invalidate(invalidation);
+      for (const [id, entry] of managers) {
+        if (
+          entry.scope?.session === invalidation.session &&
+          entry.scope?.binding === invalidation.binding
+        ) {
+          invalidateItem(id);
+        }
+      }
+      return;
+    }
     const m = msg as UpdateMessage;
     if (m?.type !== "tithon.widget-update") return;
-    for (const [itemId, mgr] of managers) {
-      // The patch targets one comm id; managers without it are left alone.
-      const withHasModel = mgr as HTMLManager & { has_model(id: string): boolean };
-      if (!withHasModel.has_model(m.comm_id)) continue;
-      const chainKey = `${itemId}:${m.comm_id}`;
+    for (const [itemId, entry] of managers) {
+      if (!entry.active || !sameScope(entry.scope, m.scope)) continue;
+      const mgr = entry.manager;
+      if (!(mgr as HTMLManager & { has_model(id: string): boolean }).has_model(m.comm_id)) continue;
+      const chainKey = `${itemId}\u0000${m.comm_id}`;
       const prior = updateChains.get(chainKey) ?? Promise.resolve();
       const next = prior
-        .then(() =>
-          // Route through the manager's OWN set_state — the exact machinery
-          // that already restores buffers correctly for the initial full
-          // snapshot (renderWidget below). For an EXISTING model it
-          // deserializes only the attributes present in `m.state` (a delta)
-          // and calls the model's own set(), which merges just those keys —
-          // buffer-bearing or not — leaving every other trait (including
-          // buffers not mentioned in this delta) untouched. Must NOT be
-          // shortcut to `model.set_state()`: that skips the deserialize step,
-          // so a buffer-bearing update never reaches the model.
-          mgr.set_state({
+        .then(async () => {
+          if (!entry.active || managers.get(itemId) !== entry) return;
+          // Manager deserialization restores binary buffers before merging traits.
+          await mgr.set_state({
             version_major: 2,
             version_minor: 0,
             state: { [m.comm_id]: { state: m.state, buffers: m.buffers ?? [] } },
-          } as unknown as Parameters<HTMLManager["set_state"]>[0]),
-        )
-        .then(() => {
-          // Confirm the live update landed (drives the animated bar) so the host
-          // (and verify) can see the live path working end-to-end.
-          context.postMessage?.({ type: "tithon.widget-updated", comm_id: m.comm_id });
+          } as unknown as Parameters<HTMLManager["set_state"]>[0]);
+          if (entry.active && managers.get(itemId) === entry) {
+            context.postMessage?.({
+              type: "tithon.widget-updated",
+              comm_id: m.comm_id,
+              scope: entry.scope,
+            });
+          }
         })
         .catch(() => undefined);
       updateChains.set(chainKey, next);
+      void next.finally(() => {
+        if (updateChains.get(chainKey) === next) updateChains.delete(chainKey);
+      });
     }
   });
 
   return {
     async renderOutputItem(item: OutputItem, element: HTMLElement) {
+      invalidateItem(item.id);
+      live.dispose(item.id);
       element.replaceChildren();
       const payload = item.json() as WidgetPayload;
       const host = document.createElement("div");
       host.className = "tithon-widget-host";
       element.appendChild(host);
 
+      if ("partial_tree" in payload) {
+        host.inert = true;
+        if (!validPartialTree(payload.partial_tree)) {
+          host.textContent = "[Invalid widget snapshot]";
+          return;
+        }
+        const notice = document.createElement("div");
+        notice.className = "tithon-widget-status";
+        notice.setAttribute("role", "status");
+        notice.textContent =
+          "Simplified read-only snapshot (not live); some widgets are not shown.";
+        const content = document.createElement("div");
+        content.appendChild(renderPartial(payload.partial_tree));
+        const accessible = document.createElement("span");
+        accessible.style.cssText =
+          "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap";
+        accessible.textContent = ` ${content.textContent ?? ""}`;
+        notice.appendChild(accessible);
+        element.insertBefore(notice, host);
+        host.appendChild(content);
+        return;
+      }
+      if (payload.live && payload.scope && !context.postMessage) {
+        renderFallbackText(payload.state, payload.model_id, host);
+        return;
+      }
+      if (payload.live && payload.scope) {
+        try {
+          await live.render(item.id, { ...payload, scope: payload.scope }, host);
+        } catch (error) {
+          live.dispose(item.id);
+          renderFallbackText(payload.state, payload.model_id, host);
+          const note = document.createElement("div");
+          note.className = "tithon-widget-status";
+          note.textContent = `Widget unavailable: ${String((error as Error)?.message ?? error)}`;
+          host.appendChild(note);
+        }
+        return;
+      }
       let mode: "html" | "fallback" = "fallback";
+      const manager = createManager();
+      const entry = {
+        manager,
+        scope: payload.scope,
+        active: !payload.scope || !revokedBindings.has(bindingKey(payload.scope)),
+      };
+      managers.set(item.id, entry);
       try {
-        const manager = createManager();
         await renderWidget(payload.state, payload.model_id, host, manager);
-        managers.set(item.id, manager);
+        if (!entry.active || managers.get(item.id) !== entry) return;
         mode = "html";
       } catch (err) {
+        if (!entry.active || managers.get(item.id) !== entry) return;
+        invalidateItem(item.id);
         renderFallbackText(payload.state, payload.model_id, host);
         const note = document.createElement("pre");
         note.textContent = `[tithon widget fallback] ${String((err as Error)?.message ?? err)}`;
         note.style.cssText = "opacity:.5;font-size:10px;margin:.25em 0 0";
         host.appendChild(note);
       }
-      context.postMessage?.({ type: "tithon.widget-rendered", model_id: payload.model_id, mode });
+      context.postMessage?.({
+        type: "tithon.widget-rendered",
+        model_id: payload.model_id,
+        mode,
+        scope: payload.scope,
+      });
     },
     disposeOutputItem(id: string) {
-      managers.delete(id);
-      for (const key of [...updateChains.keys()]) {
-        if (key.startsWith(`${id}:`)) updateChains.delete(key);
-      }
+      live.dispose(id);
+      invalidateItem(id);
     },
   };
 };

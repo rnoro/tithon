@@ -339,3 +339,13 @@ class TestOutputWidgetAreas:
             ]
         )
         assert [o["output_type"] for o in out] == ["stream", "display_data", "stream"]
+
+
+def test_explicit_callback_area_overrides_unrelated_parent_claim():
+    fold = ExecutionFold()
+    fold.apply("stream", {"name": "stdout", "text": "sibling"})
+    fold.apply(*claim("unrelated", "execution-parent"))
+    fold.apply("stream", {"name": "stdout", "text": "plain", "_tithon_output_owner": None})
+    fold.apply("stream", {"name": "stdout", "text": "captured", "_tithon_output_owner": "out"})
+    fold.apply("clear_output", {"wait": False, "_tithon_output_owner": "out"})
+    assert fold.outputs() == [{"output_type": "stream", "name": "stdout", "text": "siblingplain"}]

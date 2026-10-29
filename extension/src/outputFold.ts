@@ -71,12 +71,14 @@ export type OutputItem =
       output_type: "display_data";
       data: Record<string, unknown>;
       metadata?: Record<string, unknown>;
+      widget_kernel_id?: string;
       display_id?: string;
     }
   | {
       output_type: "execute_result";
       data: Record<string, unknown>;
       metadata?: Record<string, unknown>;
+      widget_kernel_id?: string;
       execution_count?: number | null;
     }
   | { output_type: "error"; ename?: string; evalue?: string; traceback?: string[] };
@@ -141,6 +143,8 @@ export class ExecutionFold {
   }
 
   private ownerFor(content: any): string | undefined {
+    if (content && "_tithon_output_owner" in content)
+      return content._tithon_output_owner ?? undefined;
     if (content?.[SCOPE_KEY] === SCOPE_CELL) return undefined;
     return this.claims.length ? this.claims[this.claims.length - 1] : undefined;
   }
@@ -203,6 +207,9 @@ export class ExecutionFold {
         if ((it as any).display_id === did) {
           (it as any).data = content?.data ?? {};
           (it as any).metadata = content?.metadata ?? {};
+          delete (it as any).widget_kernel_id;
+          if (typeof content?._tithon_kernel_id === "string")
+            (it as any).widget_kernel_id = content._tithon_kernel_id;
         }
       }
       return;
@@ -241,6 +248,9 @@ export class ExecutionFold {
         output_type: "display_data",
         data: content?.data ?? {},
         metadata: content?.metadata ?? {},
+        ...(typeof content?._tithon_kernel_id === "string"
+          ? { widget_kernel_id: content._tithon_kernel_id }
+          : {}),
         owner,
       };
       const did = content?.transient?.display_id;
@@ -251,6 +261,9 @@ export class ExecutionFold {
         output_type: "execute_result",
         data: content?.data ?? {},
         metadata: content?.metadata ?? {},
+        ...(typeof content?._tithon_kernel_id === "string"
+          ? { widget_kernel_id: content._tithon_kernel_id }
+          : {}),
         execution_count: content?.execution_count ?? null,
         owner,
       });

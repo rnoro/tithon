@@ -19,9 +19,11 @@
 // `libembed-amd` (a webpack-only AMD/CDN loader using `__webpack_public_path__`
 // and CSS imports) which we don't use — we resolve bundled modules ourselves.
 
+import anywidget from "tithon:anywidget";
 import * as base from "@jupyter-widgets/base";
 import * as controls from "@jupyter-widgets/controls";
 import { HTMLManager } from "@jupyter-widgets/html-manager/lib/htmlmanager";
+import { satisfies } from "semver";
 
 export interface WidgetStateSnapshot {
   version_major: number;
@@ -37,7 +39,24 @@ export interface WidgetStateEntry {
   buffers?: Array<{ encoding: string; path: (string | number)[]; data: string }>;
 }
 
-class TithonWidgetManager extends HTMLManager {
+export class TithonWidgetManager extends HTMLManager {
+  constructor(
+    private readonly commFor?: (id: string) => any,
+    private allowCustom = false,
+    private readonly loadModule?: (name: string, version: string) => Promise<any>,
+  ) {
+    super();
+  }
+
+  setCustomAllowed(allowed: boolean): void {
+    this.allowCustom = allowed;
+  }
+
+  async new_model(options: any, state: any = {}): Promise<any> {
+    const id = options.model_id ?? options.comm?.comm_id;
+    return super.new_model(this.commFor ? { ...options, comm: this.commFor(id) } : options, state);
+  }
+
   protected async loadClass(
     className: string,
     moduleName: string,
@@ -46,16 +65,27 @@ class TithonWidgetManager extends HTMLManager {
     let mod: any = null;
     if (moduleName === "@jupyter-widgets/base") mod = base;
     else if (moduleName === "@jupyter-widgets/controls") mod = controls;
+    else if (moduleName === "anywidget" && this.commFor && this.allowCustom) {
+      if (!satisfies("0.11.0", moduleVersion))
+        throw new Error(`Unsupported widget module ${moduleName}@${moduleVersion}`);
+      mod = anywidget;
+    } else if (this.commFor && this.allowCustom && this.loadModule)
+      mod = await this.loadModule(moduleName, moduleVersion);
     if (mod) {
       if (mod[className]) return mod[className];
       throw new Error(`Class ${className} not found in ${moduleName}@${moduleVersion}`);
     }
+    if (this.commFor) throw new Error(`Unbundled widget module ${moduleName}`);
     return super.loadClass(className, moduleName, moduleVersion);
   }
 }
 
-export function createManager(): HTMLManager {
-  return new TithonWidgetManager();
+export function createManager(
+  commFor?: (id: string) => any,
+  allowCustom = false,
+  loadModule?: (name: string, version: string) => Promise<any>,
+): TithonWidgetManager {
+  return new TithonWidgetManager(commFor, allowCustom, loadModule);
 }
 
 /** Find the first model id in the snapshot whose model_name matches. */

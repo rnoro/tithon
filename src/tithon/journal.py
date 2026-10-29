@@ -18,7 +18,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from .widgets import COMM_TYPES, is_comm  # widgets.py imports nothing local
+from .widgets import COMM_TYPES, LEGACY_SCOPE, is_comm, legacy_widget_content
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS executions(
@@ -99,6 +99,12 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
             "comm_id": content.get("comm_id"),
             "data": content.get("data"),
         }
+        payload["_tithon_kernel_id"] = content.get("_tithon_kernel_id", LEGACY_SCOPE)
+        if "_tithon_legacy_kernel_id" in content:
+            payload["_tithon_legacy_kernel_id"] = content["_tithon_legacy_kernel_id"]
+        for key in ("_tithon_message", "_tithon_request"):
+            if key in content:
+                payload[key] = content[key]
         buffers_b64 = content.get("_buffers_b64")
         if buffers_b64:
             payload["_buffers_b64"] = buffers_b64
@@ -111,7 +117,7 @@ def event_from_message(seq: int, exec_id: str | None, msg_type: str, content: di
         payload = {"msg_type": msg_type, "content": content}
     else:
         kind = "output"
-        payload = {"msg_type": msg_type, "content": content}
+        payload = {"msg_type": msg_type, "content": legacy_widget_content(content)}
     return {"op": "event", "seq": seq, "exec_id": exec_id, "kind": kind, "payload": payload}
 
 

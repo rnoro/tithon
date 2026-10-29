@@ -251,6 +251,22 @@ receive-before-journal crash window cannot be distinguished from a long-running
 stdin-enabled computation without kernel-side identity recovery; it remains a
 documented limitation rather than interrupting every such computation.
 
+Widget callback parents are comm requests, not new cell executions. The daemon
+records each accepted request's current kernel, binding, and output destination
+before sending it. Ordinary callback output belongs to the most recently
+executed cell displaying the sending model (including a container dependency).
+An active Output claim routes matching-parent output to the most recently
+executed cell displaying that Output model, falling back to the emitter when it
+has no displayed destination. Explicit internal area ownership keeps unrelated
+parent claims from capturing those rows. Cross-cell rows retain their resolved
+target for identical live, replay and rebuilt folds; callback output never
+submits a synthetic execute request.
+
+Pending routing context survives daemon reattachment to the same kernel within
+the existing 60-second request window. Actions are never replayed. Output claims
+are reconstructed from scoped comm history; messages emitted while the daemon
+was disconnected remain subject to the kernel transport's loss window.
+
 ### 3.4 Widget mirror (ipywidgets / comm)
 
 Widgets (`tqdm.notebook`, `FloatProgress`, interactive plots) need two-way state
@@ -264,14 +280,45 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
 - On reconnect the daemon sends the _snapshot_, not the message history, so a
   50,000-update `tqdm` bar costs one final-state transfer. Live updates flow as
   deltas so a connected client can animate the bar in real time.
+- Model IDs are scoped to the actual kernel process. `widget_context` carries
+  separate historical state snapshots, the current `kernel_id`, and the IDs of
+  current live models. Folded widget outputs retain `widget_kernel_id`, so a
+  replacement kernel reusing a model ID cannot change an earlier cell's display.
+  The identity survives daemon reattachment and changes on every kernel
+  replacement, including an empty history; it is distinct from the lost-state
+  warning's `kernel_generation`. Imported models remain saved display state.
+  Untagged raw history uses a separate read-only `legacy` scope; a durable marker
+  permits updates only from its surviving migration kernel. New models from that
+  same process remain in the legacy scope so dependency graphs stay complete,
+  and kernel replacement permanently ends that migration binding. Legacy models
+  never enter `active_model_ids`. Renderer updates also carry the notebook
+  session and client binding, invalidated on disconnect or kernel replacement.
+- Saved sidecars, copies, and notebook exports flatten the scoped states into
+  canonical widget metadata using distinct model IDs and rewritten dependencies.
+  Saved output never carries live kernel or connection authority.
+- Widget dependencies include both Jupyter's `IPY_MODEL_` references and
+  anywidget's `anywidget:` references, including nested state; callback ownership
+  and portable saved-model namespacing follow the same references.
 - Binary widget state (`Image`, `ipympl`, `bqplot`) rides the comm frame as
   base64 buffers, live and on replay, so a widget whose state is partly binary
   does not go stale across a reconnect.
-- _Bidirectional_ control (a client dragging a slider → kernel) is specified
-  here but not implemented; see [§9](#9-implementation-status). `tqdm` is
-  display-only and needs no back-channel. Because a rendered-but-dead control
-  would silently swallow every input, the client deliberately routes interactive
-  widgets to a text rendering instead — see [§4.4](#44-widget-rendering).
+- Bidirectional classic comms use the attached socket's `widget_binding` and a
+  `widget_message` operation. Validate session, connection epoch, actual live
+  kernel and known current comm without creating a session or reviving a kernel.
+  Each connection consumes monotonically increasing request sequences, including
+  rejected requests; completed sequences cannot be resent on that connection.
+- Kernel comm headers, parent headers, metadata and binary buffers are retained
+  with the journaled comm event. Interaction busy/idle frames are journaled as
+  `tithon.widget_status`. The requesting client maps kernel parent IDs back to
+  its renderer request IDs; peers consume state without completing another
+  connection's callbacks. The existing shell reader remains the only consumer.
+- A `widget_ack` means sent to the kernel transport, not callback completion.
+  Input is never automatically replayed after failure. JSON data is limited to
+  256KiB, binary data to 4MiB/64 buffers, with 64 pending requests per session
+  and renderer and a 60s response window. A renderer buffers at most256 incoming
+  frames or8MiB of queued JSON before disabling its controls and requesting a fresh connection.
+  Expired or disconnected sent actions may still execute; exactly-once side
+  effects across failures are not promised.
 
 ### 3.5 Sessions, execution queue & sync protocol
 
@@ -315,6 +362,12 @@ for an already-running file wait out an unrelated file's startup. Looking a
 session up creates nothing — a session that does not exist has no cell to stop.
 `get_artifact` echoes `req_id` so a client multiplexes many image fetches over
 one long-lived connection instead of a socket per image.
+
+`widget_message` requires an already attached connection and never performs the
+lazy bind above. It carries `session`, `kernel_id`, renderer `binding`,
+`request_id`, increasing `request_seq`, `comm_id`, `data`, and optional base64
+`buffers`; it returns `widget_ack` with the same request ID and `ok`/error.
+`attach` optionally fixes a `widget_binding` for that socket's lifetime.
 
 `attach` semantics by `last_seen_seq`:
 
@@ -446,20 +499,78 @@ instantiates the model immediately from that payload. The renderer is an esbuild
 bundle (html-manager + ipywidgets controls + CSS inlined). It renders:
 
 - **statically** and **on reconnect** (the widget mirror snapshot), and
-- **live** — the bar animates as the cell runs (comm deltas coalesced and pushed
-  to the renderer, applied with `model.set_state`).
+- **live** — raw correlated comm messages update active stock models; saved and
+  legacy display-only views retain the state-delta rendering path.
 
-Only **display-only** widgets take the html-manager path, decided by an
-allow-list that fails closed on anything it does not recognize and recurses
-through container `children`. Everything else — sliders, buttons, text boxes —
-renders as text on purpose: without the client → kernel back-channel of
-[§3.4](#34-widget-mirror-ipywidgets--comm) a live-looking control would accept a
-drag and drop it silently, which is worse than an honest static value.
+Active controls provided by the bundled `@jupyter-widgets/controls` module and
+standard containers use a shared live model registry per notebook/kernel/connection,
+with independent view lifetimes. Stock models receive classic comms during
+construction, including ordered echo/correction and IOPub status callbacks.
+Binary buffers and custom messages use the same path. Live modules are bundled
+base/controls and the upstream anywidget 0.11 frontend. Button, IntSlider,
+FloatSlider, Text, Dropdown and Checkbox input have real VSCode coverage; other
+bundled controls use the same rendering path but are not individually verified.
+Anywidget 0.11.x models require an active current-kernel graph and a trusted
+VSCode workspace; saved and untrusted custom widget models remain text. The
+renderer supports anywidget's ESM and composition through its upstream frontend.
+For other live modules it can load an installed classic AMD `index.js` with
+dependencies on the bundled base/controls modules and on files named by a
+literal requirejs map in that module's own `extension.js`. This is static
+syntax discovery; it does not establish that the configuration executes or
+that a locally shadowed `requirejs` refers to the global loader. Mapped files
+must stay under the same extension directory and belong to the same distribution;
+at most eight dependencies and 4 MiB of combined source are accepted. The
+renderer executes classic AMD definitions without forcing ESM strict mode,
+supports `exports` and `module`, and rejects cyclic or asynchronous factories.
+The loader does not support dynamic assets addressed through `module.uri`.
+The kernel's interpreter
+path and startup environment determine the prefix even after a daemon reattaches
+under another Python. Later changes to the kernel's `sys.path` are not reflected;
+replacing or retargeting the interpreter path can change the probed environment.
+The classic bundle and Lab package metadata must both match SHA-256 entries in
+the same installed Python distribution's RECORD; the bundle must also export a
+matching package version, and that version must satisfy the requested range.
+These checks establish consistency with that
+installation, not independent publisher authenticity. File reads are bounded
+and confined beneath the environment without following symlinks. Module requests
+require an attached current kernel and a module/version declared by a live model.
+CDN loading, arbitrary AMD mappings and aliases, cross-distribution dependencies,
+and Lab-only bundles are not implemented. A model whose comm callback
+fails is isolated from unrelated views, while transport-wide errors invalidate
+the shared connection. Disposing the last view closes the manager's models and
+invokes their widget lifecycle cleanup.
+
+Interactive graphs require current active models and complete dependencies.
+Saved, legacy and unavailable controls remain static text. Disconnect, kernel
+replacement, rejection or response timeout disables a mounted live view and
+revokes queued work; sent actions are never retried. In a trusted live container,
+an unavailable module or a failing model/view renders an error widget while
+supported siblings remain active. Error views retain the original failure.
+When a mixed saved, untrusted or incomplete graph cannot be rendered live,
+supported protocol-2.0.0 Box/HBox/VBox/GridBox, Label and progress children
+can instead be shown as a simplified, explicitly non-live read-only snapshot.
+Only validated built-in layout/style references are accepted; all other visual
+children receive fixed omission labels, and no widget manager, custom code,
+binary buffers or scoped delta updates are used by this projection. HTML,
+math and image widgets are omitted, and unrecognized internal dependencies
+still cause whole-output text fallback.
+Widget graph discovery is limited to 16,384 models, one million inspected
+values/properties and 64 nested trait levels; oversized graphs fall back to text.
+Partial snapshots have tighter limits of 128 visual nodes, 16 container levels,
+4,096 values per trait scan and 16,384 inspected entries overall; exceeding
+these limits also falls back to text.
+When VSCode recreates a view from an older output payload while its notebook
+remains open, the host refreshes its live models from the current scoped mirror.
+Each view stays inert until its own refresh completes; an obsolete view's reply
+cannot activate its replacement, and a missing model remains unavailable.
+Restoration covers synchronized model traits and Tithon's recorded output;
+JavaScript-only local state and transient custom-message responses are not
+generally recoverable. Sent actions are never replayed to recover that state.
 
 If html rendering fails, the widget's final state is shown as text
 (e.g. `100% |████| 5/5`), so information is never lost. An
 `ipywidgets.Output`'s own view is not rendered at all: what it holds is already
-folded into the same cell by [§3.3](#33-folding-materialized-view), so its view
+folded into the owning cell by [§3.3](#33-folding-materialized-view), so its view
 would be a duplicate placeholder.
 
 ### 4.5 Lifecycle & UX
@@ -790,11 +901,12 @@ does not have.
 
 **Partial / not yet implemented**
 
-- Bidirectional widgets (client → kernel control, e.g. slider drag). Interactive
-  widgets therefore render as text on purpose ([§4.4](#44-widget-rendering)).
-  The remaining blocker is not only the comm back-channel: the widget mirror is
-  not scoped to a kernel generation, so any model-identity scheme layered on top
-  would be unsafe across a restart until that is fixed first.
+- Callback `print`/display/error/clear and context-managed Output capture use
+  explicit interaction ownership/routing. The captured contents render as
+  notebook outputs in the owning cell; dedicated Output views/layout and
+  `Output.outputs` trait operations such as `append_stdout` remain pending (#23).
+  Broader third-party module formats and dependency discovery, live controls in
+  restricted mixed graphs, and richer partial historical views remain pending (#30).
 - `update_display_data` emitted after its cell's completion barrier released (a
   background thread or timer, so the parent `msg_id` no longer maps to an
   execution) is dropped before display resolution — not journaled, not
@@ -842,7 +954,7 @@ make all         # fast + vscode
 make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts / daemon-crash survival
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
-make widgets     # v5 v29 v30             ipywidget mirror + render + live animation
+make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 v79 widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
@@ -865,6 +977,8 @@ Capability → what it guarantees → how it is verified:
 | Reconnect sync           | Snapshot + monotonic-seq delta                      | `v1`, `v2` (client stream == journal)              |
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
+| Widget identity          | Historical/copy state cannot rebind to a replacement kernel | `v71` (real daemon SIGKILL, same-ID models, retention, saved projection and scoped renderer) |
+| Widget comm transport | Real callback values, raw correlation and shared model lifecycle | `v72` (actual socket/kernel, binary, replay, scoped rejection), `v73` (real VSCode DOM input and stale-view revocation) |
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
@@ -875,6 +989,9 @@ Capability → what it guarantees → how it is verified:
 | Bounded render cost      | Coalescing caps UI updates                          | `liveSync.test.ts` (50k events → 1 sink call)      |
 | Host protection          | Slow client can't grow memory or block others       | `test_backpressure.py`, `v9`                       |
 | Widget rendering         | Widgets render in VSCode, restore, and animate live | `v29` (static + restore), `v30` (live)             |
+| Widget callback outputs | Cross-cell stdout/HTML/PNG/errors, scoped clear, same-kernel crash recovery | `v74` (actual processes and client folds), `v75` (real VSCode DOM callbacks) |
+| Custom widget runtime | Trusted anywidget composition, communication, reconnect and isolated failure; restricted workspace executes no custom widget code | `v76`, `v77` (real VSCode) |
+| Installed classic widgets | Scoped local AMD modules, bqplot brush, model/view failure isolation, mapped pythreejs dependency and reconnect | `v72` (module checks), `v78`, `v79` (real VSCode) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
 | Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |

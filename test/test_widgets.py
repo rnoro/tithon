@@ -19,6 +19,27 @@ def _open(comm_id, state, target="jupyter.widget", buffer_paths=None, buffers=No
     return ("comm_open", content, buffers or [])
 
 
+def test_module_requests_require_matching_live_model_or_view_version():
+    mirror = WidgetMirror()
+    mirror.apply(
+        *_open(
+            "one",
+            {
+                "_model_module": "bqscales",
+                "_model_module_version": "^0.3",
+                "_view_module": "bqplot",
+                "_view_module_version": "^0.6",
+            },
+        )
+    )
+    assert mirror.declares_module("bqscales", "^0.3")
+    assert mirror.declares_module("bqplot", "^0.6")
+    assert not mirror.declares_module("bqplot", "^0.7")
+    assert not mirror.declares_module("other", "^0.3")
+    mirror.apply("comm_close", {"comm_id": "one"})
+    assert not mirror.declares_module("bqplot", "^0.6")
+
+
 def test_comm_open_creates_model_and_snapshot_shape():
     m = WidgetMirror()
     ok = m.apply(

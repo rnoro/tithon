@@ -206,6 +206,7 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
     if not isinstance(widgets, dict):
         raise ValueError("Notebook widgets metadata must be an object")
     shared_doc["widgets"] = widgets.get(WIDGET_STATE)
+    shared_doc = sidecar.saved_snapshot(shared_doc)
     WidgetMirror().hydrate(shared_doc["widgets"] or {})
     notebook_metadata = _externalize(dict(doc.metadata), root, pending)
     pending[metadata_path] = (
@@ -257,6 +258,7 @@ def export_notebook(
         shared = sidecar.sidecar_path(root, source)
         found = sidecar.read(shared) if shared else None
         snapshot = found[0] if found else {}
+    snapshot = sidecar.saved_snapshot(snapshot)
     executions = snapshot.get("executions", [])
     nb_cells = []
     used_ids = set()
@@ -360,6 +362,7 @@ def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | N
         if source_shared.exists() and found is None:
             raise ValueError("Source output sidecar is invalid")
         snapshot = found[0] if found else {}
+    snapshot = sidecar.saved_snapshot(snapshot)
     if any(e.get("status") in ("queued", "running") for e in snapshot.get("executions", [])):
         raise ValueError("Wait for running and queued cells before copying")
     # Match the current attachment rule: exact index/hash, moved content, then stale index.
