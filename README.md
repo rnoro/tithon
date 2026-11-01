@@ -74,8 +74,9 @@ or search for "tithon" in the Extensions view. ([Marketplace page][marketplace])
 
 ## Quickstart (CLI)
 
-State — socket, log, journal, artifacts — lives under `TITHON_HOME`
-(default `~/.tithon`).
+Daemon state — socket, log, kernel connection files, and per-session journals —
+lives under `TITHON_HOME` (default `~/.tithon`); rich-output artifacts and
+shared cell snapshots live under `<workdir>/.tithon/`.
 
 Start the daemon. It runs in the foreground, so background it:
 
@@ -136,51 +137,6 @@ the kernel — it is restored and resumes streaming with no command. Over a VSCo
 remote, so it talks to the daemon's host-local socket directly, with no port
 forwarding. Nothing special for the remote case.
 
-Outputs are matched to cells by content hash, so they survive edits and reopens.
-An output whose cell was edited after it ran is flagged stale. The source file itself
-stays pure source — outputs never touch the file, so diffs stay clean.
-
-The widget renderer supports standard bundled ipywidgets, anywidget 0.11.x, and
-some installed classic AMD widgets with matching frontend metadata and version
-exports, including certain locally mapped dependencies. That path is verified
-with bqplot 0.13.1 and pythreejs 2.4.2. Custom widget JavaScript runs only
-for a live kernel in a trusted VS Code workspace; saved or untrusted custom
-widgets fall back to text. Reconnection restores synchronized model traits and
-does not replay clicks. A widget's browser-only state and transient custom
-messages are not generally recoverable. CDN loading, broader AMD dependency
-discovery, Lab-only bundles and dedicated `Output` layout support remain in progress.
-For some mixed saved or untrusted containers, supported labels and progress bars
-remain visible in a clearly marked read-only snapshot with omissions indicated.
-
-In a local VS Code check with PyGWalker 0.5.0.1, the default `pyg.walk` Data
-view with kernel computation displayed its data again after reconnecting. An
-unsaved chart created in the browser did not survive reopening the view;
-PyGWalker's saved-spec options and alternate anywidget frontend were not tested.
-
-Workspace settings can isolate storage and bound automatic reconnects:
-
-```json
-{
-  "tithon.homePath": "/tmp/tithon-clone-demo",
-  "tithon.reconnectMaxAttempts": 5
-}
-```
-
-`homePath` is an absolute directory on the extension host (`~/` is supported).
-Empty uses `TITHON_HOME`, then `~/.tithon`. **Reload Window** applies a changed
-home; it keeps journals and running kernels in the previous home. All socket
-connections, startup and daemon management use the selected home. **Tithon:
-Show Session Storage** displays its active path. A separately launched CLI must
-use the same `TITHON_HOME` to reach that daemon. For a clone demo, select an empty
-home and open the cloned project to restore its shared outputs.
-
-`reconnectMaxAttempts` defaults to `0` (unlimited). The initial connection does
-not count; the first automatic retry is attempt 1. Reaching a positive limit
-ends the progress notification and offers **Retry**. Successful connection or
-manual Retry resets the count. You can also cancel the reconnect notification
-at any time; Retry remains available in the connection status bar. Stopping
-retries leaves the daemon and kernel running.
-
 > [!NOTE]
 > The daemon and the extension must run on the **same host** (they share
 > `TITHON_HOME`, default `~/.tithon`). A Tunnel/Remote-SSH satisfies this for
@@ -196,9 +152,9 @@ A long-lived **daemon** on the host owns the kernel and serves clients:
 - The kernel runs **detached** (`setsid`), so it is not a child of the daemon.
   The daemon can crash, restart, or be upgraded; the kernel keeps running and
   re-attaches through a persisted connection file.
-- Every iopub/shell message is journaled **verbatim** to append-only SQLite
-  (WAL), alongside a per-execution _folded_ snapshot — the current display
-  state — so reconnects are fast.
+- Every execution iopub message (plus daemon lifecycle and widget comm events) is
+  journaled to append-only SQLite (WAL) by default, alongside a per-execution
+  _folded_ snapshot — the current display state — so reconnects are fast.
 - Clients attach with the last sequence number they saw and get a snapshot plus
   an ordered, gapless delta stream; reconnecting is just resuming the stream.
 - Rich outputs (images) are stored as files and referenced by hash, never
@@ -215,16 +171,20 @@ for the full design.
 
 ## CLI reference
 
-| Command              | Description                                                                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tithon daemon`      | Run the daemon (foreground). Owns the kernel and serves clients.                                                                                   |
-| `tithon run -c CODE` | Submit code and stream its output. `--no-wait` prints the exec id and exits; `--timeout N` bounds the wait.                                        |
-| `tithon attach`      | Stream events as NDJSON. `--since N` sets the resume point; `--once` exits after the backlog sync; `--until-done` exits after the next completion. |
-| `tithon status`      | Print session, queue, kernel, and widget-model status.                                                                                             |
-
-`tithon copy SOURCE DESTINATION --workdir PROJECT` copies percent source and current
-outputs within one project, without transferring kernel variables. `tithon import`
-and `tithon export` convert to and from Jupyter `.ipynb`.
+| Command                     | Description                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tithon daemon`             | Run the daemon (foreground). Supports `--log-level`, `--idle-timeout`, `--history-retention-days`, and `--history-target-mib`.                      |
+| `tithon run -c CODE`        | Submit code and stream its output (`--session <uri>`, `--no-wait` to print the exec id and exit, `--timeout N` to bound the wait).                  |
+| `tithon import SRC DEST`    | Import a Python nbformat 4 `.ipynb` as percent source (`.pynb` or `.py`) plus saved outputs and metadata (`--workdir PROJECT`).                     |
+| `tithon copy SRC DEST`      | Copy percent source, current outputs, and metadata into an independent file session within one project (`--workdir PROJECT`).                       |
+| `tithon export SRC DEST`    | Export saved source plus current/saved outputs as a Python nbformat 4 `.ipynb` without executing code (`--workdir PROJECT`).                        |
+| `tithon attach`             | Stream events as NDJSON (`--session <uri>`, `--since N` resume point, `--once` exit after backlog sync, `--until-done` exit after next completion). |
+| `tithon status`             | Print daemon, session, queue, kernel, widget-model, and storage status (all sessions, or one with `--session <uri>`).                               |
+| `tithon restart`            | Restart a session's kernel with a fresh namespace (`--session <uri>`, default `default`).                                                           |
+| `tithon interrupt`          | Send SIGINT to the running cell of a session (`--session <uri>`, default `default`).                                                                |
+| `tithon kill`               | Terminate one session's kernel (`--session <uri>`) or all running kernels (`--all`); journals are kept.                                             |
+| `tithon shutdown`           | Stop the daemon; kernels stay detached unless `--kill-kernels` is passed.                                                                           |
+| `tithon version`            | Print the installed `tithon` package version.                                                                                                       |
 
 `attach --since` is the reconnect knob:
 
@@ -236,14 +196,22 @@ and `tithon export` convert to and from Jupyter `.ipynb`.
 
 Environment variables read by the daemon and CLI:
 
-| Variable                   | Default     | Purpose                                                            |
-| -------------------------- | ----------- | ------------------------------------------------------------------ |
-| `TITHON_HOME`              | `~/.tithon` | Root for the socket, log, journal, and artifacts.                  |
-| `TITHON_SUB_QUEUE_MAX`     | `10000`     | Max queued events per client before it is dropped (backpressure).  |
-| `TITHON_SEND_TIMEOUT`      | `10.0`      | Seconds a client may stall a send before being dropped.            |
-| `TITHON_WRITE_BUFFER_HIGH` | `1048576`   | Per-connection send-buffer high-water mark (bounds daemon memory). |
-| `TITHON_SOCK_SNDBUF`       | `1048576`   | Per-connection kernel socket send buffer.                          |
-| `TITHON_SUB_POLL`          | `0.5`       | Interval at which a blocked sender re-checks for drop.             |
+| Variable                        | Default     | Purpose                                                                                 |
+| ------------------------------- | ----------- | --------------------------------------------------------------------------------------- |
+| `TITHON_HOME`                   | `~/.tithon` | Root for the socket, daemon log, kernel connection files, and per-session journals.     |
+| `TITHON_KERNEL_IDLE_TIMEOUT`    | `0`         | Seconds of inactivity before an unattached idle kernel is reaped (`0` = disabled).      |
+| `TITHON_HISTORY_RETENTION_DAYS` | `0`         | Opt-in age limit (days) for raw output-message compaction (`0` = disabled).             |
+| `TITHON_HISTORY_TARGET_MIB`     | `0`         | Opt-in soft size target (MiB) per session for raw output-message compaction (`0` = off).|
+| `TITHON_SUB_QUEUE_MAX`          | `10000`     | Max queued events per client before it is dropped (backpressure).                       |
+| `TITHON_SEND_TIMEOUT`           | `10.0`      | Seconds a client may stall a send before being dropped.                                 |
+| `TITHON_WRITE_BUFFER_HIGH`      | `1048576`   | Per-connection send-buffer high-water mark (bounds daemon memory).                      |
+| `TITHON_SOCK_SNDBUF`            | `1048576`   | Per-connection kernel socket send buffer.                                               |
+| `TITHON_SUB_POLL`               | `0.5`       | Interval (seconds) at which a blocked sender re-checks for drop.                        |
+| `TITHON_KERNEL_WATCHDOG_POLL`   | `5`         | Interval (seconds) at which the daemon checks loaded kernels for out-of-band death.     |
+| `TITHON_GC_POLL`                | `60`        | Interval (seconds) between idle-kernel GC and output-history retention sweeps.          |
+| `TITHON_STDIN_SETTLE`           | `0.3`       | Seconds to wait after a cell starts for a fast `input()` prompt before `--no-wait` exits.|
+| `TITHON_KERNEL_REPLY_POLL`      | `1.0`       | Poll interval (seconds) while waiting for a kernel shell reply vs. unexpected exit.     |
+| `TITHON_IDLE_BARRIER_TIMEOUT`   | `10`        | Max seconds after `execute_reply` to wait for the matching iopub `status: idle`.        |
 
 Outputs live in `$TITHON_HOME/sessions/<session>/journal.db` (raw messages plus
 folded snapshots), with rich outputs written as files under
@@ -251,14 +219,15 @@ folded snapshots), with rich outputs written as files under
 
 ### Sharing a notebook's outputs
 
-A percent-format `.py` holds only code, and the journal above is machine-local
-(binary, unbounded, unmergeable). So alongside it the daemon keeps the _folded_
-output state as text in your project:
+A percent-format `.pynb` or `.py` holds only code, and the journal above is
+machine-local (binary, unbounded, unmergeable). So alongside it the daemon keeps
+the _folded_ output state as text in your project:
 
 ```
 <project>/.tithon/
-  cells/<relpath>.json   # what each cell currently shows
-  outputs/               # its images, sha256-deduplicated
+  cells/<relpath>.json       # what each cell currently shows (e.g. train.pynb.json)
+  notebooks/<relpath>.json   # imported notebook metadata/attachments, when applicable
+  outputs/                   # its images, sha256-deduplicated
 ```
 
 Commit that directory and whoever clones the repository opens the file with your

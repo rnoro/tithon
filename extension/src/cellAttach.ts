@@ -1,13 +1,13 @@
 /**
  * Output -> cell attachment (SPEC.md).
  *
- * The journal owns outputs, not the `.py` file. Each execution recorded a
- * `cell_hash` (hash of the submitted cell code) and the line range it came
- * from. When opening the Cell View we attach journal outputs to the cells now
- * present in the document by:
- *   1. `cell_hash` exact match (authoritative — same code => same output), else
- *   2. range proximity (the cell was edited; show the old output as "stale"
- *      until re-run).
+ * The journal owns outputs, not the `.pynb` / `.py` file. Each execution
+ * recorded its cell `index`, `cell_hash` (hash of the submitted cell code), and
+ * the line `range` it came from. When opening the notebook we attach journal
+ * outputs to the cells now present in the document in three tiers:
+ *   1. `index` + `cell_hash` exact match (authoritative; disambiguates duplicate cells), else
+ *   2. `cell_hash` match across the document, tie-broken by `range` proximity (cell moved), else
+ *   3. recorded `index` fallback (cell was edited in place; marked `stale` until re-run).
  */
 
 import { createHash } from "node:crypto";

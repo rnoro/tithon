@@ -139,18 +139,21 @@ all raw messages by default; opt-in output-history retention below is the except
 Schema outline:
 
 ```sql
-executions(exec_id, session_id, seq, code, cell_origin_uri, cell_range,
-           submitted_by, status, execution_count, kernel_msg_id, allow_stdin,
-           started_at, finished_at)
-messages(msg_seq, session_id, exec_id, msg_type, content_json, artifact_ref, ts)
+executions(exec_id, session_id, seq, code, cell_hash, cell_origin_uri, cell_range,
+           cell_index, submitted_by, status, execution_count, kernel_msg_id,
+           allow_stdin, folded_json, imported, started_at, finished_at)
+messages(msg_seq, session_id, exec_id, msg_type, content_json, artifact_ref,
+         target_exec, ts)
 artifacts(artifact_id, sha256, mime, rel_path, bytes_len)
+meta(key, value)
 ```
 
 - **Original execution iopub messages are preserved verbatim** (`stream`,
   `display_data`, `update_display_data`, `clear_output`, `execute_result`,
   `error`, `status`). Internal control-request shell replies are consumed by the
-  daemon and are not part of an execution's replay stream. Replay semantics are
-  the server's responsibility, not the client's.
+  daemon and are not part of an execution's replay stream (except `execute_reply`
+  `text/plain` pager payloads, which are synthesized as stdout `stream` messages).
+  Replay semantics are the server's responsibility, not the client's.
 - The daemon journals its own **lifecycle events** into the same stream: a
   `tithon.kernel` row carrying a status (`restarting`, `restarted`, `killed`,
   `shutdown`, `gc`, `replaced`, `dead`, `interrupted`) and whether the
@@ -160,12 +163,16 @@ artifacts(artifact_id, sha256, mime, rel_path, bytes_len)
   when they happened, and the lost-state classification in
   [§7](#7-tricky-points--how-they-are-handled) reads intent from the journal
   rather than from daemon memory.
-- **Rich outputs are files, not base64.** On receipt, `image/png`, `image/jpeg`,
-  `image/svg+xml`, etc. are decoded and written to
-  `<workdir>/.tithon/outputs/e{N}_{idx}_{sha8}.{ext}`; the journal stores only
-  a reference. Files are **deduplicated by sha256**. Benefits: the journal DB
-  stays small, output images are real files you can open and reuse, and `.py`
-  files stay free of the base64-diff bloat that plagues `.ipynb`.
+- **Rich outputs are files, not base64.** On receipt during live execution,
+  `image/png` and `image/jpeg` payloads are decoded and written to
+  `<workdir>/.tithon/outputs/e{N}_{counter}_{sha8}.{ext}` (`{counter}` is a
+  per-session monotonic counter; `.ipynb` import also externalizes
+  `image/svg+xml`, `image/gif`, and `image/webp` under
+  `notebook_<sha256>.<ext>` / `notebook_asset_<sha256>.<ext>`), while the
+  journal stores only a `$tithon_artifact` reference. Files are **deduplicated
+  by sha256**. Benefits: the journal DB stays small, output images are real
+  files you can open and reuse, and `.pynb` / `.py` files stay free of the
+  base64-diff bloat that plagues `.ipynb`.
 
 #### Optional output-history retention and storage reporting
 
@@ -315,8 +322,8 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
 - A `widget_ack` means sent to the kernel transport, not callback completion.
   Input is never automatically replayed after failure. JSON data is limited to
   256KiB, binary data to 4MiB/64 buffers, with 64 pending requests per session
-  and renderer and a 60s response window. A renderer buffers at most256 incoming
-  frames or8MiB of queued JSON before disabling its controls and requesting a fresh connection.
+  and renderer and a 60s response window. A renderer buffers at most 256 incoming
+  frames or 8 MiB of queued JSON before disabling its controls and requesting a fresh connection.
   Expired or disconnected sent actions may still execute; exactly-once side
   effects across failures are not promised.
 
@@ -329,7 +336,7 @@ case.
 
 The daemon binds to a **unix domain socket only** and speaks JSON over
 WebSocket frames (`websockets.asyncio.server.unix_serve`). A connection is bound
-to one session, fixed on its first op. Six ops take no bind at all:
+to one session, fixed on its first op. Seven ops take no bind at all:
 
 | Op                        | Payload             | Reply / effect                                                            |
 | ------------------------- | ------------------- | ------------------------------------------------------------------------- |
@@ -340,20 +347,21 @@ to one session, fixed on its first op. Six ops take no bind at all:
 
 The rest bind the connection to a session:
 
-| Op                        | Payload                                              | Reply / effect                                                            |
-| ------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
-| `attach`                  | `{ session, last_seen_seq, workdir? }`               | Backlog (see below) then `{op:"sync", seq}`, then a live event stream     |
-| `execute`                 | `{ session, code, submitted_by, origin, allow_stdin? }` | `{op:"execute_ack", exec_id}`; enqueues the cell                       |
-| `execute_batch`           | `{ session, cells, stop_on_error? }`                 | `{op:"execute_ack", exec_ids}`; enqueues a Run-All as one unit           |
-| `input_reply`             | `{ session, value }`                                 | Answers a pending `input()` / `getpass()` prompt                          |
-| `clear_output`            | `{ session, all? \| exec_ids }`                      | Persists a user clear so a later resync does not restore it               |
-| `restart_kernel`          | `{ session }`                                        | Fresh kernel namespace; journal/history retained                          |
-| `get_artifact`            | `{ session, artifact_id, req_id? }`                  | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
-| `status`                  | `{ session }`                                        | One session's status                                                      |
+| Op                        | Payload                                                   | Reply / effect                                                            |
+| ------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `attach`                  | `{ session, last_seen_seq, workdir?, widget_binding? }`   | Backlog (see below) then `{op:"sync", seq}`, then a live event stream     |
+| `execute`                 | `{ session, code, submitted_by, origin, allow_stdin? }`   | `{op:"execute_ack", exec_id}`; enqueues the cell                          |
+| `execute_batch`           | `{ session, cells, stop_on_error?, allow_stdin? }`        | `{op:"execute_ack", exec_ids}`; enqueues a Run-All as one unit            |
+| `input_reply`             | `{ session, value }`                                      | Answers a pending `input()` / `getpass()` prompt                          |
+| `clear_output`            | `{ session, all? \| exec_ids }`                           | Persists a user clear so a later resync does not restore it               |
+| `restart_kernel`          | `{ session }`                                             | Fresh kernel namespace; journal/history retained                          |
+| `get_artifact`            | `{ session, artifact_id, req_id? }`                       | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
+| `status`                  | `{ session }`                                             | One session's status                                                      |
 
-`import_notebook` and `export_notebook` also bypass session binding. Both take
-`source`, `destination`, and `workdir` paths and return `notebook_converted`
-with cell count/destination, or `error`; neither creates a session/kernel.
+`import_notebook`, `export_notebook`, and `copy_notebook` also bypass session
+binding. Each takes `source`, `destination`, and `workdir` paths and returns
+`notebook_converted` with cell count/destination, or `error`; none creates a
+session or kernel.
 
 The bind-free group is not an optimization but a correctness rule: the
 **stop button** must outrank everything. Binding a session takes a lock held
@@ -363,11 +371,15 @@ session up creates nothing — a session that does not exist has no cell to stop
 `get_artifact` echoes `req_id` so a client multiplexes many image fetches over
 one long-lived connection instead of a socket per image.
 
-`widget_message` requires an already attached connection and never performs the
-lazy bind above. It carries `session`, `kernel_id`, renderer `binding`,
-`request_id`, increasing `request_seq`, `comm_id`, `data`, and optional base64
-`buffers`; it returns `widget_ack` with the same request ID and `ok`/error.
-`attach` optionally fixes a `widget_binding` for that socket's lifetime.
+`widget_message` and `widget_module` require an already attached connection and
+never perform the lazy bind above. `widget_message` carries `session`,
+`kernel_id`, renderer `binding`, `request_id`, increasing `request_seq`,
+`comm_id`, `data`, and optional base64 `buffers`; it returns `widget_ack` with
+the same request ID and `ok`/error. `widget_module` carries `session`,
+`binding`, `kernel_id`, `request_id`, `module`, and `version`; it returns
+`widget_module_result` with the verified installed classic AMD bundle source and
+any mapped same-distribution dependencies. `attach` optionally fixes a
+`widget_binding` for that socket's lifetime.
 
 `attach` semantics by `last_seen_seq`:
 
@@ -475,13 +487,16 @@ remain compatible ([`sessionController.ts`](../extension/src/sessionController.t
 Every execution records `origin: {uri, range, index}` plus a `cell_hash` (the
 hash of the submitted code), so each output knows which file and which cell
 produced it. Attachment rule
-([`cellAttach.ts`](../extension/src/cellAttach.ts)): **(1)** match by
-`cell_hash`, which is authoritative — the same code means the same output —
-tie-breaking duplicate hashes by range proximity, so an output follows its cell
-when cells are inserted or moved rather than sticking to a stale index;
-**(2)** failing that, fall back to the recorded index and mark the result
-**stale**, i.e. the cell was edited after it ran. A stale output stays visible
-(it is usually still what you want to read) and is replaced on re-execution.
+([`cellAttach.ts`](../extension/src/cellAttach.ts),
+[`liveSync.ts`](../extension/src/liveSync.ts)): **(1) strong** — if the cell at
+the recorded `index` still has the matching `cell_hash`, attach there (this
+disambiguates duplicate cells with identical code); **(2) moved** — otherwise
+match by `cell_hash` across the document, tie-breaking duplicate hashes by
+`range` proximity, so an output follows its cell when cells are inserted or
+moved rather than sticking to a stale index; **(3) stale** — failing that, fall
+back to the recorded `index` and mark the result **stale**, i.e. the cell was
+edited in place after it ran. A stale output stays visible (it is usually still
+what you want to read) and is replaced on re-execution.
 
 The plain-text view of the same `.py` gets a **Run Cell** CodeLens per `# %%`
 cell, so a cell can be submitted without leaving the text editor; it shares the
@@ -646,10 +661,10 @@ failed `.py` controls and remain unverified.
 The `tithon` CLI ([`src/tithon/cli.py`](../src/tithon/cli.py))
 drives the same daemon over the socket:
 
-| Command            | Purpose                                                                         |
-| ------------------ | ------------------------------------------------------------------------------- |
-| `tithon daemon`    | Run the daemon (foreground); `--log-level`, `--idle-timeout`                    |
-| `tithon run`       | Execute code in a session; `-c`, `--no-wait`, `--timeout`                       |
+| Command            | Purpose                                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `tithon daemon`    | Run the daemon (foreground); `--log-level`, `--idle-timeout`, `--history-retention-days`, `--history-target-mib` |
+| `tithon run`       | Execute code in a session; `-c`, `--no-wait`, `--timeout`                                                  |
 | `tithon import`    | Import a Python nbformat 4 notebook as percent source and saved outputs         |
 | `tithon copy`      | Copy percent source, current outputs and metadata into an independent file session |
 | `tithon export`    | Export saved source plus current/saved outputs as nbformat 4 without execution  |
@@ -743,15 +758,17 @@ $TITHON_HOME (default ~/.tithon)/          # machine-local; never in a repo
     kernel.json                # connection file; carries an hmac-sha256 key
     kernel.pid
     kernel.log
-    journal.db                 # SQLite (WAL): executions, messages, artifacts
+    journal.db                 # SQLite (WAL): executions, messages, artifacts, meta
 
 <workdir>/.tithon/             # the document's output state; shareable
   outputs/                     # rich-output files, sha256-deduplicated
-    e{N}_{idx}_{sha8}.png
-    notebook_<sha256>.png       # imported output cache
+    e{N}_{counter}_{sha8}.png  # live execution image (png / jpg)
+    notebook_<sha256>.png      # imported output image (png / jpg / svg / gif / webp)
     notebook_asset_<sha256>.png # persistent attachment/metadata image
-  cells/<relpath>.json         # folded snapshot per source file
-  notebooks/<relpath>.json     # imported notebook source/metadata/attachments
+    copy_<owner20>_output_<sha256>.png # copied notebook/script output image
+    copy_<owner20>_asset_<sha256>.png  # copied notebook/script attachment/metadata image
+  cells/<relpath>.json         # folded snapshot per source file (e.g. train.pynb.json)
+  notebooks/<relpath>.json     # imported notebook source/metadata/attachments (e.g. train.pynb.json)
 ```
 
 The session directory is named rather than hashed so a human debugging finds a
@@ -890,9 +907,11 @@ does not have.
   kernel picker.
 - Extension: Notebook (byte-exact round-trip) with a durable per-file editor
   association, output restore, live streaming, matplotlib inline images, `tqdm`
-  (terminal + `tqdm.notebook`), display-only widget rendering (static,
-  on-reconnect, **and live**), the `input()` bridge, Stop / Restart Kernel /
-  Terminate Kernel, destructive-action confirmation, reconnect progress.
+  (terminal + `tqdm.notebook`), widget rendering (static, on-reconnect, **and
+  live**, including interactive bundled controls, `anywidget` 0.11.x, and
+  verified installed classic AMD widgets), the `input()` bridge, Stop / Restart
+  Kernel / Terminate Kernel, destructive-action confirmation, reconnect
+  progress.
 - Shared outputs: the fold is projected onto a git-tracked
   `<project>/.tithon/cells/<relpath>.json`, so a cloned repository opens with
   its results in place.
@@ -956,10 +975,10 @@ make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
 make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 v79 widget mirror + render + kernel-scoped history
 make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
-make livesync    # v10–v14 v33 v37 v51 v53 v56 v59  live streaming, edits, cross-cell display, training loop
+make livesync    # v10–v14 v33 v37 v51 v53 v56 v59 v63  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
 make richoutputs # v27 v28 v31 v34 v35 v54 v55  matplotlib/tqdm images, live-plot GC, clear, storage, display_id
-make notebook    # v32 v39 v41–v44 v64 v67    text <-> Notebook, durable association, ruff/ty/Pylance LSP
+make notebook    # v32 v39 v41–v44 v64 v67 v70    text <-> Notebook, durable association, ruff/ty/Pylance LSP
 make test        # daemon unit tests (pytest)
 
 # advisory, not a gate: the notebook/LSP suites re-run on VSCode Insiders,
@@ -1053,6 +1072,9 @@ apt-get install -y xvfb libgtk-3-0 libgbm1 libnss3 libasound2 libxss1 \
     write-ahead record — so the fold is projected onto a tracked text sidecar
     while the journal stays in `$TITHON_HOME` beside a connection file whose
     hmac key must never reach a repository ([§6](#6-on-disk-layout)).
-11. **No control a client cannot honor.** Until the comm back-channel exists,
-    an interactive widget renders as text rather than as a live-looking control
-    that silently drops input ([§4.4](#44-widget-rendering)).
+11. **No control a client cannot honor.** An interactive widget renders as a
+    live control only when backed by an active current-kernel comm binding (and,
+    for custom widget code, a trusted workspace); saved, legacy, disconnected,
+    or untrusted widgets fall back to read-only snapshots or text rather than
+    showing a live-looking control that silently drops input
+    ([§4.4](#44-widget-rendering)).

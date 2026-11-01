@@ -58,7 +58,8 @@ of the kernel.
   and tested on Linux).
 - **VSCode 1.85+.**
 
-> Windows is not currently supported.
+> On Windows, we recommend running Tithon inside WSL and connecting with VS Code using the WSL extension.  
+> Native Windows is not currently supported.
 
 The intended setup is a **Tunnel** or **Remote-SSH** connection, where the
 extension host runs _on the remote host_ and reaches the daemon's local socket
@@ -107,8 +108,10 @@ produced. Close the laptop or drop the connection — the daemon and kernel keep
 running. Reopen the notebook later (VSCode remembers the kernel) and the outputs
 are back and resume streaming, with **no command to run**.
 
-Outputs are matched to cells by content hash, so they survive edits and reopens;
-an output whose cell changed after it ran is flagged stale. The source file itself
+Outputs are matched to cells in three tiers — recorded cell index + content
+hash first, then content hash across moved cells, and finally recorded cell
+index when a cell was edited in place (flagged stale until re-run) — so outputs
+survive cell insertions, moves, edits, and reopens. The source file itself
 stays pure source — outputs never touch the file, so diffs stay clean.
 
 ## What you get
@@ -144,6 +147,8 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | `Tithon: New Python Notebook…` | Create a `.pynb` file that opens directly as a notebook. |
 | `Tithon: Copy as Python Notebook…` | Copy saved `.py` source and current outputs to an independent `.pynb`. |
 | `Tithon: Export Python Script…` | Copy `.pynb` source and outputs to an independent `.py`. |
+| `Tithon: Import Jupyter Notebook…` | Import a Python nbformat 4 `.ipynb` into a `.pynb` (or `.py`) with saved outputs and metadata. |
+| `Tithon: Export to Jupyter Notebook…` | Export a `.pynb` or `.py` and its current/saved outputs to a `.ipynb` without running code. |
 | `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text, once. |
 | `Tithon: Always Open With…` | Choose Text Editor or Notebook for this one file, permanently in this workspace. |
 | `Tithon: Restart Kernel` | Restart the session's kernel. |
@@ -152,6 +157,8 @@ The rest are run from the command palette or the notebook's kernel toolbar:
 | `Tithon: Restart Daemon` | Restart the host daemon. |
 | `Tithon: Terminate Kernel…` | Kill the session's kernel. Reopening the file then leaves the cells empty — terminating means you are done with that session. |
 | `Tithon: Restore Previous Outputs` | Put a terminated session's outputs back into the cells. |
+| `Tithon: Retry Output Restore` | Retry connecting and restoring outputs for the active notebook after a failure. |
+| `Tithon: Show Session Storage` | Show the active `TITHON_HOME`, retention policy, and per-session SQLite/image storage usage. |
 
 `Run Cell` is offered as a CodeLens above each `# %%` cell.
 
@@ -172,8 +179,12 @@ every Python file in scope, `setup.py` and `conftest.py` included.
 | `tithon.autoStartDaemon` | `true` | Start the daemon on the host when it isn't already running (spawned detached, so it survives reconnects). |
 | `tithon.daemonCommand` | `tithon` | Command used to launch the daemon (run as `<command> daemon`). Set an absolute path if `tithon` isn't on `PATH`. |
 | `tithon.pythonPath` | `""` | Run the daemon as `<python> -m tithon daemon`. Leave empty to use the Python extension's selected interpreter. |
+| `tithon.homePath` | `""` | Directory for the daemon socket, log, kernel files, and journals (`~/` supported). Empty uses `TITHON_HOME`, then `~/.tithon`. Changing this requires Reload Window. |
+| `tithon.reconnectMaxAttempts` | `0` | Maximum automatic reconnect attempts after losing the daemon connection (`0` = unlimited). |
 | `tithon.confirmDestructiveActions` | `true` | Ask in a modal dialog before Restart Kernel, Terminate Kernel and Restart Daemon. Set to `false` if you restart often and accept losing the namespace to a mis-click. |
 | `tithon.kernelIdleTimeout` | `0` | Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. `0` = never. Applied when the extension (re)starts the daemon. |
+| `tithon.historyRetentionDays` | `0` | Delete raw output-history messages older than this many days while preserving current cell outputs, widgets, and lifecycle events (`0` = keep all). Applied when the extension (re)starts the daemon. |
+| `tithon.historyTargetMiB` | `0` | Soft per-session limit in MiB for raw output-history messages and referenced images (`0` = keep all). Applied when the extension (re)starts the daemon. |
 
 ## How it works
 
@@ -184,9 +195,9 @@ A long-lived **daemon** on the host owns the kernel and serves clients:
 - The kernel runs **detached** (`setsid`), so it is not a child of the daemon.
   The daemon can crash, restart, or be upgraded; the kernel keeps running and
   re-attaches through a persisted connection file.
-- Every iopub/shell message is journaled **verbatim** to append-only SQLite
-  (WAL), alongside a per-execution _folded_ snapshot — the current display
-  state — so reconnects are fast.
+- Every execution iopub message (plus daemon lifecycle and widget comm events) is
+  journaled to append-only SQLite (WAL) by default, alongside a per-execution
+  _folded_ snapshot — the current display state — so reconnects are fast.
 - The extension attaches with the last sequence number it saw and gets a
   snapshot plus an ordered, gapless delta stream; reconnecting is just resuming
   the stream.

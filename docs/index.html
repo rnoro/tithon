@@ -553,7 +553,7 @@ footer .horizon{height:70%}
   <div class="horizon" aria-hidden="true"></div>
   <p class="eyebrow">persistent sessions for remote Jupyter &nbsp;·&nbsp; CLI + VSCode extension</p>
   <h1>Your session <span class="dawn">outlives</span> your connection.</h1>
-  <p class="lede">Tithon keeps a Jupyter kernel — and <b>every byte it ever printed</b> — alive on
+  <p class="lede">Tithon keeps a Jupyter kernel — and <b>every output it produced</b> — alive on
   the host, independent of any client. Close your laptop mid-run; reopen hours later over SSH or a
   VSCode tunnel. The output is still there, <b>and still streaming</b>.</p>
   <div class="cta-row">
@@ -582,7 +582,7 @@ footer .horizon{height:70%}
         <div class="pane client">
           <div class="pane-head">
             <span class="dots"><i></i><i></i><i></i></span>
-            train.py — notebook <span class="tag">YOUR LAPTOP</span>
+            train.pynb — notebook <span class="tag">YOUR LAPTOP</span>
           </div>
           <div class="pane-body">
             <div class="cellcode"><span class="cm"># %% train</span>
@@ -704,8 +704,9 @@ footer .horizon{height:70%}
         <p>Kill −9 the daemon, upgrade it, restart it — the kernel keeps computing and re-attaches
         through a persisted connection file. The daemon is disposable; your state is not.</p></div>
       <div class="mech rv"><code>sqlite · WAL</code><h3>Verbatim journal</h3>
-        <p>Every iopub/shell message is persisted exactly as the kernel sent it, alongside a folded
-        per-execution snapshot — so reconnects restore the current display without replaying history.</p></div>
+        <p>Every execution iopub message (plus widget comm and lifecycle events) is persisted to
+        SQLite (WAL) by default, alongside a folded per-execution snapshot — so reconnects restore
+        the current display without replaying history.</p></div>
       <div class="mech rv"><code>attach(last_seen_seq)</code><h3>Snapshot + delta</h3>
         <p>Clients resume from the last sequence they saw: one snapshot, then an ordered, gapless
         delta stream. Reconnecting isn't a recovery procedure — it's just resuming.</p></div>
@@ -727,8 +728,9 @@ footer .horizon{height:70%}
   <div class="wrap">
     <div class="kicker rv"><span class="num">03</span> in practice</div>
     <h2 class="rv">Prove it in ninety seconds.</h2>
-    <p class="sub rv">State lives under <b>~/.tithon</b> — socket, log, journal, artifacts. Start
-    the daemon, run something, then kill the daemon mid-flight. Watch nothing happen to your kernel.</p>
+    <p class="sub rv">Daemon state lives under <b>~/.tithon</b> (socket, log, kernel files, journal)
+    and rich-output artifacts live in your project's <b>.tithon/</b>. Start the daemon, run
+    something, then kill the daemon mid-flight. Watch nothing happen to your kernel.</p>
 
     <figure class="vid rv">
       <video id="demoVid" src="demo.mp4" width="1920" height="1080" muted loop playsinline
@@ -764,10 +766,10 @@ footer .horizon{height:70%}
             <p><code>code --install-extension rnoro.tithon</code> — or search “tithon” in the
             Extensions view.</p></div></div>
           <div class="step rv"><span class="n">2</span>
-            <div><h3>Open a .py as a notebook</h3>
-            <p>A plain percent-format script (<code># %%</code> cells) opens as a real notebook —
-            same cells, same Run buttons, same rich output. The file stays pure source; outputs
-            never touch it, so diffs stay clean.</p></div></div>
+            <div><h3>Open a .pynb (or .py) as a notebook</h3>
+            <p>A percent-format Python Notebook (<code>.pynb</code>, <code># %%</code> cells) opens
+            directly as a real notebook — or run <b>Open as Notebook</b> on any <code>.py</code>
+            script. The file stays pure source; outputs never touch it, so diffs stay clean.</p></div></div>
           <div class="step rv"><span class="n">3</span>
             <div><h3>Pick the Tithon kernel. That's all.</h3>
             <p>Selecting the kernel attaches the session. Reopen the notebook tomorrow — output,
@@ -780,7 +782,7 @@ footer .horizon{height:70%}
         <div class="reqs rv">
           <span><b>Python 3.11+</b></span>
           <span>Unix host — unix sockets + <b>setsid</b></span>
-          <span>Windows not supported</span>
+          <span>Windows via WSL (no native Windows)</span>
           <span>VSCode for the notebook UI</span>
         </div>
       </div>
@@ -792,11 +794,12 @@ footer .horizon{height:70%}
 <section class="sect alt" id="source">
   <div class="wrap">
     <div class="kicker rv"><span class="num">04</span> clean source</div>
-    <h2 class="rv">Your notebook is a <em>.py</em> file.<br>It reads like one.</h2>
+    <h2 class="rv">Your notebook is plain <em>Python</em>.<br>It reads like it.</h2>
     <p class="sub rv">An <b>.ipynb</b> buries fifty lines of code in two hundred fifty lines of
-    JSON, then base64-encodes the plots into it. Tithon keeps source as source: outputs live in the
-    journal, images are real files — ones a coding agent can hand to a model as <b>actual images it
-    can see</b>, not tokens it burns and still can't read.</p>
+    JSON, then base64-encodes the plots into it. Tithon keeps source as percent-format Python
+    (<code>.pynb</code> or <code>.py</code>): outputs live in the journal and shared
+    <code>.tithon/</code> sidecar, and images are real files — ones a coding agent can hand to a
+    model as <b>actual images it can see</b>, not tokens it burns and still can't read.</p>
     <div class="vs">
       <div class="codeblock bad rv">
         <header><span class="dots"><i></i><i></i><i></i></span> train.ipynb <span class="verdict">≈ 250 LINES OF JSON</span></header>
@@ -821,7 +824,7 @@ footer .horizon{height:70%}
    "source": ["for epoch in trange(48):\n", …</pre>
       </div>
       <div class="codeblock good rv">
-        <header><span class="dots"><i></i><i></i><i></i></span> train.py <span class="verdict">≈ 50 LINES OF PYTHON</span></header>
+        <header><span class="dots"><i></i><i></i><i></i></span> train.pynb <span class="verdict">≈ 50 LINES OF PYTHON</span></header>
         <pre><span class="c"># %% load</span>
 df = pd.read_parquet(<span class="o">"runs/07-04.parquet"</span>)
 
@@ -833,7 +836,7 @@ df = pd.read_parquet(<span class="o">"runs/07-04.parquet"</span>)
 plt.plot(history[<span class="o">"loss"</span>])
 
 <span class="c"># outputs → journal · images → .tithon/outputs/</span>
-<span class="c"># the .py stays pure source. diffs stay clean.</span></pre>
+<span class="c"># the .pynb / .py stays pure source. diffs stay clean.</span></pre>
       </div>
     </div>
     <p class="pull rv">Don't feed your LLM <span class="dawn">idiot JSON</span>.</p>
@@ -970,7 +973,7 @@ document.querySelectorAll('.rv').forEach(el => io.observe(el));
     S.seq += 3 + (S.hostEp % 2);
     const l = S.losses[S.hostEp].toFixed(3);
     if (S.hostEp % 4 === 0){
-      pushJournal(jl('display_data', `image/png → <span class="hot">outputs/a3f${(S.hostEp%10)}.png</span>`));
+      pushJournal(jl('display_data', `image/png → <span class="hot">outputs/e1_${S.hostEp}_a3f${(S.hostEp%10)}.png</span>`));
     } else {
       pushJournal(jl('stream', `epoch ${S.hostEp}/48 · loss ${l}`));
     }
@@ -988,7 +991,7 @@ document.querySelectorAll('.rv').forEach(el => io.observe(el));
     dio.classList.add('is-conn'); dio.classList.remove('is-away','is-dawn');
     el.conn.textContent = 'CONNECTED';
     phaseLabel('training — <b>client attached</b>');
-    pushJournal(jl('execute_request', '<span class="hot"># %% train</span>'));
+    pushJournal(jl('tithon.started', '<span class="hot"># %% train</span>'));
   }
 
   function step(){
@@ -1049,7 +1052,7 @@ document.querySelectorAll('.rv').forEach(el => io.observe(el));
       while (S.hostEp < EPOCHS) hostStep();                // ensure completion
       S.clientEp = EPOCHS; setClient(EPOCHS);
       pushClientLine(`done — final loss ${S.losses[EPOCHS].toFixed(3)}`, true);
-      pushJournal(jl('execute_reply', '<span class="hot">status=ok</span> · fold snapshot updated'));
+      pushJournal(jl('tithon.done', '<span class="hot">status=ok</span> · fold snapshot updated'));
       phaseLabel('done — <b>journal intact, 0 bytes lost</b>');
       el.dcap.classList.add('on');
     }
@@ -1069,7 +1072,7 @@ document.querySelectorAll('.rv').forEach(el => io.observe(el));
     pushClientLine('epoch 48/48 — loss 0.048', true);
     pushClientLine('done — final loss 0.048', true);
     pushJournal(jl('attach', '<span class="hot">snapshot → 152 events replayed</span>'));
-    S.seq=214; pushJournal(jl('execute_reply', '<span class="hot">status=ok</span> · fold snapshot updated'));
+    S.seq=214; pushJournal(jl('tithon.done', '<span class="hot">status=ok</span> · fold snapshot updated'));
     el.dcap.classList.add('on');
     return;
   }
