@@ -302,7 +302,8 @@ cannot reconstruct them. The daemon therefore acts as a **shadow front end**:
   session and client binding, invalidated on disconnect or kernel replacement.
 - Saved sidecars, copies, and notebook exports flatten the scoped states into
   canonical widget metadata using distinct model IDs and rewritten dependencies.
-  Saved output never carries live kernel or connection authority.
+  Only models reachable from retained current cell views and their dependencies
+  travel in saved output; it never carries live kernel or connection authority.
 - Widget dependencies include both Jupyter's `IPY_MODEL_` references and
   anywidget's `anywidget:` references, including nested state; callback ownership
   and portable saved-model namespacing follow the same references.
@@ -357,6 +358,14 @@ The rest bind the connection to a session:
 | `restart_kernel`          | `{ session }`                                             | Fresh kernel namespace; journal/history retained                          |
 | `get_artifact`            | `{ session, artifact_id, req_id? }`                       | Artifact bytes (base64) over the socket — no shared-filesystem assumption |
 | `status`                  | `{ session }`                                             | One session's status                                                      |
+
+`refresh_outputs` bypasses session binding and takes `source` and `workdir`.
+It returns `{op:"outputs_refreshed", ok}`. After a source save, a loaded session
+republishes its current portable outputs; an unloaded file reprojects its saved
+output file. Neither path starts a session or kernel. VSCode requests this after
+successful notebook and percent-source text saves when the daemon is reachable.
+Without a reachable daemon, the saved projection is refreshed on the next
+publication; import, copy and export still match it against current source.
 
 `import_notebook`, `export_notebook`, and `copy_notebook` also bypass session
 binding. Each takes `source`, `destination`, and `workdir` paths and returns
@@ -701,8 +710,9 @@ line endings), metadata and attachments. Changed/new cells use their saved
 percent source. Edited cells retain positional metadata/attachments when the
 cell count and type match and that original cell has not moved elsewhere;
 unmatched cell metadata is omitted. Attachment/metadata images use separate
-files from output images so clearing a fold cannot delete an attachment. Stale output matches carry
-`metadata.tithon.stale_outputs=true`. Saved widget state is display-only and
+files from output images so clearing a fold cannot delete an attachment.
+Only outputs matching current code cells are exported; stale or deleted-cell
+results are omitted. Saved widget state is display-only and
 uses the existing mirror/rendering restrictions; importing does not reconstruct
 kernel objects or interactive callbacks. Non-Python/older formats, ambiguous
 percent boundaries, malformed image/widget data, and missing image files fail
@@ -723,8 +733,9 @@ or success-rate telemetry are collected.
 copies `.pynb` to `.py`. `tithon copy SOURCE DESTINATION --workdir PROJECT`
 provides the same no-execution operation. Both paths must be inside the same
 project. Dirty editor source is saved first. Only each current cell's attached
-fold is copied, retaining stale hashes and notebook metadata/widget snapshot;
-full journal history and live kernel memory are never transferred. The source
+fold matching its current source is copied, with notebook metadata and reachable
+widget state; stale results, full journal history and live kernel memory are
+never transferred. The source
 remains intact and the destination owns a new URI and kernel.
 
 The daemon checks source activity, snapshots and publishes synchronously without
@@ -767,7 +778,7 @@ $TITHON_HOME (default ~/.tithon)/          # machine-local; never in a repo
     notebook_asset_<sha256>.png # persistent attachment/metadata image
     copy_<owner20>_output_<sha256>.png # copied notebook/script output image
     copy_<owner20>_asset_<sha256>.png  # copied notebook/script attachment/metadata image
-  cells/<relpath>.json         # folded snapshot per source file (e.g. train.pynb.json)
+  cells/<relpath>.json         # current cell outputs per source file (e.g. train.pynb.json)
   notebooks/<relpath>.json     # imported notebook source/metadata/attachments (e.g. train.pynb.json)
 ```
 
@@ -784,28 +795,46 @@ write-ahead record — binary, WAL, unbounded, rewritten on every run — so it 
 neither be committed nor merged, and it sits in `$TITHON_HOME` beside the kernel
 connection file whose hmac key must never reach a repository.
 
-What a *reader* of a shared notebook needs is not that record but the **fold**:
-the current output state per execution. The daemon projects it onto
-`.tithon/cells/<relpath>.json` (stable key order, one field per line). Cloning
-the project therefore restores the outputs — the one property `.ipynb` has that
-a percent-format `.py` does not — while images stay as deduplicated files rather
-than one base64 blob per frame, so a live-updating plot commits **one** file.
+The portable output file exists only to display the **current notebook outputs**
+on another client without the original journal. Version 2 of
+`.tithon/cells/<relpath>.json` contains a `cells` array with at most one record
+per current code cell: `cell_hash`, relative `origin` (index and line range),
+terminal `status`, `execution_count`, and `outputs`, plus reachable saved widget
+models. It contains no source code, execution IDs, execution sequence numbers,
+timestamps, or folding continuation state. Images remain real files referenced
+by outputs. Repeated runs replace the same cell's saved record; file size follows
+current outputs rather than execution-history length. The local journal retains
+its full execution history and historical folds independently.
 
-It is published once per **user action** — when a submitted batch drains, or a
-clear lands — not once per cell: rebuilding it re-serializes every execution's
-fold, so per-cell writes would make a Run All quadratic in the notebook's
-length. The shared file therefore lags a running batch by design; that is sound
-because it is a projection of a journal that already holds everything, and a
-daemon that dies mid-batch republishes when `_recover_inflight` terminalizes the
-cell it was on. A publish that fails (read-only checkout, full disk) also
-suppresses the artifact reclaim that would otherwise follow a clear, so the
-shared file never names an image that has already been deleted.
+Publication matches the saved percent source by exact index/hash, then moved
+hash/range proximity (including duplicate-code cells). The final newline added
+by notebook serialization is accepted without changing local execution hashes;
+portable hashes describe the saved source. Unmatched old results
+are omitted instead of guessed by index. A newer empty or failed execution
+replaces its previous successful output. A later unmatched execution suppresses
+an older exact result at its original cell, avoiding revival after source reverts;
+it cannot displace a different cell that moved there. Cell identity across
+arbitrary edits is limited by index/hash/range; no stable cell IDs are claimed.
+The live editor can still show its locally attached stale results.
 
-The journal stays authoritative for the machine that ran the cells: a sidecar is
-imported only into a session with no local executions of its own, and an imported
-execution is terminal, message-less, and has its fold hydrated from the stored
-snapshot (`ExecutionFold.hydrate`) so the startup artifact sweep counts its
-images as live instead of reclaiming them.
+The file is published once per **user action** — when a submitted batch drains,
+a clear lands, or a source save requests refresh — rather than once per cell.
+Selection scans execution history, so per-cell writes would make Run All
+quadratic. The portable view lags an unfinished batch; its journal already holds
+the messages. Unsaved code is shared only when matching saved source becomes
+available. Missing, unreadable or unparseable source and failed writes preserve
+the previous portable bytes and publication hash, and do not authorize image
+reclamation. Startup sweeping also protects images referenced by the last
+published file when a failed clear publication left it behind.
+
+Readers accept version 1 execution snapshots and version 2 cell records; writers
+publish version 2. Old clients that support only version 1 cannot restore version
+2 files and must be upgraded. A read adapts portable cells to internal execution
+records with synthetic local IDs. Import matches them against current source,
+hydrates their terminal, message-less folds, and rebinds origins to the reader's
+file URI; source code is not reconstructed from output records. The journal
+remains authoritative on a machine with its own local executions, so pulling a
+portable file cannot overwrite that history.
 
 Restoring a file's cells on open is what makes a crash, a reboot, an idle-GC
 reap or a dropped tunnel invisible — but it must not undo a decision. A kernel
@@ -815,11 +844,9 @@ that file is **not re-seeded** on the next open. Every involuntary loss still
 restores automatically, and the history is kept either way: _Restore Previous
 Outputs_ brings a deliberately closed session's cells back.
 
-Nothing machine-specific is written. A cell's origin carries its index and range
-but no uri, and execution ids are renumbered on import — the file is tracked,
-hand-editable and merge-prone, so its ids are data rather than keys, and each row
-is rebound to the reading file's own uri (which the sidecar's location already
-implies) so that per-file restore scoping keeps it.
+Nothing machine-specific is written. Cell origins carry only relative index and
+range; the portable file's location identifies its source. Synthetic execution
+IDs are allocated only in the reading client's local journal, never shared.
 
 ---
 
@@ -1013,7 +1040,7 @@ Capability → what it guarantees → how it is verified:
 | Installed classic widgets | Scoped local AMD modules, bqplot brush, model/view failure isolation, mapped pythreejs dependency and reconnect | `v72` (module checks), `v78`, `v79` (real VSCode) |
 | Output-area isolation    | An `Output` widget's clear spares its siblings      | `v54` (real notebook shape), `test_folding.py`     |
 | Session-wide `display_id`| A cross-cell in-place update lands in the right cell| `v55` (daemon), `v56` (real VSCode)                |
-| Shared outputs           | A cloned repo restores outputs + images              | `v61` (real `git clone`), `test_sidecar.py`        |
+| Shared outputs           | Current-cell outputs without source/history; clone restores images | `v61` (real `git clone`, bounded reruns, save refresh), `v67` (VSCode save), `test_sidecar.py`, `test_current_outputs.py` |
 | Deliberate close         | A killed session is not re-seeded; history kept     | `v62` (daemon), `v63` (real VSCode seed gate)      |
 | Lost-state signal        | A reboot's empty namespace is reported, not silent  | `v46`, `test_lost_state.py`                        |
 | Out-of-band kernel death | A kernel dying while idle is reported without a run | `v48`, `test_liveness.py`                          |

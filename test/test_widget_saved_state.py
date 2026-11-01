@@ -162,9 +162,10 @@ def test_malformed_scoped_sidecar_is_ignored_before_import(tmp_path):
 
 def test_sidecar_ingress_cannot_trust_claimed_current_kernel(tmp_path):
     doc = sidecar.saved_snapshot(scoped_snapshot())
-    doc["version"] = sidecar.SIDECAR_VERSION
+    doc["version"] = 1
     doc["executions"][0]["outputs"][0]["widget_kernel_id"] = "current"
     source = tmp_path / "file.pynb"
+    source.write_text("# %%\nx = 1\n# %%\nx = 2\n")
     s = Session(source.as_uri(), tmp_path / "session", tmp_path)
     s.kernel.kernel_id = "current"
     sidecar.write(s.sidecar_path, doc)
@@ -213,7 +214,7 @@ def test_malformed_scoped_models_never_partially_import(tmp_path, broken):
     source = tmp_path / "file.pynb"
     session = Session(source.as_uri(), tmp_path / "session", tmp_path)
     doc = scoped_snapshot()
-    doc["version"] = sidecar.SIDECAR_VERSION
+    doc["version"] = 1
     doc["widget_context"]["states"]["old"]["state"]["same"] = broken
     sidecar.write(session.sidecar_path, doc)
     assert sidecar.read(session.sidecar_path) is None

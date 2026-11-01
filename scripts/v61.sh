@@ -30,6 +30,9 @@ echo "v61: daemon up (pid $(daemon_pid))"
 SOCK="$TITHON_HOME/daemon.sock"
 CODE='import matplotlib; matplotlib.use("module://matplotlib_inline.backend_inline"); import matplotlib.pyplot as plt; from IPython.display import display; fig,ax=plt.subplots(); ax.plot([1,2,3]); display(fig); print("TRAINED")'
 
+# Use a real saved cell so portable output identity is checked against its source.
+printf '# %%%%\n%s' "$CODE" >"$PROJ_A/train.py"
+
 # --- author runs the notebook ------------------------------------------------
 timeout 150 "$PY" "$ROOT/scripts/_workdir_client.py" "$SOCK" "file://$PROJ_A/train.py" "$PROJ_A" "$CODE" \
   >"$TITHON_HOME/a.out" 2>&1 || fail "author run failed: $(tail -3 "$TITHON_HOME/a.out")"
@@ -94,5 +97,8 @@ proj_kernel=$(find "$PROJ_B" -name 'kernel.json' -o -name 'journal.db' 2>/dev/nu
 [ -z "$proj_kernel" ] || fail "machine-local state leaked into the repo: $proj_kernel"
 b_dir=$(find "$TITHON_HOME/sessions" -type d -name 'train.py' -path '*projB*' 2>/dev/null | head -1)
 [ -f "$b_dir/journal.db" ] || fail "no reader-side journal under ~/.tithon"
+
+timeout 120 "$PY" -m pytest -q "$ROOT/test/test_sidecar.py" "$ROOT/test/test_current_outputs.py" \
+  || fail "current-output projection, compatibility, source-save and clone regressions"
 
 echo "RESULT v61 PASS cloned repo restores 1 execution (stream 'TRAINED' + image served, $b_png_after png survived the sweep); no journal/kernel.json in the repo"

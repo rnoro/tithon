@@ -52,7 +52,7 @@ def test_collision_crash_replay_retention_and_copied_state(host):
     daemon = start()
     sock = root / "home/daemon.sock"
     source = work / "widgets.pynb"
-    source.write_text("# %%\n" + widget_code(10))
+    source.write_text("# %%\n" + widget_code(10) + "# %%\n" + widget_code(90))
     sid = source.as_uri()
     snapshot(sock, sid, work)
     reply = asyncio.run(request(sock, {"op": "restart_kernel", "session": sid}))
@@ -138,17 +138,17 @@ def test_collision_crash_replay_retention_and_copied_state(host):
     ]
     assert {o["widget_kernel_id"] for o in widget_outputs} == {first_id, second_id}
 
-    # A sidecar carries both histories with independent saved model IDs and no authority.
+    # Current cells retain independent model graphs from their respective kernels.
     shared = json.loads((work / ".tithon/cells/widgets.pynb.json").read_text())
     assert "widget_context" not in shared
     model_ids = [
         o["data"][VIEW]["model_id"]
-        for ex in shared["executions"]
+        for ex in shared["cells"]
         for o in ex["outputs"]
         if VIEW in o.get("data", {})
     ]
     assert len(set(model_ids)) == 2
-    assert all("widget_kernel_id" not in o for ex in shared["executions"] for o in ex["outputs"])
+    assert all("widget_kernel_id" not in o for ex in shared["cells"] for o in ex["outputs"])
     clone = work / "clone.pynb"
     clone.write_text(source.read_text())
     (work / ".tithon/cells/clone.pynb.json").write_text(json.dumps(shared))

@@ -722,14 +722,32 @@ class Session:
         if found is None:
             return
         doc, sha = found
-        if self.journal.get_meta("sidecar_sha") == sha:
-            return
         if self.journal.count_local_executions():
             return
-        doc = sidecar.saved_snapshot(doc)
+        try:
+            source_path = _uri_to_path(self.session_id)
+            if source_path is None:
+                return
+            with source_path.open(encoding="utf-8", newline="") as handle:
+                source = handle.read()
+            source_sha = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            if (
+                self.journal.get_meta("sidecar_import_sha") == sha
+                and self.journal.get_meta("sidecar_source_sha") == source_sha
+            ):
+                return
+            saved = sidecar.saved_snapshot(doc)
+            doc = sidecar.build(saved.get("executions", []), source)
+            doc["widgets"] = saved.get("widgets")
+            doc = sidecar.as_snapshot(sidecar.prune_widgets(doc))
+        except (OSError, ValueError) as error:
+            log.warning("[%s] could not restore shared outputs: %s", self.session_id, error)
+            return
         dropped = self.journal.drop_imported()
         imported = sidecar.import_into(self.journal, self.artifacts.workdir, doc)
         self.journal.set_meta("sidecar_sha", sha)
+        self.journal.set_meta("sidecar_import_sha", sha)
+        self.journal.set_meta("sidecar_source_sha", source_sha)
         self.journal.set_meta("imported_widgets", json.dumps(doc.get("widgets") or {}))
         log.info(
             "[%s] imported %d shared execution(s), replacing %d", self.session_id, imported, dropped
@@ -760,11 +778,17 @@ class Session:
                 "widget_context": self.widget_context(),
             }
         )
-        doc = sidecar.build(saved["executions"])
-        doc["widgets"] = saved["widgets"]
         try:
+            source_path = _uri_to_path(self.session_id)
+            if source_path is None:
+                return False
+            with source_path.open(encoding="utf-8", newline="") as handle:
+                source = handle.read()
+            doc = sidecar.build(saved["executions"], source)
+            doc["widgets"] = saved["widgets"]
+            doc = sidecar.prune_widgets(doc)
             sidecar.write(self.sidecar_path, doc)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             log.warning("[%s] could not publish %s: %s", self.session_id, self.sidecar_path, e)
             return False
         self.journal.set_meta(
@@ -837,7 +861,15 @@ class Session:
         self._artifact_refs = Counter(
             aid for fold in self._folds.values() for aid in fold.artifact_ids()
         )
-        removed = self.artifacts.sweep(keep=set(self._artifact_refs))
+        keep = set(self._artifact_refs)
+        saved = sidecar.read(self.sidecar_path) if self.sidecar_path is not None else None
+        if saved is not None:
+            keep.update(
+                ref["artifact_id"]
+                for ex in saved[0].get("executions", [])
+                for ref in sidecar.artifact_refs(ex.get("outputs") or [])
+            )
+        removed = self.artifacts.sweep(keep=keep)
         if removed:
             log.info("[%s] swept %d orphaned artifact(s)", self.session_id, removed)
 
@@ -2505,6 +2537,19 @@ class Daemon:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 op = msg.get("op")
+                if op == "refresh_outputs":
+                    try:
+                        source = Path(msg["source"]).absolute()
+                        root = Path(msg["workdir"]).resolve()
+                        current = self._sessions.get(source.as_uri())
+                        if current is not None:
+                            refreshed = current._publish_sidecar()
+                        else:
+                            refreshed = sidecar.refresh_file(root, source)
+                        await ws.send(json.dumps({"op": "outputs_refreshed", "ok": refreshed}))
+                    except (OSError, ValueError, KeyError) as error:
+                        await ws.send(json.dumps({"op": "error", "message": str(error)}))
+                    continue
                 if op in ("import_notebook", "export_notebook", "copy_notebook"):
                     try:
                         source = Path(msg["source"])

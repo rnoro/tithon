@@ -211,6 +211,16 @@ export class DaemonClient {
     }
   }
 
+  async refreshOutputs(source: string, workdir: string): Promise<void> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "refresh_outputs", source, workdir }));
+      await this.waitFor(ws, (m) => m.op === "outputs_refreshed", 5000);
+    } finally {
+      ws.close();
+    }
+  }
+
   async status(): Promise<any> {
     const ws = await this.open();
     try {

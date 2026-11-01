@@ -615,6 +615,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
+    vscode.workspace.onDidSaveNotebookDocument((notebook) => {
+      if (!isTithonNotebookType(notebook.notebookType) || notebook.uri.scheme !== "file") return;
+      void client
+        .refreshOutputs(
+          notebook.uri.fsPath,
+          workdirForUri(notebook.uri) ?? path.dirname(notebook.uri.fsPath),
+        )
+        .catch((error) => {
+          console.warn(`Tithon: could not refresh saved outputs: ${String(error)}`);
+        });
+    }),
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      if (document.uri.scheme !== "file" || !/\.(py|pynb)$/i.test(document.uri.path)) return;
+      void client
+        .refreshOutputs(
+          document.uri.fsPath,
+          workdirForUri(document.uri) ?? path.dirname(document.uri.fsPath),
+        )
+        .catch((error) => {
+          console.warn(`Tithon: could not refresh saved outputs: ${String(error)}`);
+        });
+    }),
     ...NOTEBOOK_TYPES.map((type) =>
       vscode.workspace.registerNotebookSerializer(
         type,

@@ -146,7 +146,7 @@ def test_no_execution_and_no_overwrite(tmp_path):
     assert output.read_bytes() == before
 
 
-def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, rich_notebook):
+def test_source_edit_omits_old_output_and_live_snapshot_overrides_sidecar(tmp_path, rich_notebook):
     source, _ = rich_notebook
     py = tmp_path / "converted.py"
     notebook.import_notebook(source, py)
@@ -155,8 +155,7 @@ def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, r
     notebook.export_notebook(py, output)
     result = nbformat.read(output, as_version=4)
     assert result.cells[1].source.startswith("print('changed')")
-    assert result.cells[1].metadata.tithon.stale_outputs
-    assert result.cells[1].outputs[0].text == "한글\n"
+    assert result.cells[1].outputs == []
     body = notebook.parse_percent(py.read_text())[1]["body"]
     import hashlib
 
@@ -164,6 +163,7 @@ def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, r
         "executions": [
             {
                 "seq": 999,
+                "status": "done",
                 "origin": {"index": 1},
                 "cell_hash": hashlib.sha256(body.encode()).hexdigest(),
                 "outputs": [{"output_type": "stream", "name": "stdout", "text": "live!"}],

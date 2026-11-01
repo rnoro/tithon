@@ -97,11 +97,15 @@ describe("Dedicated Python Notebook files", () => {
 
     // Conversion must save the source editor before copying its bytes.
     const edit = new vscode.WorkspaceEdit();
-    edit.insert(
-      original.cellAt(0).document.uri,
-      original.cellAt(0).document.positionAt(original.cellAt(0).document.getText().length),
-      "\n# saved during copy\n",
-    );
+    edit.set(original.uri, [
+      vscode.NotebookEdit.insertCells(original.cellCount, [
+        new vscode.NotebookCellData(
+          vscode.NotebookCellKind.Code,
+          "# saved during copy\n",
+          "python",
+        ),
+      ]),
+    ]);
     assert.ok(await vscode.workspace.applyEdit(edit));
     assert.ok(original.isDirty);
     assert.ok(!fs.readFileSync(source.fsPath, "utf8").includes("saved during copy"));
@@ -160,15 +164,14 @@ describe("Dedicated Python Notebook files", () => {
     );
     assert.ok(await copied.save());
 
-    const imageReference = (name: string): { execId: string; path: string } => {
+    const imageReference = (name: string): { path: string } => {
       const shared = JSON.parse(
         fs.readFileSync(path.join(root, ".tithon", "cells", `${name}.json`), "utf8"),
       );
-      for (const execution of shared.executions) {
+      for (const execution of shared.cells) {
         for (const output of execution.outputs) {
           const reference = output.data?.["image/png"]?.$tithon_artifact;
-          if (reference)
-            return { execId: execution.exec_id, path: path.join(root, reference.rel_path) };
+          if (reference) return { path: path.join(root, reference.rel_path) };
         }
       }
       throw new Error(`No image reference for ${name}`);
@@ -194,7 +197,10 @@ describe("Dedicated Python Notebook files", () => {
       const probe = new SessionClient(undefined, source.toString());
       try {
         await probe.attach(0);
-        return probe.outputsOf(sourceImage.execId).length === 0;
+        const executions = probe.executions();
+        return (
+          executions.length > 0 && executions.every((ex) => probe.outputsOf(ex.execId).length === 0)
+        );
       } finally {
         probe.close();
       }

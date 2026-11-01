@@ -125,6 +125,9 @@ describe("Notebook interchange and restore state", () => {
     ]);
     assert.ok(await vscode.workspace.applyEdit(edit));
     await nb.save();
+    const sharedPath = path.join(root, ".tithon", "cells", "converted.py.json");
+    const savedCells = () => JSON.parse(fs.readFileSync(sharedPath, "utf8")).cells;
+    await waitFor(() => savedCells().length === 0, "source save removes unmatched output");
     for (const count of [1, 2]) {
       vscode.window.activeNotebookEditor!.selections = [new vscode.NotebookRange(0, 1)];
       await vscode.commands.executeCommand("notebook.cell.execute", {
@@ -142,6 +145,20 @@ describe("Notebook interchange and restore state", () => {
     assert.strictEqual((await state())?.state, "connected");
     assert.ok(outputText(nb).includes("RERUN 2"));
     assert.ok(!outputText(nb).includes("RERUN 1"));
+    await waitFor(
+      () => savedCells().length === 1 && JSON.stringify(savedCells()).includes("RERUN 2"),
+      "only the latest result is shared",
+    );
+    const cell = savedCells()[0];
+    for (const field of ["code", "exec_id", "seq", "started_at", "finished_at"]) {
+      assert.ok(!(field in cell), `portable output excludes ${field}`);
+    }
+    assert.ok(!JSON.stringify(savedCells()).includes("RERUN 1"));
+    const remove = new vscode.WorkspaceEdit();
+    remove.set(nb.uri, [vscode.NotebookEdit.deleteCells(new vscode.NotebookRange(0, 1))]);
+    assert.ok(await vscode.workspace.applyEdit(remove));
+    await nb.save();
+    await waitFor(() => savedCells().length === 0, "deleted cell output is removed on save");
     await vscode.commands.executeCommand("tithon._disposeLive");
     assert.strictEqual(await state(), undefined, "deselection/disposal removes restore state");
   });
