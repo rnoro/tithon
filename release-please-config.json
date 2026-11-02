@@ -11,12 +11,14 @@
       "package-name": "tithon",
       "component": "tithon",
       "include-component-in-tag": false,
-      "exclude-paths": ["extension", "docs", "scripts"]
+      "exclude-paths": ["extension", "docs", "scripts"],
+      "release-as": "0.3.0"
     },
     "extension": {
       "release-type": "node",
       "package-name": "tithon-extension",
-      "component": "vscode"
+      "component": "vscode",
+      "release-as": "0.3.0"
     }
   }
 }
