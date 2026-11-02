@@ -991,6 +991,7 @@ export class TithonNotebookController {
     90,
   );
   private readonly activeNotebookSub: vscode.Disposable;
+  private autoAttachSub: vscode.Disposable | undefined;
 
   restoreState(uri: vscode.Uri): { state: string; reason?: string } | undefined {
     return this.restoreStates.get(uri.toString());
@@ -1017,7 +1018,10 @@ export class TithonNotebookController {
     this.showRestoreState();
   }
 
-  constructor(sockPath?: string) {
+  constructor(
+    sockPath?: string,
+    private readonly extensionId = "rnoro.tithon",
+  ) {
     this.activeNotebookSub = vscode.window.onDidChangeActiveNotebookEditor(() =>
       this.showRestoreState(),
     );
@@ -1127,6 +1131,58 @@ export class TithonNotebookController {
       });
     });
     this.selectionSub = vscode.Disposable.from(...selections);
+    this.autoAttachSub = vscode.Disposable.from(
+      vscode.window.onDidChangeVisibleNotebookEditors((editors) =>
+        editors.forEach((e) => void this.autoAttach(e)),
+      ),
+      vscode.workspace.onDidCloseNotebookDocument((nb) =>
+        this.autoAttachProbed.delete(nb.uri.toString()),
+      ),
+    );
+    vscode.window.visibleNotebookEditors.forEach((e) => void this.autoAttach(e));
+  }
+
+  /** Notebooks probed by `autoAttach` since they were opened. Cleared only on
+   *  close, so a deliberate deselect is not undone by the editor reappearing. */
+  private readonly autoAttachProbed = new Set<string>();
+
+  /**
+   * Select Tithon for a visible notebook whose file already has a daemon session.
+   *
+   * The selection event alone misses a window with no saved kernel affinity (a
+   * fresh browser profile, another device): VS Code shows the sole Tithon
+   * controller as current without ever selecting it, so no event fires and the
+   * notebook stays detached. Attaching alone is not enough either — restore
+   * writes outputs through cell executions, which VS Code rejects for a
+   * controller not associated with the notebook — so this really selects the
+   * kernel, which also fires the selection event that starts live sync. Gating
+   * on an existing session keeps a file that was never run from spawning a
+   * kernel just by being opened.
+   */
+  private async autoAttach(editor: vscode.NotebookEditor): Promise<void> {
+    const notebook = editor.notebook;
+    const key = notebook.uri.toString();
+    if (!isTithonNotebookType(notebook.notebookType)) return;
+    if (this.autoAttachProbed.has(key) || this.wantLive.has(key)) return;
+    this.autoAttachProbed.add(key);
+    try {
+      await ensureDaemon(this.sockPath);
+      if (!(await this.daemon.sessionKnown(key, workdirForUri(notebook.uri)))) return;
+    } catch (error) {
+      console.warn(`[tithon] auto-attach probe failed: ${String(error)}`);
+      return;
+    }
+    if (notebook.isClosed || this.wantLive.has(key) || !this.autoAttachProbed.has(key)) return;
+    console.log(`[tithon] auto-selecting Tithon for ${key} (existing session, no saved kernel)`);
+    try {
+      await vscode.commands.executeCommand("notebook.selectKernel", {
+        notebookEditor: editor,
+        id: this.controllerFor(notebook).id,
+        extension: this.extensionId,
+      });
+    } catch (error) {
+      console.warn(`[tithon] auto-select failed: ${String(error)}`);
+    }
   }
 
   private controllerFor(notebook: vscode.NotebookDocument): vscode.NotebookController {
@@ -1678,6 +1734,7 @@ export class TithonNotebookController {
 
   dispose(): void {
     this.selectionSub.dispose();
+    this.autoAttachSub?.dispose();
     this.activeNotebookSub.dispose();
     this.restoreBar.dispose();
     if (this.widgetFlushTimer) clearTimeout(this.widgetFlushTimer);
@@ -2464,7 +2521,8 @@ function fmtIdle(seconds: number): string {
 /**
  * Register the controller + Tithon commands. Restore and live sync are NOT
  * user commands — they run automatically: selecting the kernel
- * (onDidChangeSelectedNotebooks) and executing a cell both call ensureLive,
+ * (onDidChangeSelectedNotebooks), showing a notebook that already has a session
+ * (`autoAttach`), and executing a cell all call ensureLive,
  * which restores the folded snapshot and starts live mirroring with no manual
  * step. The former `tithon.startLive` palette command was wholly redundant with
  * that auto path and was removed.
@@ -2479,7 +2537,7 @@ export function registerRestore(
   context: vscode.ExtensionContext,
   sockPath?: string,
 ): TithonNotebookController {
-  const controller = new TithonNotebookController(sockPath);
+  const controller = new TithonNotebookController(sockPath, context.extension.id);
   context.subscriptions.push(
     controller,
     vscode.commands.registerCommand("tithon.retryRestore", async () => {

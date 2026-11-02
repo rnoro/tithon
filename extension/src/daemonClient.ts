@@ -271,6 +271,20 @@ export class DaemonClient {
     }
   }
 
+  /** Whether the daemon already has a session for this file (live, or a journal
+   *  on disk). Never creates one. A daemon that predates the probe answers
+   *  without `known`, which reads as false. */
+  async sessionKnown(session: string, workdir: string | undefined): Promise<boolean> {
+    const ws = await this.open();
+    try {
+      ws.send(JSON.stringify({ op: "status", probe: { target: session, workdir } }));
+      const reply = await this.waitFor(ws, (m) => m.op === "status_reply", 10000);
+      return reply.known === true;
+    } finally {
+      ws.close();
+    }
+  }
+
   /** `timeoutMs` bounds the wait; without it the caller waits indefinitely. */
   private waitFor(ws: WebSocket, pred: (m: any) => boolean, timeoutMs?: number): Promise<any> {
     return new Promise((resolve, reject) => {

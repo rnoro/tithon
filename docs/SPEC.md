@@ -613,7 +613,12 @@ would be a duplicate placeholder.
   can disagree with it. _Restart Kernel_ gives a fresh namespace;
   _Terminate Kernel…_ opens a picker over every live kernel showing each one's
   idle time and attached-client count, and frees its host/GPU resources.
-- **Output state**: outputs restore automatically on open. _Restore Previous
+- **Output state**: outputs restore automatically on open. A window with no
+  saved kernel choice (a fresh browser profile, another device) shows Tithon as
+  the notebook's kernel without VS Code ever selecting it, so the extension asks
+  the daemon whether the file already has a session (live, or a journal on disk)
+  and, if so, selects the Tithon kernel itself; a file that was never run is
+  left alone so opening it spawns no kernel. _Restore Previous
   Outputs_ is the one manual path — a session the user deliberately terminated
   is not re-seeded on open (see [§6](#6-on-disk-layout)), and this brings its
   history back.
@@ -1025,7 +1030,7 @@ make core        # v1–v4 v47 v49 v50 v57 v66 v68  journal / fold / artifacts /
 make serializer  # v6                     percent <-> notebook round-trip
 make backpressure# v9                     slow-client host protection
 make widgets     # v5 v29 v30 v71 v72 v73 v74 v75 v76 v77 v78 v79 widget mirror + render + kernel-scoped history
-make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63  reconnect restore, orphan, cloned repo, closed session
+make restore     # v7 v8 v15 v16 v22 v38 v61 v62 v63 v80  reconnect restore, orphan, cloned repo, closed session, fresh-window attach
 make livesync    # v10–v14 v33 v37 v51 v53 v56 v59 v63  live streaming, edits, cross-cell display, training loop
 make kernels     # v17–v21 v23 v24 v26 v40 v45 v46 v48 v52 v58 v60 v65 v69  per-file kernels + lifecycle
 make richoutputs # v27 v28 v31 v34 v35 v54 v55  matplotlib/tqdm images, live-plot GC, clear, storage, display_id
@@ -1053,6 +1058,7 @@ Capability → what it guarantees → how it is verified:
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |
 | Client restore           | Subscribe + fold + restore on reconnect             | `v7`, `v8` (real VSCode)                           |
+| Fresh-window attach      | A window with no saved kernel attaches a file that has a session; a never-run file spawns nothing | `v80` (real VSCode, `.pynb`) |
 | Connection settings      | Workspace home applies throughout; bounded retry preserves kernel | `v69` (real VSCode), `reconnectPolicy.test.ts` |
 | Per-file kernels         | Each file gets its own kernel + journal             | `v17`                                              |
 | Kernel lifetime (idle GC)| Idle kernel reaped; busy/attached never; outputs stay restorable | `v45`, `test_gc.py`                   |

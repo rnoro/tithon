@@ -575,12 +575,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
   );
 
-  // Auto-restore + live sync is driven by the controller's kernel-selection
-  // event (see TithonNotebookController): when the Tithon kernel becomes the
-  // notebook's selected kernel — which VSCode does automatically on reopen by
-  // remembering the last kernel — it attach(0)s, restores folded output + cell
-  // state, and continues live. The user runs NO command (the "it should just
-  // work" feedback #3/#4). Here we only need to tear down on close as a belt:
+  // Auto-restore + live sync is driven by TithonNotebookController: the
+  // kernel-selection event (VS Code remembers the last kernel on reopen) and
+  // `autoAttach` for a window with no remembered kernel both attach(0), restore
+  // folded output + cell state, and continue live with no user command. Here we
+  // only need to tear down on close as a belt:
   context.subscriptions.push(
     vscode.workspace.onDidCloseNotebookDocument((nb) => {
       if (isTithon(nb)) {

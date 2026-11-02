@@ -42,3 +42,19 @@ def test_no_workdir_falls_back_to_hash_and_cwd(tmp_path):
     # but the kernel/journal dir falls back to a stable hash.
     sd2, wd2 = _session_layout(home, "file:///elsewhere/train.py", "/a/proj", cwd)
     assert wd2 == Path("/a/proj") and len(sd2.name) == 16
+
+
+def test_session_known_is_read_only_and_finds_a_journal_on_disk(tmp_path):
+    from tithon.daemon import Daemon
+
+    home, cwd = tmp_path / "home", tmp_path / "cwd"
+    d = Daemon(home, cwd)
+    root = str(tmp_path / "proj")
+    uri = f"file://{root}/train.pynb"
+    assert not d._session_known(uri, root)
+    assert not (home / "sessions").exists()  # probing never creates a session dir
+    sd, _ = _session_layout(home, uri, root, cwd)
+    sd.mkdir(parents=True)
+    (sd / "journal.db").touch()  # a session from before a daemon restart / idle GC
+    assert d._session_known(uri, root)
+    assert not d._session_known(f"file://{root}/other.pynb", root)
