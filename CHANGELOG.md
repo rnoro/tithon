@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/rnoro/tithon/compare/v0.3.0...v0.3.1) (2026-11-02)
+
+
+### Features
+
+* **cli:** query bounded notebook outputs and run file cells for agents ([#40](https://github.com/rnoro/tithon/issues/40)) ([0035628](https://github.com/rnoro/tithon/commit/0035628d522b527d7b219e0500ec075545f94c44))
+
 ## [0.3.0](https://github.com/rnoro/tithon/compare/v0.2.5...v0.3.0) (2026-11-02)
 
 
