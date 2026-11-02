@@ -125,7 +125,213 @@ async def _run(args) -> int:
                     return 0 if status == "ok" else 1
 
 
+def project_root(source: Path, explicit: str | None = None) -> Path:
+    """The project a notebook file belongs to: where its `.tithon/` lives.
+
+    The nearest ancestor holding a project `.tithon/` (not the daemon home),
+    then the nearest git root, then the file's own directory.
+    """
+    if explicit:
+        return Path(explicit).absolute()
+    home = get_home().resolve()
+    ancestors = list(source.absolute().parents)
+    for directory in ancestors:
+        marker = directory / ".tithon"
+        if marker.is_dir() and marker.resolve() != home:
+            return directory
+    for directory in ancestors:
+        if (directory / ".git").exists():
+            return directory
+    return source.absolute().parent
+
+
+async def _ask_daemon(message: dict) -> dict | None:
+    """One session-free request to a running daemon; None when none answers.
+
+    Never starts a daemon: reading outputs must not cost a process or a kernel.
+    """
+    if not Path(sock_path()).exists():
+        return None
+    try:
+        async with await _connect() as ws:
+            await ws.send(json.dumps(message))
+            return json.loads(await asyncio.wait_for(ws.recv(), 30))
+    except (OSError, TimeoutError):
+        return None
+
+
+def _query(source: Path, root: Path, args, cells: str | None) -> dict:
+    from . import outputs
+
+    request = {
+        "op": "query_outputs",
+        "source": str(source),
+        "workdir": str(root),
+        "cells": cells,
+        "errors": getattr(args, "errors", False),
+        "tail": args.tail,
+        "head": args.head,
+        "grep": args.grep,
+    }
+    reply = None if getattr(args, "offline", False) else asyncio.run(_ask_daemon(request))
+    if reply is None:
+        with source.open(encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        snapshot, origin = outputs.saved_snapshot_for(source, root)
+        reply = {
+            "op": "outputs",
+            "origin": origin,
+            "cells": outputs.answer(snapshot, text, request),
+        }
+    if reply.get("op") == "error":
+        raise ValueError(reply.get("message", "daemon error"))
+    return reply
+
+
+def _print_outputs(reply: dict, args) -> None:
+    from . import outputs
+
+    records = reply["cells"]
+    if args.json:
+        print(json.dumps({"origin": reply["origin"], "cells": records}, ensure_ascii=False))
+    elif getattr(args, "summary", False):
+        print(outputs.summary(records))
+    else:
+        print(outputs.render(records, args.max_chars, head=bool(args.head)))
+
+
+def cmd_outputs(args) -> int:
+    source = Path(args.file).absolute()
+    reply = _query(source, project_root(source, args.workdir), args, args.cells)
+    _print_outputs(reply, args)
+    return 0
+
+
+#: Kernel lifecycle states after which a submitted cell will never report done.
+_RUN_ENDING = {
+    "dead",
+    "restarting",
+    "restarted",
+    "replaced",
+    "killed",
+    "gc",
+    "shutdown",
+    "disconnected",
+}
+
+
+async def _session_uri(source: Path) -> str:
+    """The live session id of this file, matched by resolved path; else its uri.
+
+    A file opened elsewhere through another spelling (a symlink) keeps one
+    session and one kernel instead of gaining a second.
+    """
+    from urllib.parse import unquote, urlparse
+
+    status = await _ask_daemon({"op": "status"})
+    canonical = source.resolve()
+    for info in (status or {}).get("sessions") or []:
+        uri = info.get("session") if isinstance(info, dict) else None
+        parsed = urlparse(uri) if isinstance(uri, str) else None
+        if parsed is not None and parsed.scheme == "file":
+            if Path(unquote(parsed.path)).resolve() == canonical:
+                return uri
+    return source.as_uri()
+
+
+async def _run_cells(args, source: Path, root: Path) -> dict[str, str]:
+    """Execute selected cells of a file in its session; return status per cell."""
+    from websockets.exceptions import ConnectionClosed
+
+    from . import outputs
+
+    with source.open(encoding="utf-8", newline="") as handle:
+        text = handle.read()
+    chosen = outputs.parse_selection(args.cells)
+    cells = [c for c in outputs.code_cells(text) if chosen is None or c["cell"] in chosen]
+    if not cells:
+        raise ValueError("No code cell matches the selection")
+    session = await _session_uri(source)
+    batch = [
+        {
+            "code": c["body"],
+            "origin": {
+                "uri": session,
+                "index": c["cell"],
+                "range": c["range"],
+                "cell_hash": c["cell_hash"],
+            },
+        }
+        for c in cells
+    ]
+    async with await _connect() as ws:
+        attach = {"op": "attach", "last_seen_seq": -1, "session": session, "workdir": str(root)}
+        await ws.send(json.dumps(attach))
+        while True:
+            m = json.loads(await ws.recv())
+            if m.get("op") == "error":
+                raise ValueError(m.get("message", "daemon error"))
+            if m.get("op") == "sync":
+                break
+        await ws.send(
+            json.dumps(
+                {
+                    "op": "execute_batch",
+                    "cells": batch,
+                    "stop_on_error": not args.keep_going,
+                    "session": session,
+                    "workdir": str(root),
+                }
+            )
+        )
+        pending: dict[str, int] | None = None
+        early: dict[str, str] = {}
+        statuses: dict[str, str] = {}
+        while pending is None or len(statuses) < len(pending):
+            try:
+                m = json.loads(await ws.recv())
+            except ConnectionClosed as closed:
+                if pending is None:
+                    message = "The daemon closed the connection before accepting the cells"
+                    raise ValueError(message) from closed
+                m = {"op": "event", "kind": "kernel", "payload": {"status": "disconnected"}}
+            kernel = (m.get("payload") or {}).get("status") if m.get("kind") == "kernel" else None
+            if kernel in _RUN_ENDING and pending is not None:
+                # The kernel went away, so no `done` will come for what is left.
+                for exec_id in pending:
+                    statuses.setdefault(exec_id, kernel)
+                break
+            if m.get("op") == "execute_ack":
+                pending = dict(
+                    zip(m.get("exec_ids") or [], (c["cell"] for c in cells), strict=False)
+                )
+                statuses.update({k: v for k, v in early.items() if k in pending})
+            elif m.get("op") == "event" and m.get("kind") == "done":
+                status = (m.get("payload") or {}).get("status", "ok")
+                target = statuses if pending is not None else early
+                if pending is None or m.get("exec_id") in pending:
+                    target[m.get("exec_id")] = status
+    return {str(pending[e]): s for e, s in statuses.items()}
+
+
 def cmd_run(args) -> int:
+    if args.file:
+        source = Path(args.file).absolute()
+        root = project_root(source, args.workdir)
+        coro = _run_cells(args, source, root)
+        if args.timeout > 0:
+            coro = asyncio.wait_for(coro, args.timeout)
+        statuses = asyncio.run(coro)
+        selected = ",".join(sorted(statuses, key=int))
+        reply = _query(source, root, args, selected)
+        for record in reply["cells"]:
+            if statuses.get(str(record["cell"])) == "skipped":
+                record.update(status="skipped", execution_count=None, outputs=[])
+                record.pop("seconds", None)
+        _print_outputs(reply, args)
+        return 0 if all(s == "ok" for s in statuses.values()) else 1
+    if args.code is None:
+        raise ValueError("run needs a notebook file or -c CODE")
     coro = _run(args)
     if args.timeout > 0:
         coro = asyncio.wait_for(coro, args.timeout)
@@ -265,6 +471,20 @@ def cmd_copy(args) -> int:
     return asyncio.run(_export(args, "copy"))
 
 
+RUN_EXAMPLES = """\
+Cells are numbered from 0 in file order (markdown cells count); earlier cells'
+variables stay loaded, so rerun only the cells you changed. Batch several
+experiments in ONE shell command and print one line per cell:
+
+  for depth in 2 4 8; do
+    perl -pi -e "s/^depth = .*/depth = $depth/" exp.pynb
+    tithon run exp.pynb --cells 3-5 --summary
+  done
+
+Read without running: tithon outputs nb.pynb --summary | --errors | --cells N
+"""
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="tithon")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -299,12 +519,63 @@ def main(argv=None) -> None:
     )
     sp.set_defaults(fn=cmd_daemon)
 
-    sp = sub.add_parser("run", help="execute code in a session")
-    sp.add_argument("-c", "--code", required=True)
+    def output_options(sp, *, run: bool = False) -> None:
+        sp.add_argument("--workdir", help="project root (default: nearest .tithon/ or git root)")
+        sp.add_argument("--cells", help="code cell indices, e.g. 3 or 1,4-6 (default: all)")
+        sp.add_argument(
+            "--tail",
+            type=int,
+            default=None,
+            help="keep the last N lines per output (0 = all; default 5, tracebacks 20)",
+        )
+        sp.add_argument(
+            "--head", type=int, default=0, help="keep the first N lines per output instead"
+        )
+        sp.add_argument("--grep", help="keep only lines matching this regex (case-insensitive)")
+        sp.add_argument(
+            "--max-chars",
+            type=int,
+            default=6000,
+            help="stop the text view after N chars (0 = no limit)",
+        )
+        sp.add_argument("--json", action="store_true", help="print the bounded records as JSON")
+        sp.add_argument("--summary", action="store_true", help="one line per cell")
+        if not run:
+            sp.add_argument(
+                "--errors", action="store_true", help="only cells whose last run raised"
+            )
+            sp.add_argument(
+                "--offline", action="store_true", help="read the shared output file only"
+            )
+
+    sp = sub.add_parser(
+        "run",
+        help="execute cells of a notebook file (prints their outputs) or code in a session",
+        description="With FILE, run its cells in the file's persistent kernel and print "
+        "their bounded outputs; exit 1 if a cell raised. With -c, run code in --session.",
+        epilog=RUN_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument("file", nargs="?", help="percent-format notebook (.pynb/.py)")
+    sp.add_argument("-c", "--code")
     sp.add_argument("--session", default="default", help="session id (file uri); per-file kernel")
     sp.add_argument("--no-wait", action="store_true", help="submit and exit (prints exec_id)")
     sp.add_argument("--timeout", type=float, default=0.0)
+    sp.add_argument(
+        "--keep-going", action="store_true", help="run every selected cell after an error"
+    )
+    output_options(sp, run=True)
     sp.set_defaults(fn=cmd_run)
+
+    sp = sub.add_parser(
+        "outputs",
+        help="print a notebook file's current cell outputs, bounded for agents",
+        description="Read current outputs without running code or starting a daemon: from "
+        "the running daemon (live, including running cells) or the shared output file.",
+    )
+    sp.add_argument("file", help="percent-format notebook (.pynb/.py)")
+    output_options(sp)
+    sp.set_defaults(fn=cmd_outputs)
 
     sp = sub.add_parser("attach", help="attach and stream events as NDJSON")
     sp.add_argument("--session", default="default", help="session id (file uri); per-file kernel")

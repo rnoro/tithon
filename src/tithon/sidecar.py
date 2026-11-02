@@ -351,6 +351,18 @@ def _position(origin: dict | None) -> dict | None:
     return {"index": origin.get("index"), "range": origin.get("range")}
 
 
+def cell_ranges(cells: list[dict], source: str) -> dict[int, dict]:
+    """Each cell's 0-based inclusive line range, marker line included."""
+    lines = len(source.splitlines())
+    return {
+        c["index"]: {
+            "start": max(0, c["start"] - 1),
+            "end": max(0, cells[i + 1]["start"] - 2 if i + 1 < len(cells) else lines - 1),
+        }
+        for i, c in enumerate(cells)
+    }
+
+
 def current_executions(executions: list[dict], source: str | None = None) -> list[dict]:
     """Select one display per current cell, matching exact source and moved cells.
 
@@ -376,14 +388,7 @@ def current_executions(executions: list[dict], source: str | None = None) -> lis
         cell_hashes[cell["index"]] = variants
         for sha in variants:
             by_hash.setdefault(sha, []).append(cell)
-    lines = len(source.splitlines()) if source is not None else 0
-    ranges = {
-        c["index"]: {
-            "start": max(0, c["start"] - 1),
-            "end": max(0, cells[i + 1]["start"] - 2 if i + 1 < len(cells) else lines - 1),
-        }
-        for i, c in enumerate(cells or [])
-    }
+    ranges = cell_ranges(cells, source) if cells is not None else {}
     attached = {}
     owners = {}
     for ex in sorted(executions, key=lambda e: e.get("seq", 0)):
