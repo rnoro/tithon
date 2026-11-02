@@ -16,16 +16,13 @@
 * **widgets:** resolve mapped AMD dependencies ([876fa76](https://github.com/rnoro/tithon/commit/876fa761b1a972742f111b8108eea14bea51df99))
 * **widgets:** route callback output to persistent cell areas ([9512104](https://github.com/rnoro/tithon/commit/9512104c1370b8bc151660eebf6e7728ee9ebe0c))
 * **widgets:** show partial read-only mixed outputs ([7963b8c](https://github.com/rnoro/tithon/commit/7963b8c0d7697ada7b6cf5431075f9d077e7ae91))
-* **widgets:** support interactive and third-party widgets ([7ba2177](https://github.com/rnoro/tithon/commit/7ba217730469ec6f1a8656fff809b2732fb3fcb4))
 * **widgets:** support trusted anywidget models ([7f485f6](https://github.com/rnoro/tithon/commit/7f485f6a121750983ca67de7cb2814c14e8d3f4e))
 
 
 ### Bug Fixes
 
-* **extension:** attach reopened notebooks without a saved kernel choice ([34910f3](https://github.com/rnoro/tithon/commit/34910f360ddbd1963c2b5419bad874263c208975))
 * **extension:** attach reopened notebooks without a saved kernel choice ([9905b04](https://github.com/rnoro/tithon/commit/9905b04322b0fe2f7accf32dea0b62e8caf8d43c))
 * **sidecar:** persist only current notebook cell outputs ([57f4212](https://github.com/rnoro/tithon/commit/57f421295cf265e102dfb7a745eff8aa66e8372c))
-* **sidecar:** share only current notebook outputs ([91a1ed6](https://github.com/rnoro/tithon/commit/91a1ed60406b9e11ca44cb2c4ebcbb268a8551e1))
 * **widgets:** gate interaction until state is current ([595b37e](https://github.com/rnoro/tithon/commit/595b37e9d897c73b1c808e2453d5c8f61b4dd398))
 * **widgets:** identify unshown fallback children ([7118c4d](https://github.com/rnoro/tithon/commit/7118c4d5364563a49ec080960716aa745b3ed1bc))
 * **widgets:** preserve view and model errors ([64bd5bb](https://github.com/rnoro/tithon/commit/64bd5bb819b99a3d7b9d044bbf23c512cabe8398))
