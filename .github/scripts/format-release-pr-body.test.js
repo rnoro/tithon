@@ -98,3 +98,30 @@ assert.equal(
 const unknown =
   "<details><summary>unknown: 1.0.0</summary>\n\nnotes\n</details>\n\n---\n";
 assert.equal(formatReleasePrBody(unknown), unknown);
+
+const rootOnlyVisible = `Header
+---
+
+
+## tithon 0.3.1
+
+[Compare changes](https://example.test/compare/v0.3.0...v0.3.1) (2026-11-02)
+
+### Features
+
+* Query outputs
+
+---
+Footer`;
+const rootOnlyRestored = restoreReleasePrBody(rootOnlyVisible);
+assert.match(rootOnlyRestored, /<details><summary>0\.3\.1<\/summary>/);
+assert.match(rootOnlyRestored, /<details><summary>release-group: 0\.0\.0<\/summary>/);
+assert.equal(
+  rootOnlyRestored.indexOf("release-group") > rootOnlyRestored.indexOf("0.3.1</summary>"),
+  true,
+);
+assert.equal(formatReleasePrBody(rootOnlyRestored), rootOnlyVisible);
+assert.doesNotMatch(restoreReleasePrBody(visible), /release-group/);
+const visibleExtensionSection = visible.replace(/## tithon 0\.2\.2[\s\S]*?(?=## vscode-tithon)/, "");
+assert.doesNotMatch(restoreReleasePrBody(visibleExtensionSection), /release-group/);
+assert.doesNotMatch(restoreReleasePrBody(visibleExtensionSection), /\u0000/);
