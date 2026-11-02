@@ -678,7 +678,8 @@ drives the same daemon over the socket:
 | Command            | Purpose                                                                                                    |
 | ------------------ | ---------------------------------------------------------------------------------------------------------- |
 | `tithon daemon`    | Run the daemon (foreground); `--log-level`, `--idle-timeout`, `--history-retention-days`, `--history-target-mib` |
-| `tithon run`       | Execute code in a session; `-c`, `--no-wait`, `--timeout`                                                  |
+| `tithon run`       | Execute code in a session (`-c`, `--no-wait`, `--timeout`), or cells of a notebook file (`FILE --cells`) |
+| `tithon outputs`   | Print a notebook file's current outputs, bounded (no daemon or kernel is started)  |
 | `tithon import`    | Import a Python nbformat 4 notebook as percent source and saved outputs         |
 | `tithon copy`      | Copy percent source, current outputs and metadata into an independent file session |
 | `tithon export`    | Export saved source plus current/saved outputs as nbformat 4 without execution  |
@@ -694,6 +695,35 @@ Session-scoped commands take `--session` (the file uri), defaulting to
 `default` — the CLI's own session. `tithon kill` is the exception: it requires
 an explicit `--session`, because terminating a kernel by accident is not
 something a default should be able to do.
+
+### 5.0 Bounded output queries
+
+`query_outputs` is a session-free daemon op, like `refresh_outputs`: it never
+binds a connection, creates a session or spawns a kernel. Given a percent file,
+it answers from that file's live session when one exists (running executions
+included, so partial output is visible) and otherwise from the shared output
+file. Outputs map to cells exactly as publication does
+(`sidecar.current_executions`), so an edited cell has no output until it runs
+again. Every code cell in the selection gets a record (`cell` index counting
+markdown cells, 1-based `lines`, `status` or null when never run,
+`execution_count`, `seconds`, `outputs`).
+
+Each output becomes one short item ([`outputs.py`](../src/tithon/outputs.py)):
+merged stdout/stderr text, an error's ANSI-free traceback with an
+`ename: evalue` summary, `text/plain` (or tag-stripped HTML/markdown) of a result,
+an image as its artifact path, and a widget as its final-state text. Requests
+select cells (`"2,4-6"`), errors only, and bound each text item to its last
+`tail` (default 5, or 20 for a traceback) or first `head` lines, optionally after a case-insensitive
+`grep`; every trim reports its `omitted_lines`. The CLI renders the records as
+plain text with a character cap, a one-line-per-cell summary, or JSON, and reads
+the shared output file directly when no daemon answers.
+
+`tithon run FILE --cells` submits the selected cells as one batch with the same
+origin and cell hash the extension sends, so their outputs attach to the cells
+in VSCode too; it waits for every cell's completion, prints the same bounded
+view, and exits 1 when a cell did not finish `ok`. The project root is the
+nearest ancestor with a project `.tithon/` (not the daemon home), then the git
+root, then the file's directory.
 
 ---
 
@@ -1053,6 +1083,7 @@ Capability → what it guarantees → how it is verified:
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
 | Widget identity          | Historical/copy state cannot rebind to a replacement kernel | `v71` (real daemon SIGKILL, same-ID models, retention, saved projection and scoped renderer) |
+| Bounded output query     | Selected, trimmed current outputs; never spawns for a query | `test_outputs_query.py` (real daemon: file-cell run, live/offline query, skipped cell, no session for an unknown file) |
 | Saved widget state       | On: defaults omitted, every trait restored on read; off: final-state text, no state | `test_widget_save_state.py` (real daemon `tqdm.notebook`, both choices), `widgetDefaults.test.ts` (table matches the bundle; compacted state renders identical models and DOM) |
 | Widget comm transport | Real callback values, raw correlation and shared model lifecycle | `v72` (actual socket/kernel, binary, replay, scoped rejection), `v73` (real VSCode DOM input and stale-view revocation) |
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |

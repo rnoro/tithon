@@ -35,7 +35,7 @@ from urllib.request import url2pathname
 import psutil
 from websockets.asyncio.server import unix_serve
 
-from . import notebook, retention, sidecar
+from . import notebook, outputs, retention, sidecar
 from .artifacts import ArtifactStore
 from .folding import SCOPE_CELL, SCOPE_KEY, ExecutionFold
 from .journal import JOURNALED_IOPUB, Journal, event_from_message
@@ -769,6 +769,20 @@ class Session:
         if self.journal.count_local_executions():
             self._publish_sidecar()
 
+    def saved_view(self) -> dict:
+        """Every execution in saved form, with widget state flattened for reading.
+
+        Running executions stay in, so a query sees partial output; publication
+        filters to terminal ones (see `sidecar.build`).
+        """
+        return sidecar.saved_snapshot(
+            {
+                "executions": self._execution_snapshots(),
+                "widgets": self._mirror.snapshot(),
+                "widget_context": self.widget_context(),
+            }
+        )
+
     def _publish_sidecar(self) -> bool:
         """Rewrite the project's shared snapshot from the current folds.
 
@@ -787,13 +801,7 @@ class Session:
         """
         if self.sidecar_path is None:
             return True  # nothing shared, so nothing can be left inconsistent
-        saved = sidecar.saved_snapshot(
-            {
-                "executions": self._execution_snapshots(),
-                "widgets": self._mirror.snapshot(),
-                "widget_context": self.widget_context(),
-            }
-        )
+        saved = self.saved_view()
         try:
             source_path = _uri_to_path(self.session_id)
             if source_path is None:
@@ -2476,6 +2484,39 @@ class Daemon:
                 idle,
             )
 
+    def _live_session_for(self, source: Path) -> Session | None:
+        """The live session of a file, matched by uri or by its resolved path."""
+        live = self._sessions.get(source.absolute().as_uri())
+        if live is not None:
+            return live
+        canonical = source.resolve()
+        matches = [
+            s
+            for sid, s in self._sessions.items()
+            if (path := _uri_to_path(sid)) is not None and path.resolve() == canonical
+        ]
+        if len(matches) > 1:
+            raise ValueError("Multiple live sessions refer to this file; use its original path")
+        return matches[0] if matches else None
+
+    def _query_outputs(self, msg: dict) -> dict:
+        """Bounded current outputs of one file; never creates a session or kernel.
+
+        A live session answers from memory, running cells included; otherwise
+        the project's shared output file answers.
+        """
+        source = Path(msg["source"]).absolute()
+        with source.open(encoding="utf-8", newline="") as handle:
+            text = handle.read()
+        live = self._live_session_for(source)
+        if live is not None:
+            snapshot, origin = live.saved_view(), "live"
+        else:
+            root = Path(msg.get("workdir") or source.parent)
+            snapshot, origin = outputs.saved_snapshot_for(source, root)
+        records = outputs.answer(snapshot, text, msg)
+        return {"op": "outputs", "origin": origin, "cells": records}
+
     def _copy_notebook(
         self, source: Path, destination: Path, root: Path, save_widget_state: bool = True
     ) -> dict:
@@ -2585,6 +2626,13 @@ class Daemon:
                     except (OSError, ValueError, KeyError) as error:
                         await ws.send(json.dumps({"op": "error", "message": str(error)}))
                     continue
+                if op == "query_outputs":
+                    try:
+                        reply = self._query_outputs(msg)
+                    except (OSError, ValueError, KeyError, re.error) as error:
+                        reply = {"op": "error", "message": str(error)}
+                    await ws.send(json.dumps(reply))
+                    continue
                 if op in ("import_notebook", "export_notebook", "copy_notebook"):
                     try:
                         source = Path(msg["source"])
@@ -2600,20 +2648,7 @@ class Daemon:
                                 source, destination, root, save_widget_state
                             )
                         else:
-                            live_session = self._sessions.get(source.absolute().as_uri())
-                            if live_session is None:
-                                canonical = source.resolve()
-                                matches = [
-                                    s
-                                    for sid, s in self._sessions.items()
-                                    if (path := _uri_to_path(sid)) is not None
-                                    and path.resolve() == canonical
-                                ]
-                                if len(matches) > 1:
-                                    raise ValueError(
-                                        "Multiple live sessions refer to this file; export using its original path"
-                                    )
-                                live_session = matches[0] if matches else None
+                            live_session = self._live_session_for(source)
                             snapshot = live_session.snapshot() if live_session else None
                             result = notebook.export_notebook(
                                 source, destination, root, snapshot, save_widget_state

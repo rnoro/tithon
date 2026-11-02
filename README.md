@@ -175,6 +175,8 @@ for the full design.
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tithon daemon`             | Run the daemon (foreground). Supports `--log-level`, `--idle-timeout`, `--history-retention-days`, and `--history-target-mib`.                      |
 | `tithon run -c CODE`        | Submit code and stream its output (`--session <uri>`, `--no-wait` to print the exec id and exit, `--timeout N` to bound the wait).                  |
+| `tithon run FILE`           | Run a notebook file's cells (`--cells 1,3-4`, default all) in its persistent kernel and print their bounded outputs; exit 1 if a cell raised.      |
+| `tithon outputs FILE`       | Print a notebook file's current outputs, bounded for agents (`--cells`, `--errors`, `--summary`, `--tail/--head N`, `--grep RE`, `--json`).        |
 | `tithon import SRC DEST`    | Import a Python nbformat 4 `.ipynb` as percent source (`.pynb` or `.py`) plus saved outputs and metadata (`--workdir PROJECT`).                     |
 | `tithon copy SRC DEST`      | Copy percent source, current outputs, and metadata into an independent file session within one project (`--workdir PROJECT`).                       |
 | `tithon export SRC DEST`    | Export saved source plus current/saved outputs as a Python nbformat 4 `.ipynb` without executing code (`--workdir PROJECT`).                        |
@@ -191,6 +193,31 @@ for the full design.
 - `--since 0` — full folded snapshot, then live delta.
 - `--since N` — replay only events after seq `N`, then a `sync` marker, then live.
 - `--since -1` — live only, ignore history.
+
+### For coding agents
+
+An agent that edits a notebook's research code needs a few lines of output per
+iteration, not the whole notebook. `tithon run` and `tithon outputs` give it
+exactly that, from the same persistent kernel a person sees in VSCode:
+
+```sh
+tithon run exp/train.pynb --cells 2-4      # rerun only what changed, print bounded outputs
+tithon outputs exp/train.pynb --summary    # one line per cell: status, time, last line
+tithon outputs exp/train.pynb --errors     # just the cells that raised, traceback tail
+tithon outputs exp/train.pynb --cells 2 --grep "val_loss"
+```
+
+Cells are numbered as in the file (markdown cells count), and each header shows
+the cell's line span for editing. Each text output keeps its last 5 lines by
+default (a traceback 20) and says how many it dropped. Images are listed as file paths under
+`.tithon/outputs/`, and widgets as text of their final state. `outputs` never
+starts a daemon or a kernel: it reads the running daemon (live, including cells
+still running) or the shared output file. An edited cell shows no output until
+it runs again, so an agent never reads a result produced by older code.
+
+The two commands are built for loops: `--summary` prints one line per cell,
+and several edit-and-run steps fit in one shell command (see `tithon run --help`),
+so an agent pays for one tool call instead of one per experiment.
 
 ## Configuration
 
