@@ -79,15 +79,15 @@ def test_copy_current_outputs_metadata_and_independent_artifacts(tmp_path):
     target_journal.close()
 
 
-def test_copy_keeps_only_current_attachments_and_stale_hash(tmp_path):
+def test_copy_keeps_only_current_attachments_without_stale_output(tmp_path):
     source, target = tmp_path / "source.py", tmp_path / "target.pynb"
     source.write_text("# %%\nnew = 2\n# %%\nmoved = 3\n")
     old, moved = "old = 1\n", "moved = 3\n"
     snapshot = {"executions": [execution(1, old), execution(2, old), execution(3, moved, 0)]}
     notebook.copy_percent(source, target, tmp_path, snapshot)
     copied = sidecar.read(sidecar.sidecar_path(tmp_path, target))[0]["executions"]
-    assert [(e["seq"], e["origin"]["index"]) for e in copied] == [(2, 0), (3, 1)]
-    assert copied[0]["cell_hash"] == hashlib.sha256(old.encode()).hexdigest()
+    assert [(e["seq"], e["origin"]["index"]) for e in copied] == [(1, 1)]
+    assert copied[0]["cell_hash"] == hashlib.sha256(moved.encode()).hexdigest()
     assert source.read_bytes() == target.read_bytes()
 
 

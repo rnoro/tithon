@@ -118,7 +118,16 @@ def test_rich_round_trip_and_existing_sidecar_restore(tmp_path, rich_notebook):
     notebook.export_notebook(py, exported, tmp_path)
     result = nbformat.read(exported, as_version=4)
     nbformat.validate(result)
-    assert result.metadata == original.metadata
+    # Saved widget state omits traits equal to the renderer's defaults; the
+    # rest of the metadata and every trait value survive the round trip.
+    saved = result.metadata.pop("widgets")[notebook.WIDGET_STATE]
+    expected = original.metadata.copy()
+    original_widgets = expected.pop("widgets")[notebook.WIDGET_STATE]
+    assert result.metadata == expected
+    assert saved == sidecar.compact_widgets(original_widgets)
+    assert saved["state"]["progress"]["state"] == {"value": 42}
+    expanded = sidecar.expand_widgets(saved)["state"]["progress"]["state"]
+    assert expanded.items() >= original_widgets["state"]["progress"]["state"].items()
     assert result.cells == original.cells
 
 
@@ -146,7 +155,7 @@ def test_no_execution_and_no_overwrite(tmp_path):
     assert output.read_bytes() == before
 
 
-def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, rich_notebook):
+def test_source_edit_omits_old_output_and_live_snapshot_overrides_sidecar(tmp_path, rich_notebook):
     source, _ = rich_notebook
     py = tmp_path / "converted.py"
     notebook.import_notebook(source, py)
@@ -155,8 +164,7 @@ def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, r
     notebook.export_notebook(py, output)
     result = nbformat.read(output, as_version=4)
     assert result.cells[1].source.startswith("print('changed')")
-    assert result.cells[1].metadata.tithon.stale_outputs
-    assert result.cells[1].outputs[0].text == "한글\n"
+    assert result.cells[1].outputs == []
     body = notebook.parse_percent(py.read_text())[1]["body"]
     import hashlib
 
@@ -164,6 +172,7 @@ def test_source_edit_marks_stale_and_live_snapshot_overrides_sidecar(tmp_path, r
         "executions": [
             {
                 "seq": 999,
+                "status": "done",
                 "origin": {"index": 1},
                 "cell_hash": hashlib.sha256(body.encode()).hexdigest(),
                 "outputs": [{"output_type": "stream", "name": "stdout", "text": "live!"}],

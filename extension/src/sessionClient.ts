@@ -25,6 +25,7 @@ import {
   type JournalExecution,
   type LineRange,
 } from "./cellAttach";
+import type { AttachOptions } from "./daemonClient";
 import { defaultSocketPath } from "./daemonHome";
 import { ExecutionFold, type FoldState, type OutputItem } from "./outputFold";
 import {
@@ -336,6 +337,7 @@ export class SessionClient {
     private readonly sockPath: string = defaultSocketPath(),
     private readonly session: string = "default",
     private readonly workdir?: string,
+    private readonly attachOptions: AttachOptions = () => ({}),
   ) {}
 
   isConnected(): boolean {
@@ -535,6 +537,7 @@ export class SessionClient {
             last_seen_seq: lastSeenSeq,
             session: this.session,
             workdir: this.workdir,
+            ...this.attachOptions(this.session),
           }),
         );
       });
@@ -926,6 +929,7 @@ export class SessionClient {
             last_seen_seq: -1,
             session: this.session,
             workdir: this.workdir,
+            ...this.attachOptions(this.session),
           }),
         ),
       );

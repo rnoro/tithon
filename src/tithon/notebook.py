@@ -5,18 +5,16 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
-import io
 import json
 import re
-import tokenize
 from pathlib import Path
 
 import nbformat
 
 from . import sidecar
+from .cells import parse_percent
 from .widgets import WidgetMirror
 
-MARKER = re.compile(r"^#\s*%%(.*)$")
 WIDGET_STATE = "application/vnd.jupyter.widget-state+json"
 IMAGE_EXT = {
     "image/png": "png",
@@ -25,49 +23,6 @@ IMAGE_EXT = {
     "image/gif": "gif",
     "image/webp": "webp",
 }
-
-
-def parse_percent(text: str) -> list[dict]:
-    """Find top-level comment markers with Python's string-aware tokenizer."""
-    lines = re.findall(r".*?(?:\r\n|\r|\n|$)", text, re.DOTALL)
-    if lines and not lines[-1]:
-        lines.pop()
-    markers = {}
-    depth = 0
-    try:
-        for token in tokenize.generate_tokens(
-            io.StringIO(text.replace("\r\n", "\n").replace("\r", "\n")).readline
-        ):
-            if token.type == tokenize.OP:
-                if token.string in "([{":
-                    depth += 1
-                elif token.string in ")]}":
-                    depth = max(0, depth - 1)
-            if token.type == tokenize.COMMENT and token.start[1] == 0 and not depth:
-                found = MARKER.match(token.string)
-                if found:
-                    suffix = found[1].strip().lower()
-                    markers[token.start[0] - 1] = (
-                        "markdown"
-                        if suffix.startswith("[markdown]")
-                        else "raw"
-                        if suffix.startswith("[raw]")
-                        else "code"
-                    )
-    except (tokenize.TokenError, IndentationError) as error:
-        raise ValueError(f"Cannot identify cell boundaries: {error}") from error
-    cells = []
-    current = None
-    for index, line in enumerate(lines):
-        if index in markers:
-            current = {"kind": markers[index], "body": "", "start": index + 1, "index": len(cells)}
-            cells.append(current)
-        else:
-            if current is None:
-                current = {"kind": "code", "body": "", "start": 0, "index": 0}
-                cells.append(current)
-            current["body"] += line
-    return cells
 
 
 def _metadata_path(root: Path, source: Path) -> Path:
@@ -132,7 +87,9 @@ def _embed(value, root: Path):
     return {k: _embed(v, root) for k, v in value.items()}
 
 
-def import_notebook(source: Path, destination: Path, root: Path | None = None) -> dict:
+def import_notebook(
+    source: Path, destination: Path, root: Path | None = None, save_widget_state: bool = True
+) -> dict:
     """Validate before publishing; the .py is published last and never executed."""
     source, destination = source.resolve(), destination.resolve()
     root = (root or destination.parent).resolve()
@@ -206,8 +163,10 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
     if not isinstance(widgets, dict):
         raise ValueError("Notebook widgets metadata must be an object")
     shared_doc["widgets"] = widgets.get(WIDGET_STATE)
-    shared_doc = sidecar.saved_snapshot(shared_doc)
+    shared_doc = sidecar.prune_widgets(shared_doc)
     WidgetMirror().hydrate(shared_doc["widgets"] or {})
+    if not save_widget_state:
+        shared_doc = sidecar.text_widgets(shared_doc)
     notebook_metadata = _externalize(dict(doc.metadata), root, pending)
     pending[metadata_path] = (
         json.dumps(
@@ -241,9 +200,13 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
 
 
 def export_notebook(
-    source: Path, destination: Path, root: Path | None = None, snapshot: dict | None = None
+    source: Path,
+    destination: Path,
+    root: Path | None = None,
+    snapshot: dict | None = None,
+    save_widget_state: bool = True,
 ) -> dict:
-    """Export saved source and matching outputs; stale results are explicitly marked."""
+    """Export saved source and its current matching outputs without execution."""
     source, destination = source.resolve(), destination.resolve()
     root = (root or source.parent).resolve()
     if source.suffix.lower() not in (".py", ".pynb") or destination.suffix.lower() != ".ipynb":
@@ -251,7 +214,8 @@ def export_notebook(
     if destination.exists():
         raise FileExistsError(f"Destination already exists: {destination}")
     with source.open(encoding="utf-8", newline="") as handle:
-        cells = parse_percent(handle.read())
+        source_text = handle.read()
+        cells = parse_percent(source_text)
     metadata_path = _metadata_path(root, source)
     saved = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
     if snapshot is None:
@@ -259,7 +223,15 @@ def export_notebook(
         found = sidecar.read(shared) if shared else None
         snapshot = found[0] if found else {}
     snapshot = sidecar.saved_snapshot(snapshot)
-    executions = snapshot.get("executions", [])
+    snapshot["executions"] = [
+        ex
+        for ex in sidecar.current_executions(snapshot.get("executions", []), source_text)
+        if ex.get("status") in sidecar.SHAREABLE_STATUS
+    ]
+    snapshot = sidecar.prune_widgets(snapshot)
+    if not save_widget_state:
+        snapshot = sidecar.text_widgets(snapshot)
+    executions = {ex["origin"]["index"]: ex for ex in snapshot["executions"]}
     nb_cells = []
     used_ids = set()
     for cell in cells:
@@ -304,24 +276,23 @@ def export_notebook(
             if key in previous:
                 nb_cell[key] = _embed(previous[key], root)
         if kind == "code":
-            matches = [e for e in executions if (e.get("origin") or {}).get("index") == index]
-            exact = [e for e in matches if e.get("cell_hash") == sha]
-            if not exact:
-                exact = [e for e in executions if e.get("cell_hash") == sha]
-            ex = max(exact or matches, key=lambda e: e.get("seq", 0), default={})
+            ex = executions.get(index, {})
             outputs = _embed(ex.get("outputs", []), root)
             for output in outputs:
                 output.pop("display_id", None)
             nb_cell.update(outputs=outputs, execution_count=ex.get("execution_count"))
-            if ex and ex.get("cell_hash") != sha:
-                nb_cell["metadata"]["tithon"] = {"stale_outputs": True}
         if "id" not in nb_cell or nb_cell["id"] in used_ids:
             nb_cell["id"] = nbformat.v4.new_code_cell().id
         used_ids.add(nb_cell["id"])
         nb_cells.append(nb_cell)
     metadata = _embed(saved.get("metadata", {"language_info": {"name": "python"}}), root)
     if snapshot.get("widgets") is not None:
-        metadata.setdefault("widgets", {})[WIDGET_STATE] = snapshot["widgets"]
+        widgets = sidecar.compact_widgets(snapshot["widgets"])
+        metadata.setdefault("widgets", {})[WIDGET_STATE] = widgets
+    elif isinstance(metadata.get("widgets"), dict):
+        metadata["widgets"].pop(WIDGET_STATE, None)
+        if not metadata["widgets"]:
+            metadata.pop("widgets")
     doc = nbformat.from_dict(
         {"nbformat": 4, "nbformat_minor": 5, "metadata": metadata, "cells": nb_cells}
     )
@@ -335,7 +306,13 @@ def export_notebook(
     return {"cells": len(cells), "destination": str(destination)}
 
 
-def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | None = None) -> dict:
+def copy_percent(
+    source: Path,
+    destination: Path,
+    root: Path,
+    snapshot: dict | None = None,
+    save_widget_state: bool = True,
+) -> dict:
     """Copy saved percent source and current outputs into an independent file session."""
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"Destination already exists: {destination}")
@@ -365,54 +342,12 @@ def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | N
     snapshot = sidecar.saved_snapshot(snapshot)
     if any(e.get("status") in ("queued", "running") for e in snapshot.get("executions", [])):
         raise ValueError("Wait for running and queued cells before copying")
-    # Match the current attachment rule: exact index/hash, moved content, then stale index.
-    code_cells = [c for c in cells if c["kind"] == "code"]
-    line_count = len(re.findall(r"\r\n|\r|\n", source_bytes.decode("utf-8")))
-    if source_bytes and not source_bytes.endswith((b"\r", b"\n")):
-        line_count += 1
-    ranges = {
-        cell["index"]: {
-            "start": max(0, cell["start"] - 1),
-            "end": max(
-                max(0, cell["start"] - 1),
-                cells[index + 1]["start"] - 2 if index + 1 < len(cells) else line_count - 1,
-            ),
-        }
-        for index, cell in enumerate(cells)
-    }
-    hashes = {c["index"]: hashlib.sha256(c["body"].encode()).hexdigest() for c in code_cells}
-    attached = {}
-    for execution in sorted(snapshot.get("executions", []), key=lambda e: e.get("seq", 0)):
-        if execution.get("status") not in sidecar.SHAREABLE_STATUS or not execution.get(
-            "cell_hash"
-        ):
-            continue
-        origin = execution.get("origin") or {}
-        index = origin.get("index")
-        target = next((c for c in code_cells if c["index"] == index), None)
-        if target is None or hashes[target["index"]] != execution["cell_hash"]:
-            matches = [c for c in code_cells if hashes[c["index"]] == execution["cell_hash"]]
-            if matches:
-                previous = origin.get("range") or {}
-
-                def proximity(cell, previous=previous):
-                    current = ranges[cell["index"]]
-                    start, end = previous.get("start", 0), previous.get("end", 0)
-                    if current["start"] <= end and start <= current["end"]:
-                        return (0, cell["index"])
-                    gap = (
-                        current["start"] - end if current["start"] > end else start - current["end"]
-                    )
-                    return (gap, cell["index"])
-
-                target = min(matches, key=proximity)
-        if target is not None:
-            current = copy.deepcopy(execution)
-            current["origin"] = {"index": target["index"], "range": ranges[target["index"]]}
-            attached[target["index"]] = current
-    copied = sidecar.build(list(attached.values()))
+    copied = sidecar.build(snapshot.get("executions", []), source_bytes.decode("utf-8"))
     copied["widgets"] = copy.deepcopy(snapshot.get("widgets"))
+    copied = sidecar.prune_widgets(copied)
     WidgetMirror().hydrate(copied["widgets"] or {})
+    if not save_widget_state:
+        copied = sidecar.text_widgets(copied)
     pending = {}
     owner = hashlib.sha256(destination.as_uri().encode()).hexdigest()[:20]
 

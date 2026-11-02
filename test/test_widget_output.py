@@ -72,12 +72,13 @@ def test_callback_capture_cross_cell_replay_restart_and_later_clear(host):
     root, work, env, start = host
     daemon = start()
     source = work / "callback.pynb"
-    source.write_text("# %%\n" + CODE + "\n# %%\ndisplay(button)\n")
+    second_code = "display(button)\nprint('SIBLING B')\n"
+    source.write_text("# %%\n" + CODE + "# %%\n" + second_code)
     sid = source.as_uri()
     sock = root / "home/daemon.sock"
     asyncio.run(prime(sock, sid, work))
     run(env, "run", "--session", sid, "-c", CODE)
-    run(env, "run", "--session", sid, "-c", "display(button)\nprint('SIBLING B')")
+    run(env, "run", "--session", sid, "-c", second_code)
 
     async def exercise():
         ws, initial = await attach(sock, sid, work, "client-a")

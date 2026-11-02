@@ -239,6 +239,12 @@
           "minimum": 0,
           "description": "Remove output events older than this many days after safely saving current outputs. 0 disables age retention. Applied when the daemon is started; restart required for changes."
         },
+        "tithon.saveWidgetState": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Save widget state in the shared output file (.tithon/cells/) and in exported .ipynb files, so other clients can render saved widgets such as tqdm progress bars. Traits equal to the widget's defaults are omitted. When off, each widget output is saved as plain text of its final state instead. Set it in the workspace settings so everyone sharing the repository writes the same form."
+        },
         "tithon.historyTargetMiB": {
           "type": "number",
           "default": 0,

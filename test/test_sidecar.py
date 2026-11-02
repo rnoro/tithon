@@ -8,6 +8,7 @@ the project restores the outputs, with images left as files in
 """
 
 import base64
+import hashlib
 import json
 import shutil
 from collections import Counter
@@ -29,6 +30,7 @@ def make_session(tmp_path, project: str = "projA", name: str = "train.py") -> Se
     """A Session wired to a real journal/artifact store, no kernel spawned."""
     work = tmp_path / project
     work.mkdir(parents=True, exist_ok=True)
+    (work / name).write_text("# %%\nprint('x'); display(fig)")
     return Session(f"file://{work}/{name}", tmp_path / f"sess-{project}", work)
 
 
@@ -38,7 +40,7 @@ def seed_exec(s: Session, exec_id: str = "e1", status: str = "done") -> Executio
         exec_id,
         1,
         "print('x'); display(fig)",
-        cell_hash="h1",
+        cell_hash=hashlib.sha256(b"print('x'); display(fig)").hexdigest(),
         origin={"uri": s.session_id, "range": None, "index": 0},
     )
     fold = ExecutionFold()
@@ -86,10 +88,11 @@ def test_publish_writes_refs_not_base64(tmp_path):
     raw = s.sidecar_path.read_text()
     doc = json.loads(raw)
     assert doc["version"] == sidecar.SIDECAR_VERSION
-    assert [e["exec_id"] for e in doc["executions"]] == ["e1"]
+    assert len(doc["cells"]) == 1
+    assert not {"code", "exec_id", "seq", "started_at", "finished_at"} & doc["cells"][0].keys()
     # The image is a reference to a real file, never embedded bytes — the whole
     # point of the artifact store, and what keeps a live plot at one file.
-    refs = list(sidecar.artifact_refs(doc["executions"][0]["outputs"]))
+    refs = list(sidecar.artifact_refs(doc["cells"][0]["outputs"]))
     assert len(refs) == 1 and refs[0]["rel_path"].startswith(".tithon/outputs/")
     assert base64.b64encode(PNG).decode() not in raw
 
@@ -117,7 +120,8 @@ def test_in_flight_executions_are_not_shared(tmp_path):
     s._publish_sidecar()
 
     doc = json.loads(s.sidecar_path.read_text())
-    assert [e["exec_id"] for e in doc["executions"]] == ["e2"]
+    assert len(doc["cells"]) == 1
+    assert doc["cells"][0]["status"] == "done"
 
 
 def test_clear_reaches_the_shared_snapshot(tmp_path):
@@ -125,11 +129,11 @@ def test_clear_reaches_the_shared_snapshot(tmp_path):
     s = make_session(tmp_path)
     seed_exec(s)
     s._publish_sidecar()
-    assert json.loads(s.sidecar_path.read_text())["executions"][0]["outputs"]
+    assert json.loads(s.sidecar_path.read_text())["cells"][0]["outputs"]
 
     s.clear_outputs(["e1"])
 
-    assert json.loads(s.sidecar_path.read_text())["executions"][0]["outputs"] == []
+    assert json.loads(s.sidecar_path.read_text())["cells"][0]["outputs"] == []
 
 
 # -- cloning ----------------------------------------------------------------
@@ -158,7 +162,7 @@ def test_clone_restores_outputs_and_keeps_the_image(tmp_path):
     execs = dst._execution_snapshots()
     assert [e["exec_id"] for e in execs] == ["e1"]
     assert execs[0]["status"] == "done"
-    assert execs[0]["cell_hash"] == "h1"  # so output->cell mapping works
+    assert execs[0]["cell_hash"] == hashlib.sha256(b"print('x'); display(fig)").hexdigest()
     assert execs[0]["origin"]["index"] == 0
     kinds = [o["output_type"] for o in execs[0]["outputs"]]
     assert kinds == ["stream", "display_data"]
@@ -220,14 +224,16 @@ def test_a_newer_sidecar_replaces_imported_rows(tmp_path):
     dst = clone(tmp_path, src)
     assert dst.journal.count_executions() == 1
 
-    seed_exec(src, "e2")  # the author runs another cell and pushes
+    seed_exec(src, "e2")  # the author re-runs the same cell and pushes
+    src.journal.db.execute("UPDATE executions SET execution_count=2 WHERE exec_id='e2'")
     src._publish_sidecar()
     shutil.copyfile(src.sidecar_path, dst.sidecar_path)  # git pull
     dst._import_sidecar()
     dst._rebuild_folds()
 
     assert dst.journal.count_local_executions() == 0
-    assert [e["exec_id"] for e in dst._execution_snapshots()] == ["e1", "e2"]
+    assert [e["exec_id"] for e in dst._execution_snapshots()] == ["e1"]
+    assert dst._execution_snapshots()[0]["execution_count"] == 2
 
 
 def test_reimport_is_skipped_when_the_file_has_not_changed(tmp_path):
@@ -417,8 +423,8 @@ def test_the_shared_file_carries_no_machine_paths(tmp_path):
 
     raw = s.sidecar_path.read_text()
     assert str(tmp_path) not in raw
-    origin = json.loads(raw)["executions"][0]["origin"]
-    assert origin == {"index": 0, "range": None}
+    origin = json.loads(raw)["cells"][0]["origin"]
+    assert origin == {"index": 0, "range": {"start": 0, "end": 1}}
 
 
 def test_import_rebinds_executions_to_the_readers_own_file(tmp_path):
@@ -445,7 +451,7 @@ def test_the_shared_file_carries_no_continuation_state(tmp_path):
 
     s._publish_sidecar()
 
-    assert "fold_state" not in json.loads(s.sidecar_path.read_text())["executions"][0]
+    assert "fold_state" not in json.loads(s.sidecar_path.read_text())["cells"][0]
 
 
 def test_a_failed_publish_does_not_reclaim_the_images_it_still_names(tmp_path, monkeypatch):
@@ -465,7 +471,16 @@ def test_a_failed_publish_does_not_reclaim_the_images_it_still_names(tmp_path, m
     assert s.journal.find_artifact(aid) is not None
     # ...and the stale shared file still names it, so it stays renderable.
     doc = json.loads(s.sidecar_path.read_text())
-    assert list(sidecar.artifact_refs(doc["executions"][0]["outputs"]))
+    assert list(sidecar.artifact_refs(doc["cells"][0]["outputs"]))
+    s.journal.close()
+    restored = Session(s.session_id, s.session_dir, s.artifacts.workdir)
+    try:
+        restored._rebuild_folds()
+        assert restored._folds["e1"].outputs() == []
+        assert png.exists()
+        assert restored.read_artifact(aid)["found"]
+    finally:
+        restored.journal.close()
 
 
 def test_publish_survives_an_unwritable_project(tmp_path, monkeypatch):
