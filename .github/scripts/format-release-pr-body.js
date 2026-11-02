@@ -15,6 +15,15 @@ const PACKAGE_BY_DISPLAY = new Map(
   ]),
 );
 
+// A merged grouped PR whose only section is the root package (component "")
+// is read by release-please as a standalone PR, which it then requires to come
+// from a component branch; ours never does, so that release would be skipped.
+// A second section for a component no package uses keeps the body in the
+// multi-package form, where the root section matches the root's empty component.
+const GROUP_MARKER =
+  "<details><summary>release-group: 0.0.0</summary>\n\n" +
+  "Keeps a single-package release in the grouped form.\n</details>\n\n";
+
 function visibleNotes(packageInfo, version, notes) {
   const content = notes
     .trim()
@@ -23,6 +32,7 @@ function visibleNotes(packageInfo, version, notes) {
 }
 
 function formatReleasePrBody(body) {
+  body = body.replace(GROUP_MARKER, "");
   let formatted = body.replace(
     /^<details><summary>([^<\n]+)<\/summary>\n\n([\s\S]*?)\n<\/details>(?=\n\n(?:<details><summary>|---(?:\n|$)))/gm,
     (block, summary, notes) => {
@@ -64,19 +74,25 @@ function restoreReleasePrBody(body) {
     "gm",
   );
 
-  return body.replace(section, (block, display, version, notes) => {
+  const restored = [];
+  const result = body.replace(section, (block, display, version, notes) => {
     const packageInfo = PACKAGE_BY_DISPLAY.get(display);
     if (!packageInfo) {
       return block;
     }
+    restored.push(display);
     const canonicalNotes = notes
       .trimEnd()
       .replace(
         /^\[Compare changes\]\(([^)]+)\)(.*)$/m,
         `## [${version}]($1)$2`,
       );
-    return `<details><summary>${packageInfo.summary(version)}</summary>\n\n${canonicalNotes}\n</details>\n\n`;
+    const details = `<details><summary>${packageInfo.summary(version)}</summary>\n\n${canonicalNotes}\n</details>\n\n`;
+    // A placeholder after the root section, resolved once every section is known.
+    return display === "tithon" ? details + "\u0000" : details;
   });
+  const rootOnly = restored.length === 1 && restored[0] === "tithon";
+  return result.replace("\u0000", rootOnly ? GROUP_MARKER : "");
 }
 
 module.exports = { formatReleasePrBody, restoreReleasePrBody };
