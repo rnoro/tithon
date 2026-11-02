@@ -2273,6 +2273,17 @@ class Daemon:
                 except Exception:
                     log.exception("[%s] output retention failed", session.session_id)
 
+    def _session_known(self, session_id: str, workdir_hint: str | None) -> bool:
+        """Whether this file already has a session: live here, or a journal on disk.
+
+        Read-only: unlike ``_get_session`` it never creates a session, so asking
+        never spawns a kernel for a file that was never run.
+        """
+        if session_id in self._sessions:
+            return True
+        session_dir, _ = _session_layout(self.home, session_id, workdir_hint, self.workdir)
+        return (session_dir / "journal.db").is_file()
+
     def _global_status(self) -> dict:
         return {
             "op": "status_reply",
@@ -2536,8 +2547,19 @@ class Daemon:
                         await ws.send(json.dumps({"op": "error", "message": str(error)}))
                     continue
                 # Global status (no session): list every live session.
+                # A `probe` {target, workdir} adds `known` (see `_session_known`); it
+                # rides on this session-free op because a daemon that predates it
+                # answers status without the field, where an unknown op would bind
+                # the connection to the default session and spawn its kernel.
                 if op == "status" and "session" not in msg:
-                    await ws.send(json.dumps(self._global_status()))
+                    reply = self._global_status()
+                    probe = msg.get("probe")
+                    if isinstance(probe, dict) and isinstance(probe.get("target"), str):
+                        workdir = probe.get("workdir")
+                        reply["known"] = self._session_known(
+                            probe["target"], workdir if isinstance(workdir, str) else None
+                        )
+                    await ws.send(json.dumps(reply))
                     continue
                 # Shutdown the whole daemon (daemon-wide; used to relaunch under a
                 # different Python interpreter). Stops every session's kernel.
