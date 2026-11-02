@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0](https://github.com/rnoro/tithon/compare/vscode-v0.2.5...vscode-v0.3.0) (2026-11-02)
+
+
+### Features
+
+* **extension:** add a dedicated pynb notebook file icon ([47c717e](https://github.com/rnoro/tithon/commit/47c717eaa11272712f985dc188d8235d134a99a2))
+* **extension:** configure daemon home and reconnect attempts ([#26](https://github.com/rnoro/tithon/issues/26)) ([4694779](https://github.com/rnoro/tithon/commit/46947790e46fe09b4e8cd455871fab4deb63d50e))
+* **notebook:** add dedicated Python Notebook files ([a836d36](https://github.com/rnoro/tithon/commit/a836d3615fc8ed57f01a8fd585eafabf57596e79))
+* **sidecar:** make saved widget state optional ([051e65a](https://github.com/rnoro/tithon/commit/051e65a0907c679eaa3afb09434f477ce339755e))
+* **widgets:** admit bundled controls by module ([027da64](https://github.com/rnoro/tithon/commit/027da646b537a40541a20d70b9a3004157534f23))
+* **widgets:** connect controls to the live kernel ([dfda27d](https://github.com/rnoro/tithon/commit/dfda27db5d27ee147ed2d0d8352b8ce588b88010))
+* **widgets:** isolate state by kernel incarnation ([f568190](https://github.com/rnoro/tithon/commit/f56819081da6967f8f944b28fb1a6af056daaa15))
+* **widgets:** load installed classic widget modules ([49c1f46](https://github.com/rnoro/tithon/commit/49c1f4627d756bf1c728085615fe1cece88b40ff))
+* **widgets:** resolve mapped AMD dependencies ([876fa76](https://github.com/rnoro/tithon/commit/876fa761b1a972742f111b8108eea14bea51df99))
+* **widgets:** route callback output to persistent cell areas ([9512104](https://github.com/rnoro/tithon/commit/9512104c1370b8bc151660eebf6e7728ee9ebe0c))
+* **widgets:** show partial read-only mixed outputs ([7963b8c](https://github.com/rnoro/tithon/commit/7963b8c0d7697ada7b6cf5431075f9d077e7ae91))
+* **widgets:** support trusted anywidget models ([7f485f6](https://github.com/rnoro/tithon/commit/7f485f6a121750983ca67de7cb2814c14e8d3f4e))
+
+
+### Bug Fixes
+
+* **extension:** attach reopened notebooks without a saved kernel choice ([9905b04](https://github.com/rnoro/tithon/commit/9905b04322b0fe2f7accf32dea0b62e8caf8d43c))
+* **sidecar:** persist only current notebook cell outputs ([57f4212](https://github.com/rnoro/tithon/commit/57f421295cf265e102dfb7a745eff8aa66e8372c))
+* **widgets:** gate interaction until state is current ([595b37e](https://github.com/rnoro/tithon/commit/595b37e9d897c73b1c808e2453d5c8f61b4dd398))
+* **widgets:** identify unshown fallback children ([7118c4d](https://github.com/rnoro/tithon/commit/7118c4d5364563a49ec080960716aa745b3ed1bc))
+* **widgets:** preserve view and model errors ([64bd5bb](https://github.com/rnoro/tithon/commit/64bd5bb819b99a3d7b9d044bbf23c512cabe8398))
+* **widgets:** refresh models after view remount ([bf522dd](https://github.com/rnoro/tithon/commit/bf522dd311636abd3c0049f51be4af9a75101509))
+
 ## [0.2.5](https://github.com/rnoro/tithon/compare/vscode-v0.2.4...vscode-v0.2.5) (2026-10-07)
 
 
