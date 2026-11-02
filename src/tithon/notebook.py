@@ -87,7 +87,9 @@ def _embed(value, root: Path):
     return {k: _embed(v, root) for k, v in value.items()}
 
 
-def import_notebook(source: Path, destination: Path, root: Path | None = None) -> dict:
+def import_notebook(
+    source: Path, destination: Path, root: Path | None = None, save_widget_state: bool = True
+) -> dict:
     """Validate before publishing; the .py is published last and never executed."""
     source, destination = source.resolve(), destination.resolve()
     root = (root or destination.parent).resolve()
@@ -163,6 +165,8 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
     shared_doc["widgets"] = widgets.get(WIDGET_STATE)
     shared_doc = sidecar.prune_widgets(shared_doc)
     WidgetMirror().hydrate(shared_doc["widgets"] or {})
+    if not save_widget_state:
+        shared_doc = sidecar.text_widgets(shared_doc)
     notebook_metadata = _externalize(dict(doc.metadata), root, pending)
     pending[metadata_path] = (
         json.dumps(
@@ -196,7 +200,11 @@ def import_notebook(source: Path, destination: Path, root: Path | None = None) -
 
 
 def export_notebook(
-    source: Path, destination: Path, root: Path | None = None, snapshot: dict | None = None
+    source: Path,
+    destination: Path,
+    root: Path | None = None,
+    snapshot: dict | None = None,
+    save_widget_state: bool = True,
 ) -> dict:
     """Export saved source and its current matching outputs without execution."""
     source, destination = source.resolve(), destination.resolve()
@@ -221,6 +229,8 @@ def export_notebook(
         if ex.get("status") in sidecar.SHAREABLE_STATUS
     ]
     snapshot = sidecar.prune_widgets(snapshot)
+    if not save_widget_state:
+        snapshot = sidecar.text_widgets(snapshot)
     executions = {ex["origin"]["index"]: ex for ex in snapshot["executions"]}
     nb_cells = []
     used_ids = set()
@@ -277,7 +287,8 @@ def export_notebook(
         nb_cells.append(nb_cell)
     metadata = _embed(saved.get("metadata", {"language_info": {"name": "python"}}), root)
     if snapshot.get("widgets") is not None:
-        metadata.setdefault("widgets", {})[WIDGET_STATE] = snapshot["widgets"]
+        widgets = sidecar.compact_widgets(snapshot["widgets"])
+        metadata.setdefault("widgets", {})[WIDGET_STATE] = widgets
     elif isinstance(metadata.get("widgets"), dict):
         metadata["widgets"].pop(WIDGET_STATE, None)
         if not metadata["widgets"]:
@@ -295,7 +306,13 @@ def export_notebook(
     return {"cells": len(cells), "destination": str(destination)}
 
 
-def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | None = None) -> dict:
+def copy_percent(
+    source: Path,
+    destination: Path,
+    root: Path,
+    snapshot: dict | None = None,
+    save_widget_state: bool = True,
+) -> dict:
     """Copy saved percent source and current outputs into an independent file session."""
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"Destination already exists: {destination}")
@@ -329,6 +346,8 @@ def copy_percent(source: Path, destination: Path, root: Path, snapshot: dict | N
     copied["widgets"] = copy.deepcopy(snapshot.get("widgets"))
     copied = sidecar.prune_widgets(copied)
     WidgetMirror().hydrate(copied["widgets"] or {})
+    if not save_widget_state:
+        copied = sidecar.text_widgets(copied)
     pending = {}
     owner = hashlib.sha256(destination.as_uri().encode()).hexdigest()[:20]
 

@@ -118,7 +118,16 @@ def test_rich_round_trip_and_existing_sidecar_restore(tmp_path, rich_notebook):
     notebook.export_notebook(py, exported, tmp_path)
     result = nbformat.read(exported, as_version=4)
     nbformat.validate(result)
-    assert result.metadata == original.metadata
+    # Saved widget state omits traits equal to the renderer's defaults; the
+    # rest of the metadata and every trait value survive the round trip.
+    saved = result.metadata.pop("widgets")[notebook.WIDGET_STATE]
+    expected = original.metadata.copy()
+    original_widgets = expected.pop("widgets")[notebook.WIDGET_STATE]
+    assert result.metadata == expected
+    assert saved == sidecar.compact_widgets(original_widgets)
+    assert saved["state"]["progress"]["state"] == {"value": 42}
+    expanded = sidecar.expand_widgets(saved)["state"]["progress"]["state"]
+    assert expanded.items() >= original_widgets["state"]["progress"]["state"].items()
     assert result.cells == original.cells
 
 

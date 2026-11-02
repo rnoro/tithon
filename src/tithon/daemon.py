@@ -228,6 +228,9 @@ class Session:
         # reconnecting after a crash has to restore, reopening after a
         # deliberate close must not (see `_handler`'s kill_kernel).
         self.closed_by_user = self.journal.get_meta("closed_by_user") == "1"
+        # The client's choice for the shared file's widget form, kept in the
+        # journal because a run can finish and publish after the client left.
+        self.save_widget_state = self.journal.get_meta("save_widget_state") != "0"
         # Executions restored from the shared sidecar rather than run here; they
         # own no raw messages, so `_rebuild_folds` hydrates their folds and
         # `_execution_snapshots` withholds a continuation state for them.
@@ -753,6 +756,19 @@ class Session:
             "[%s] imported %d shared execution(s), replacing %d", self.session_id, imported, dropped
         )
 
+    def set_save_widget_state(self, value: bool) -> None:
+        """Record the attached client's widget-state choice for the shared file.
+
+        Republished only when this machine owns the file's outputs: rewriting a
+        pulled colleague's file just because it was opened would churn git.
+        """
+        if value == self.save_widget_state:
+            return
+        self.save_widget_state = value
+        self.journal.set_meta("save_widget_state", "1" if value else "0")
+        if self.journal.count_local_executions():
+            self._publish_sidecar()
+
     def _publish_sidecar(self) -> bool:
         """Rewrite the project's shared snapshot from the current folds.
 
@@ -787,6 +803,8 @@ class Session:
             doc = sidecar.build(saved["executions"], source)
             doc["widgets"] = saved["widgets"]
             doc = sidecar.prune_widgets(doc)
+            if not self.save_widget_state:
+                doc = sidecar.text_widgets(doc)
             sidecar.write(self.sidecar_path, doc)
         except (OSError, ValueError) as e:
             log.warning("[%s] could not publish %s: %s", self.session_id, self.sidecar_path, e)
@@ -2447,7 +2465,9 @@ class Daemon:
                 idle,
             )
 
-    def _copy_notebook(self, source: Path, destination: Path, root: Path) -> dict:
+    def _copy_notebook(
+        self, source: Path, destination: Path, root: Path, save_widget_state: bool = True
+    ) -> dict:
         """Check source/destination ownership and publish without yielding to executions."""
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"Destination already exists: {destination}")
@@ -2521,7 +2541,7 @@ class Daemon:
             snapshot = live_source.snapshot()
             if snapshot.get("closed_by_user"):
                 snapshot = {"executions": [], "widgets": None}
-        return notebook.copy_percent(source, destination, root, snapshot)
+        return notebook.copy_percent(source, destination, root, snapshot, save_widget_state)
 
     async def _handler(self, ws) -> None:
         session: Session | None = None
@@ -2542,10 +2562,14 @@ class Daemon:
                         source = Path(msg["source"]).absolute()
                         root = Path(msg["workdir"]).resolve()
                         current = self._sessions.get(source.as_uri())
+                        choice = msg.get("save_widget_state")
+                        choice = choice if isinstance(choice, bool) else None
                         if current is not None:
+                            if choice is not None:
+                                current.set_save_widget_state(choice)
                             refreshed = current._publish_sidecar()
                         else:
-                            refreshed = sidecar.refresh_file(root, source)
+                            refreshed = sidecar.refresh_file(root, source, choice)
                         await ws.send(json.dumps({"op": "outputs_refreshed", "ok": refreshed}))
                     except (OSError, ValueError, KeyError) as error:
                         await ws.send(json.dumps({"op": "error", "message": str(error)}))
@@ -2555,10 +2579,15 @@ class Daemon:
                         source = Path(msg["source"])
                         destination = Path(msg["destination"])
                         root = Path(msg["workdir"])
+                        save_widget_state = msg.get("save_widget_state") is not False
                         if op == "import_notebook":
-                            result = notebook.import_notebook(source, destination, root)
+                            result = notebook.import_notebook(
+                                source, destination, root, save_widget_state
+                            )
                         elif op == "copy_notebook":
-                            result = self._copy_notebook(source, destination, root)
+                            result = self._copy_notebook(
+                                source, destination, root, save_widget_state
+                            )
                         else:
                             live_session = self._sessions.get(source.absolute().as_uri())
                             if live_session is None:
@@ -2575,7 +2604,9 @@ class Daemon:
                                     )
                                 live_session = matches[0] if matches else None
                             snapshot = live_session.snapshot() if live_session else None
-                            result = notebook.export_notebook(source, destination, root, snapshot)
+                            result = notebook.export_notebook(
+                                source, destination, root, snapshot, save_widget_state
+                            )
                         await ws.send(json.dumps({"op": "notebook_converted", **result}))
                     except Exception as error:
                         await ws.send(json.dumps({"op": "error", "message": str(error)}))
@@ -2698,6 +2729,8 @@ class Daemon:
                 session.touch()  # any client op resets the idle-GC clock
 
                 if op == "attach":
+                    if isinstance(msg.get("save_widget_state"), bool):
+                        session.set_save_widget_state(msg["save_widget_state"])
                     if sub is None:
                         candidate = msg.get("widget_binding")
                         if isinstance(candidate, str) and 1 <= len(candidate) <= 128:

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import html
 import json
 import os
+import re
 from pathlib import Path
 
 from .cells import parse_percent
@@ -28,6 +30,15 @@ CELLS_REL = Path(".tithon") / "cells"
 #: machine that never ran it; `skipped` renders as a blank, never-run cell.
 SHAREABLE_STATUS = ("done", "error", "orphaned")
 WIDGET_VIEW = "application/vnd.jupyter.widget-view+json"
+
+#: Trait defaults of the bundled ``@jupyter-widgets`` model classes, generated
+#: from the extension's renderer bundle (``extension/test/widgetDefaults.test.ts``
+#: fails when they drift). The renderer constructs a saved model through that
+#: class, which fills every missing trait from these values, so a saved trait
+#: equal to its default carries no information and is omitted on write.
+_WIDGET_DEFAULTS = json.loads(
+    Path(__file__).with_name("widget_defaults.json").read_text(encoding="utf-8")
+)
 
 
 def saved_snapshot(snapshot: dict) -> dict:
@@ -102,6 +113,205 @@ def saved_snapshot(snapshot: dict) -> dict:
             outputs.append(rewrite_output(output, scope) if scoped else output)
         execution["outputs"] = outputs
     return result
+
+
+def _same_json(a, b) -> bool:
+    """JSON equality as the renderer sees it: 1 == 1.0, but true != 1."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, int | float) and isinstance(b, int | float):
+        return a == b
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same_json(x, y) for x, y in zip(a, b, strict=True))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_json(a[k], b[k]) for k in a)
+    return type(a) is type(b) and a == b
+
+
+def _model_defaults(entry) -> dict | None:
+    """The traits the renderer supplies for a saved model, or None to keep all."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("state"), dict):
+        return None
+    module, name = entry.get("model_module"), entry.get("model_name")
+    if _WIDGET_DEFAULTS["model_module_versions"].get(module) != entry.get("model_module_version"):
+        return None
+    defaults = _WIDGET_DEFAULTS["models"].get(f"{module}/{name}")
+    state = entry["state"]
+    if defaults is None or state.get("_model_name", name) != name:
+        return None
+    if state.get("_model_module", module) != module:
+        return None
+    return defaults
+
+
+def _map_models(widgets, transform):
+    if not isinstance(widgets, dict) or not isinstance(widgets.get("state"), dict):
+        return widgets
+    models = {}
+    for identifier, entry in widgets["state"].items():
+        defaults = _model_defaults(entry)
+        models[identifier] = entry if defaults is None else transform(entry, defaults)
+    return {**widgets, "state": models}
+
+
+def compact_widgets(widgets):
+    """Omit saved traits equal to the renderer's defaults (see `_WIDGET_DEFAULTS`).
+
+    A trait holding a binary buffer is always kept: its JSON value is only a
+    placeholder for the bytes.
+    """
+
+    def compact(entry, defaults):
+        binary = {
+            b["path"][0]
+            for b in entry.get("buffers") or []
+            if isinstance(b, dict) and isinstance(b.get("path"), list) and b["path"]
+        }
+        state = {
+            key: value
+            for key, value in entry["state"].items()
+            if key in binary or key not in defaults or not _same_json(value, defaults[key])
+        }
+        return {**entry, "state": state}
+
+    return _map_models(widgets, compact)
+
+
+def expand_widgets(widgets):
+    """Restore the traits `compact_widgets` omitted, so readers see full state."""
+    return _map_models(
+        widgets,
+        lambda entry, defaults: {**entry, "state": {**copy.deepcopy(defaults), **entry["state"]}},
+    )
+
+
+def _bar(value: float, maximum: float) -> tuple[str, str]:
+    percent = round(value / maximum * 100) if maximum > 0 else 0
+    filled = max(0, min(20, round(percent / 100 * 20)))
+    return f"{percent}%", "\u2588" * filled + "\u2591" * (20 - filled)
+
+
+def _number(value) -> str:
+    return str(int(value)) if float(value).is_integer() else str(round(value, 2))
+
+
+def widget_text(model_id: str, widgets) -> str | None:
+    """A one-line plain-text rendering of a saved widget's final state.
+
+    Follows the extension's text fallback for progress bars, so a finished
+    ``tqdm.notebook`` bar reads ``100% |████| 5/5 [time]``. None when the model
+    is not in the saved state or its state yields no text.
+    """
+    models = widgets.get("state") if isinstance(widgets, dict) else None
+    if not isinstance(models, dict) or not isinstance(models.get(model_id), dict):
+        return None
+    progress = None
+    parts = []
+    seen = set()
+    queue = [model_id]
+    while queue:
+        identifier = queue.pop(0)
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        entry = models.get(identifier)
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if not isinstance(state, dict):
+            parts.append(f"[Widget not shown: {identifier}]")
+            continue
+        name = str(state.get("_model_name") or entry.get("model_name") or "")
+        module = state.get("_model_module") or entry.get("model_module")
+        value = state.get("value")
+        if module not in (None, "@jupyter-widgets/base", "@jupyter-widgets/controls"):
+            parts.append(f"[{name or identifier} ({module})]")
+        elif "Progress" in name and isinstance(value, int | float) and not isinstance(value, bool):
+            if progress is None:
+                maximum = state.get("max", 100)
+                progress = (value, maximum if isinstance(maximum, int | float) else 0)
+        elif name in ("HTMLModel", "HTMLMathModel", "LabelModel"):
+            if isinstance(value, str) and value.strip():
+                parts.append(html.unescape(re.sub(r"<[^>]*>", "", value)).strip())
+        elif isinstance(state.get("_options_labels"), list) and "index" in state:
+            labels, index = state["_options_labels"], state["index"]
+            chosen = [
+                str(labels[i])
+                for i in (index if isinstance(index, list) else [index])
+                if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(labels)
+            ]
+            description = state.get("description")
+            label = f"{description} " if isinstance(description, str) and description else ""
+            parts.append(f"{label}{', '.join(chosen)}".strip())
+        elif isinstance(value, str | int | float | bool) and name != "OutputModel":
+            description = state.get("description")
+            label = f"{description} " if isinstance(description, str) and description else ""
+            parts.append(f"{label}{value}")
+        children = state.get("children")
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, str):
+                    for prefix in MODEL_REFERENCE_PREFIXES:
+                        child = child.removeprefix(prefix)
+                    queue.append(child)
+    if progress is not None:
+        percent, bar = _bar(*progress)
+        left = parts[0] if parts else percent
+        right = " ".join(parts[1:]) or f"{_number(progress[0])}/{_number(progress[1])}"
+        return f"{left} |{bar}| {right}".strip()
+    parts = [part for part in parts if part]
+    return " ".join(parts) if parts else None
+
+
+def text_widgets(doc: dict) -> dict:
+    """Save each widget view as plain text of its final state, without widget state.
+
+    An ``Output`` widget's view is replaced by the outputs its state holds
+    (kernel-appended or imported ones); what it captured from a cell's
+    execution is already folded into that cell's outputs.
+    """
+    widgets = doc.get("widgets")
+    models = widgets.get("state") if isinstance(widgets, dict) else None
+    models = models if isinstance(models, dict) else {}
+
+    def convert(outputs, inside=frozenset()):
+        if not isinstance(outputs, list):
+            return outputs
+        result = []
+        for output in outputs:
+            data = output.get("data") if isinstance(output, dict) else None
+            view = data.get(WIDGET_VIEW) if isinstance(data, dict) else None
+            model_id = view.get("model_id") if isinstance(view, dict) else None
+            if not isinstance(model_id, str):
+                result.append(output)
+                continue
+            entry = models.get(model_id)
+            state = entry.get("state") if isinstance(entry, dict) else None
+            if isinstance(state, dict) and state.get("_model_name") == "OutputModel":
+                nested = state.get("outputs")
+                if model_id not in inside and isinstance(nested, list):
+                    result.extend(convert(nested, inside | {model_id}))
+                continue
+            text = widget_text(model_id, widgets)
+            if text is None:
+                plain = data.get("text/plain")
+                text = "".join(plain) if isinstance(plain, list) else plain
+            if not isinstance(text, str):
+                name = state.get("_model_name") if isinstance(state, dict) else None
+                text = f"[{name or 'widget'}]"
+            replaced = {key: value for key, value in data.items() if key != WIDGET_VIEW}
+            replaced["text/plain"] = text
+            result.append({**output, "data": replaced})
+        return result
+
+    converted = {key: value for key, value in doc.items() if key != "widgets"}
+    for key in ("cells", "executions"):
+        if isinstance(doc.get(key), list):
+            converted[key] = [
+                {**item, "outputs": convert(item.get("outputs") or [])}
+                if isinstance(item, dict)
+                else item
+                for item in doc[key]
+            ]
+    return converted
 
 
 def sidecar_path(workdir: Path, file_path: Path | None) -> Path | None:
@@ -295,8 +505,11 @@ def dumps(doc: dict) -> str:
     """Serialize for git: sorted keys, one field per line, trailing newline.
 
     Line-oriented and stably ordered so a rerun shows a reviewable diff and two
-    branches conflict only where the outputs genuinely differ.
+    branches conflict only where the outputs genuinely differ. Widget traits
+    equal to their defaults are omitted; `read` restores them.
     """
+    if isinstance(doc.get("widgets"), dict):
+        doc = {**doc, "widgets": compact_widgets(doc["widgets"])}
     return json.dumps(doc, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
 
 
@@ -332,6 +545,8 @@ def read(path: Path) -> tuple[dict, str] | None:
     if not isinstance(doc.get(key), list):
         return None
     doc = as_snapshot(doc)
+    if isinstance(doc.get("widgets"), dict):
+        doc["widgets"] = expand_widgets(doc["widgets"])
     doc["executions"] = _importable(doc)
     try:
         saved_snapshot(doc)
@@ -340,8 +555,11 @@ def read(path: Path) -> tuple[dict, str] | None:
     return doc, hashlib.sha256(raw).hexdigest()
 
 
-def refresh_file(workdir: Path, source: Path) -> bool:
-    """Reproject an offline saved view after source edits, without a journal or kernel."""
+def refresh_file(workdir: Path, source: Path, save_widget_state: bool | None = None) -> bool:
+    """Reproject an offline saved view after source edits, without a journal or kernel.
+
+    ``save_widget_state`` None keeps the file's current widget form.
+    """
     path = sidecar_path(workdir, source)
     found = read(path) if path is not None else None
     if found is None:
@@ -350,8 +568,12 @@ def refresh_file(workdir: Path, source: Path) -> bool:
         text = handle.read()
     snapshot = saved_snapshot(found[0])
     doc = build(snapshot.get("executions", []), text)
-    doc["widgets"] = snapshot.get("widgets")
-    write(path, prune_widgets(doc))
+    if snapshot.get("widgets") is not None:
+        doc["widgets"] = snapshot["widgets"]
+        doc = prune_widgets(doc)
+    if save_widget_state is False:
+        doc = text_widgets(doc)
+    write(path, doc)
     return True
 
 

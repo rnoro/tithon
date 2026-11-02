@@ -4,6 +4,7 @@
  * socket, never TCP). Used by the CodeLens "Run Cell" wiring to submit code.
  */
 
+import { pathToFileURL } from "node:url";
 import WebSocket from "ws";
 import { defaultSocketPath } from "./daemonHome";
 
@@ -44,6 +45,9 @@ export interface KernelInfo {
 const INTERRUPT_TIMEOUT_MS = 5000;
 
 /** The session id is the file uri: one kernel + journal per file (like Jupyter). */
+/** Per-session daemon options sent on every attach (see `sessionOptions.ts`). */
+export type AttachOptions = (session: string) => Record<string, unknown>;
+
 function sessionOf(origin?: ExecOrigin): string {
   return origin?.uri ?? "default";
 }
@@ -54,7 +58,10 @@ function unixWsUrl(sockPath: string): string {
 }
 
 export class DaemonClient {
-  constructor(private readonly sockPath: string = defaultSocketPath()) {}
+  constructor(
+    private readonly sockPath: string = defaultSocketPath(),
+    private readonly attachOptions: AttachOptions = () => ({}),
+  ) {}
 
   private open(): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
@@ -78,7 +85,15 @@ export class DaemonClient {
     const ws = await this.open();
     try {
       // attach live-only first so the daemon is ready to stream our events.
-      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
+      ws.send(
+        JSON.stringify({
+          op: "attach",
+          last_seen_seq: -1,
+          session,
+          workdir,
+          ...this.attachOptions(session),
+        }),
+      );
       await this.waitFor(ws, (m) => m.op === "sync");
       ws.send(
         JSON.stringify({ op: "execute", code, origin, session, workdir, allow_stdin: allowStdin }),
@@ -106,7 +121,15 @@ export class DaemonClient {
   ): Promise<string[]> {
     const ws = await this.open();
     try {
-      ws.send(JSON.stringify({ op: "attach", last_seen_seq: -1, session, workdir }));
+      ws.send(
+        JSON.stringify({
+          op: "attach",
+          last_seen_seq: -1,
+          session,
+          workdir,
+          ...this.attachOptions(session),
+        }),
+      );
       await this.waitFor(ws, (m) => m.op === "sync");
       ws.send(
         JSON.stringify({
@@ -204,7 +227,17 @@ export class DaemonClient {
   ): Promise<any> {
     const ws = await this.open();
     try {
-      ws.send(JSON.stringify({ op: `${direction}_notebook`, source, destination, workdir }));
+      // The percent notebook whose saved outputs this conversion writes or reads.
+      const notebook = direction === "export" ? source : destination;
+      ws.send(
+        JSON.stringify({
+          op: `${direction}_notebook`,
+          source,
+          destination,
+          workdir,
+          ...this.attachOptions(pathToFileURL(notebook).href),
+        }),
+      );
       return await this.waitFor(ws, (m) => m.op === "notebook_converted", 60000);
     } finally {
       ws.close();
@@ -214,7 +247,14 @@ export class DaemonClient {
   async refreshOutputs(source: string, workdir: string): Promise<void> {
     const ws = await this.open();
     try {
-      ws.send(JSON.stringify({ op: "refresh_outputs", source, workdir }));
+      ws.send(
+        JSON.stringify({
+          op: "refresh_outputs",
+          source,
+          workdir,
+          ...this.attachOptions(pathToFileURL(source).href),
+        }),
+      );
       await this.waitFor(ws, (m) => m.op === "outputs_refreshed", 5000);
     } finally {
       ws.close();

@@ -19,6 +19,7 @@ import { PercentNotebookSerializer } from "./notebookSerializer";
 import { isTithonNotebookType, NOTEBOOK_TYPES, notebookTypeForPath } from "./notebookTypes";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
 import { registerRestore, workdirForUri } from "./sessionController";
+import { sessionOptions } from "./sessionOptions";
 
 /* ===========================================================================
  * SINGLE-REPRESENTATION INVARIANTS — read this before editing anything below.
@@ -373,7 +374,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.getConfiguration("tithon").get<string>("homePath", ""),
   );
   const sockPath = path.join(home, "daemon.sock");
-  const client = new DaemonClient(sockPath);
+  const client = new DaemonClient(sockPath, sessionOptions);
   console.log(`[tithon] daemon home: ${home}`);
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {

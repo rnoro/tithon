@@ -806,6 +806,30 @@ by outputs. Repeated runs replace the same cell's saved record; file size follow
 current outputs rather than execution-history length. The local journal retains
 its full execution history and historical folds independently.
 
+Saved widget state is a per-notebook choice (`tithon.saveWidgetState`, a
+resource-scoped VSCode setting, default on). Every attach, save refresh and
+notebook conversion carries it, and the daemon persists the last value per
+session because a run can finish and publish after the client left. A changed
+choice republishes only a file whose outputs this machine produced, so opening
+a pulled notebook never rewrites it.
+
+- **On:** widget models are saved as `application/vnd.jupyter.widget-state+json`
+  in the portable file and in exported `.ipynb` metadata, so any client with a
+  widget manager renders them. Traits equal to the bundled `@jupyter-widgets`
+  model class defaults are omitted, because the renderer constructs a saved
+  model through that class and fills every missing trait from them. The table is
+  generated from the extension's renderer bundle
+  (`src/tithon/widget_defaults.json`) and applies only to a model whose module,
+  module version and model name match an entry; a trait holding a binary buffer
+  is always kept. Reading restores the omitted traits, so in-memory consumers
+  always see full state.
+- **Off:** no widget state is saved. Each widget output keeps its other MIME
+  data, loses its widget-view reference, and its `text/plain` is rewritten from
+  the final widget state (a finished `tqdm.notebook` bar reads
+  `100% |████| 5/5 [time]`), so a reader sees the final result rather than the
+  text captured when the widget was first displayed. An `Output` widget's own
+  view is dropped because its captured outputs are already folded into the cell.
+
 Publication matches the saved percent source by exact index/hash, then moved
 hash/range proximity (including duplicate-code cells). The final newline added
 by notebook serialization is accepted without changing local execution hashes;
@@ -1024,6 +1048,7 @@ Capability → what it guarantees → how it is verified:
 | Rich outputs             | Images as files, journal holds references           | `v3` (valid PNG file + journal reference)          |
 | Widget mirror            | Snapshot stays current, binary state included       | `v5` (50k `tqdm` → `value==max`), `test_widget_buffer_delta.py` |
 | Widget identity          | Historical/copy state cannot rebind to a replacement kernel | `v71` (real daemon SIGKILL, same-ID models, retention, saved projection and scoped renderer) |
+| Saved widget state       | On: defaults omitted, every trait restored on read; off: final-state text, no state | `test_widget_save_state.py` (real daemon `tqdm.notebook`, both choices), `widgetDefaults.test.ts` (table matches the bundle; compacted state renders identical models and DOM) |
 | Widget comm transport | Real callback values, raw correlation and shared model lifecycle | `v72` (actual socket/kernel, binary, replay, scoped rejection), `v73` (real VSCode DOM input and stale-view revocation) |
 | Loss-free serialization  | Byte-exact percent `.py` round-trip                 | `v6` (0-byte diff + property test)                 |
 | Output → cell attachment | Outputs reattach by `cell_hash`                     | `v6`, `v7`                                         |

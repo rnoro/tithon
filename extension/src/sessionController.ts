@@ -37,6 +37,7 @@ import {
 } from "./richOutput";
 import { type Cell, parse } from "./serializer";
 import { type KernelSnapshot, type LiveEvent, SessionClient } from "./sessionClient";
+import { sessionOptions } from "./sessionOptions";
 import { formatTraceback } from "./tracebackFormatter";
 
 /**
@@ -1108,7 +1109,7 @@ export class TithonNotebookController {
         }
       }
     });
-    this.daemon = new DaemonClient(this.sockPath);
+    this.daemon = new DaemonClient(this.sockPath, sessionOptions);
     const selections = NOTEBOOK_TYPES.map((type) => {
       const controller = vscode.notebooks.createNotebookController(
         type === "tithon-py" ? "tithon" : "tithon-notebook",
@@ -2076,6 +2077,7 @@ export class TithonNotebookController {
       this.sockPath,
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
+      sessionOptions,
     );
     await client.attach(0);
     try {
@@ -2132,6 +2134,7 @@ export class TithonNotebookController {
       this.sockPath,
       notebook.uri.toString(),
       workdirForUri(notebook.uri),
+      sessionOptions,
     );
     let rendererBinding: WidgetState["renderer_binding"];
     // Register raw routing before output seeding can mount a live manager.
