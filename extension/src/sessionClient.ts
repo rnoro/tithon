@@ -111,6 +111,8 @@ export interface ExecState {
   /** Daemon-side wall-clock seconds (epoch); null until known. */
   startedAt: number | null;
   finishedAt: number | null;
+  /** The kernel's `In [n]` for this run; null until execute_input or done carries it. */
+  executionCount: number | null;
 }
 
 interface SnapshotExecWire {
@@ -509,6 +511,7 @@ export class SessionClient {
         fold: new ExecutionFold(),
         startedAt: null,
         finishedAt: null,
+        executionCount: null,
       };
       this.execs.set(execId, st);
       this.order.push(execId);
@@ -671,6 +674,7 @@ export class SessionClient {
       st.origin = e.origin ?? null;
       st.startedAt = e.started_at ?? null;
       st.finishedAt = e.finished_at ?? null;
+      st.executionCount = e.execution_count ?? null;
       // Seed the fold from the daemon's already-folded outputs so a still
       // running execution keeps folding correctly as live events arrive.
       st.fold = new ExecutionFold();
@@ -775,8 +779,15 @@ export class SessionClient {
       case "done":
         st.status = ev.payload?.status === "ok" ? "done" : (ev.payload?.status ?? "done");
         if (typeof ev.payload?.ts === "number") st.finishedAt = ev.payload.ts;
+        if (typeof ev.payload?.execution_count === "number")
+          st.executionCount = ev.payload.execution_count;
         break;
       case "output":
+        if (
+          ev.payload?.msg_type === "execute_input" &&
+          typeof ev.payload?.content?.execution_count === "number"
+        )
+          st.executionCount = ev.payload.content.execution_count;
         st.fold.apply(ev.payload?.msg_type, ev.payload?.content ?? {});
         break;
       // "widget" is handled above the exec_id guard; "status" does not change

@@ -596,6 +596,7 @@ export class VSCodeCellSink implements CellSink {
     startMs?: number,
     endMs?: number,
     stale = false,
+    order?: number | null,
   ): void {
     // An "orphaned" execution was in-flight when the daemon/kernel restarted, so
     // it will NEVER receive a `done` event. Render its captured output as a
@@ -611,6 +612,7 @@ export class VSCodeCellSink implements CellSink {
       }
       const e = this.ensureStarted(idx, startMs);
       if (!e) return;
+      if (order != null) e.executionOrder = order;
       for (const item of items) {
         if (isOutputAreaView(item, this.ctx()?.widgets ?? null)) continue;
         if (item.output_type === "stream") {
@@ -716,8 +718,7 @@ export class VSCodeCellSink implements CellSink {
         return;
       }
       if (rec) return;
-      const exec = this.controller.createNotebookCellExecution(c);
-      exec.start(Date.now());
+      const exec = outputOnlyExecution(this.controller, c);
       try {
         for (const out of outs) {
           await exec.replaceOutputItems(toOutputItems(item, this.ctx()), out);
@@ -784,8 +785,7 @@ export class VSCodeCellSink implements CellSink {
         this.invalidateDisplays(idx);
         return;
       }
-      const exec = this.controller.createNotebookCellExecution(c);
-      exec.start(Date.now());
+      const exec = outputOnlyExecution(this.controller, c);
       try {
         await paint(exec);
       } finally {
@@ -802,8 +802,7 @@ export class VSCodeCellSink implements CellSink {
       } else if (!rec) {
         const c = this.cell(idx);
         if (c && c.outputs.length > 0) {
-          const exec = this.controller.createNotebookCellExecution(c);
-          exec.start(Date.now());
+          const exec = outputOnlyExecution(this.controller, c);
           try {
             await exec.clearOutput();
           } finally {
@@ -840,6 +839,13 @@ export class VSCodeCellSink implements CellSink {
         this.execs.delete(idx);
         this.forgetStreams(idx);
       }
+    });
+  }
+
+  executionOrder(idx: number, order: number): void {
+    this.chain(idx, async () => {
+      const rec = this.execs.get(idx);
+      if (rec?.started && !this.disposed) rec.exec.executionOrder = order;
     });
   }
 
@@ -882,6 +888,22 @@ export class VSCodeCellSink implements CellSink {
     }
     this.execs.clear();
   }
+}
+
+/**
+ * A started execution for an output-only edit to a cell with no live run.
+ * Creating any execution resets the cell's `In [n]`, so the current one is
+ * carried over — otherwise a late display update would blank the count.
+ */
+function outputOnlyExecution(
+  controller: vscode.NotebookController,
+  cell: vscode.NotebookCell,
+): vscode.NotebookCellExecution {
+  const order = cell.executionSummary?.executionOrder;
+  const exec = controller.createNotebookCellExecution(cell);
+  exec.start(Date.now());
+  if (order !== undefined) exec.executionOrder = order;
+  return exec;
 }
 
 /**
@@ -1122,7 +1144,7 @@ export class TithonNotebookController {
       );
       this.controllers.set(type, controller);
       controller.supportedLanguages = ["python"];
-      controller.supportsExecutionOrder = false;
+      controller.supportsExecutionOrder = true;
       controller.executeHandler = (cells, nb) => void this._executeHandler(cells, nb);
       controller.interruptHandler = (nb) => this.interruptKernel(nb);
       return controller.onDidChangeSelectedNotebooks((event) => {
@@ -2149,6 +2171,7 @@ export class TithonNotebookController {
         image: (id) => client.cachedArtifact(id)?.bytes,
         widgets: rendererWidgetState(client.widgets()),
       };
+      const orders = new Map(client.executions().map((e) => [e.execId, e.executionCount]));
       for (const [cellIndex, att] of attachments) {
         let cell: vscode.NotebookCell;
         try {
@@ -2158,6 +2181,8 @@ export class TithonNotebookController {
         }
         const exec = this.controllerFor(notebook).createNotebookCellExecution(cell);
         exec.start(Date.now());
+        const order = orders.get(att.execId);
+        if (order != null) exec.executionOrder = order;
         await exec.replaceOutput(toCellOutputs(att.outputs as OutputItem[], att.stale, ctx));
         exec.end(!att.stale, Date.now());
       }
@@ -2361,6 +2386,7 @@ export class TithonNotebookController {
           toMs(ex.startedAt),
           toMs(ex.finishedAt),
           live.staleOf(ex.execId),
+          ex.executionCount,
         );
       }
       const refresh = () => live.refreshCells(cellsFromNotebook(notebook));

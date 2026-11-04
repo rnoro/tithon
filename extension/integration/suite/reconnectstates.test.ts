@@ -125,6 +125,12 @@ describe("Tithon reconnect restores cell execution STATE (v16)", () => {
     );
     //  C (queued): no output yet (the pending clock is screenshot-verified).
     assert.strictEqual(cellText(nb.cellAt(C.i)).trim(), "", "C (queued) has no output yet");
+    //  In [n]: the running cell has its number already (the kernel assigned it at
+    //  execute_input); the queued one has none.
+    const order = (i: number) => nb.cellAt(i).executionSummary?.executionOrder;
+    assert.strictEqual(typeof order(A.i), "number", "A (done) shows its execution order");
+    assert.strictEqual(order(B.i), order(A.i)! + 1, "B (running) shows the next execution order");
+    assert.strictEqual(order(C.i), undefined, "C (queued) has no execution order yet");
 
     const holdMs = Number(process.env.TITHON_HOLD_MS ?? "0");
     if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));

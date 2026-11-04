@@ -150,7 +150,9 @@ meta(key, value)
 
 - **Original execution iopub messages are preserved verbatim** (`stream`,
   `display_data`, `update_display_data`, `clear_output`, `execute_result`,
-  `error`, `status`). Internal control-request shell replies are consumed by the
+  `error`, `status`, `execute_input`). `execute_input` also sets the
+  execution's `execution_count` when the cell starts, so a running cell already
+  carries its `In [n]`. Internal control-request shell replies are consumed by the
   daemon and are not part of an execution's replay stream (except `execute_reply`
   `text/plain` pager payloads, which are synthesized as stdout `stream` messages).
   Replay semantics are the server's responsibility, not the client's.
@@ -249,8 +251,8 @@ parent-scoped `status: busy` were journaled. Output published after the new
 daemon subscribes continues into the same fold; output published while no
 daemon was subscribed cannot be reconstructed. Because the old shell reply is
 addressed to the dead client identity, recovery terminalizes the execution as
-`orphaned` with an unknown execution count (or `error` when the raw journal
-contains an error frame). Queued and merely-sent requests are also orphaned,
+`orphaned` (or `error` when the raw journal contains an error frame), keeping
+only the execution count its journaled `execute_input` recorded. Queued and merely-sent requests are also orphaned,
 with replayable terminal events, rather than guessed or re-executed.
 An `input_request` already journaled at crash time is interrupted during
 recovery because its reply route belonged to the dead client. The narrower

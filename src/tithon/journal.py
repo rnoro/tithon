@@ -73,6 +73,7 @@ JOURNALED_IOPUB = (
     "error",
     "clear_output",
     "status",
+    "execute_input",
 )
 
 
@@ -380,7 +381,7 @@ class Journal:
         self.db.execute("BEGIN IMMEDIATE")
         try:
             updated = self.db.execute(
-                "UPDATE executions SET status=?, execution_count=NULL, finished_at=?,"
+                "UPDATE executions SET status=?, finished_at=?,"
                 " folded_json=? WHERE exec_id=? AND status='running'",
                 (status, ts, folded_json, exec_id),
             )
@@ -413,13 +414,20 @@ class Journal:
             is not None
         )
 
+    def set_execution_count(self, exec_id: str, execution_count: int) -> None:
+        """Record the kernel's ``In [n]`` as soon as ``execute_input`` assigns it."""
+        self.db.execute(
+            "UPDATE executions SET execution_count=? WHERE exec_id=?", (execution_count, exec_id)
+        )
+
     def mark_done(
         self, exec_id: str, status: str, execution_count: int | None, folded_json: str
     ) -> float:
+        # A run with no `execute_reply` (kernel died) keeps the count execute_input set.
         ts = time.time()
         self.db.execute(
-            "UPDATE executions SET status=?, execution_count=?, finished_at=?, folded_json=?"
-            " WHERE exec_id=?",
+            "UPDATE executions SET status=?, execution_count=COALESCE(?, execution_count),"
+            " finished_at=?, folded_json=? WHERE exec_id=?",
             (status, execution_count, ts, folded_json, exec_id),
         )
         return ts

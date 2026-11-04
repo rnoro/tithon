@@ -83,5 +83,22 @@ describe("Tithon native Run Cell inside a real VSCode host (v11)", () => {
         `missing line ${i} in cell output: ${JSON.stringify(text)}`,
       );
     }
+
+    // The kernel's In [n] shows under the run button, as in Jupyter, and a
+    // rerun advances it. The number arrives when the cell starts, so wait for
+    // run 1 to end first: VSCode skips a run request for a cell still executing.
+    const summary = () => nb.cellAt(0).executionSummary;
+    await waitFor(() => summary()?.success === true, 15000, "run 1 to finish");
+    const first = summary()?.executionOrder;
+    assert.strictEqual(typeof first, "number", "run 1 shows its execution order");
+    await vscode.commands.executeCommand("notebook.cell.execute", {
+      ranges: [new vscode.NotebookRange(0, 1)],
+      document: uri,
+    });
+    await waitFor(
+      () => summary()?.executionOrder === first! + 1,
+      30000,
+      `execution order ${first! + 1} (summary ${JSON.stringify(summary())})`,
+    );
   });
 });
