@@ -81,3 +81,48 @@ it("finishes a rerun whose status arrives while a historical seed append is pend
   expect(handles.every((handle) => handle.ended)).toBe(true);
   expect(sink.activeCells()).toEqual([]);
 });
+
+function orderHarness(cell: { kind: number; outputs: unknown[]; executionSummary?: object }) {
+  const orders: (number | undefined)[] = [];
+  const controller = {
+    createNotebookCellExecution() {
+      const i = orders.push(undefined) - 1;
+      return {
+        start() {},
+        async clearOutput() {},
+        async appendOutput() {},
+        end() {},
+        set executionOrder(n: number | undefined) {
+          orders[i] = n;
+        },
+      };
+    },
+  } as unknown as vscode.NotebookController;
+  const notebook = { cellCount: 1, cellAt: () => cell } as unknown as vscode.NotebookDocument;
+  const client = {
+    widgets: () => null,
+    cachedArtifact: () => undefined,
+  } as unknown as SessionClient;
+  return { orders, sink: new VSCodeCellSink(controller, notebook, client) };
+}
+
+it("shows the kernel's execution count on the live run and on a restored one", async () => {
+  const { orders, sink } = orderHarness({ kind: 2, outputs: [] });
+  sink.status(0, "running");
+  sink.executionOrder(0, 2);
+  sink.status(0, "done");
+  sink.seedCell(0, [], "done", undefined, undefined, false, 5);
+  await sink.settled();
+  expect(orders).toEqual([2, 5]);
+});
+
+it("keeps a finished cell's execution count through an output-only edit", async () => {
+  const { orders, sink } = orderHarness({
+    kind: 2,
+    outputs: [{}],
+    executionSummary: { executionOrder: 9 },
+  });
+  sink.clear(0);
+  await sink.settled();
+  expect(orders).toEqual([9]);
+});

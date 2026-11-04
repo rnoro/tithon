@@ -49,6 +49,8 @@ export interface CellSink {
    * shows the real elapsed/duration, not time since reconnect.
    */
   status?(cellIndex: number, status: string, tsMs?: number): void;
+  /** Optional: the kernel's `In [n]` for the cell's running execution. */
+  executionOrder?(cellIndex: number, order: number): void;
 }
 
 /** Drives flushing; injected so production throttles and tests step manually. */
@@ -85,7 +87,8 @@ type PendingOp =
   | { t: "output"; item: OutputItem }
   | { t: "display"; displayId: string; item: OutputItem }
   | { t: "clear" }
-  | { t: "status"; status: string; tsMs?: number };
+  | { t: "status"; status: string; tsMs?: number }
+  | { t: "order"; order: number };
 
 export interface LiveStats {
   events: number;
@@ -254,6 +257,10 @@ export class LiveOutputSync {
       // never started (no execution was created), so leave the cell blank — emit
       // no status op (a ✓/✗ would imply it ran).
       if (st === "skipped") return;
+      // Normally execute_input already set it; this covers a client that
+      // attached mid-run, after that message was folded into the snapshot.
+      const ec = ev.payload?.execution_count;
+      if (typeof ec === "number") this.queue(idx, { t: "order", order: ec });
       // The daemon reports kernel status "ok" on success; normalize to the
       // sink's vocabulary ("done"/"error") so a successful cell shows ✓, not ✗.
       this.queue(idx, { t: "status", status: st === "ok" ? "done" : "error", tsMs });
@@ -280,6 +287,11 @@ export class LiveOutputSync {
       // Output areas have independent stream cursors; paint their canonical fold.
       this.pendingClear.delete(execId);
       this.queueRepaint(idx, execId);
+      return;
+    }
+    if (msgType === "execute_input") {
+      const ec = content?.execution_count;
+      if (typeof ec === "number") this.queue(idx, { t: "order", order: ec });
       return;
     }
     if (msgType === "update_display_data") {
@@ -363,7 +375,7 @@ export class LiveOutputSync {
     // sink with no execution record, so the repaint would open a momentary one
     // and the later `done` would find nothing to end — no spinner, no timing.
     const ops = this.pending.get(idx);
-    this.pending.set(idx, ops ? ops.filter((o) => o.t === "status") : []);
+    this.pending.set(idx, ops ? ops.filter((o) => isLifecycle(o)) : []);
     // Repainting needs BOTH an authoritative fold to read and a sink that can
     // apply it. Without either, fall back to the whole-cell clear: it cannot
     // honour a widget-scoped clear, but it is lossless, whereas a repaint with
@@ -377,7 +389,7 @@ export class LiveOutputSync {
   }
 
   private queue(idx: number, op: PendingOp): void {
-    if (this.repainting.has(idx) && op.t !== "repaint" && op.t !== "status") return;
+    if (this.repainting.has(idx) && op.t !== "repaint" && !isLifecycle(op)) return;
     let ops = this.pending.get(idx);
     if (!ops) {
       ops = [];
@@ -428,6 +440,9 @@ export class LiveOutputSync {
           case "status":
             this.sink.status?.(idx, op.status, op.tsMs);
             break;
+          case "order":
+            this.sink.executionOrder?.(idx, op.order);
+            break;
         }
       }
       this.pending.delete(idx);
@@ -435,6 +450,11 @@ export class LiveOutputSync {
     this.dirty.clear();
     this.repainting.clear();
   }
+}
+
+/** Execution-state ops: not output, so a repaint never subsumes them. */
+function isLifecycle(op: PendingOp): boolean {
+  return op.t === "status" || op.t === "order";
 }
 
 function toExecResult(content: any): OutputItem {

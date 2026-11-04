@@ -78,11 +78,15 @@ kpid2="$(status_field kernel_pid)" || fail "re-attach status failed"
 
 timeout 45 "$TITHON" attach --since "$cutoff" --until-done >"$TITHON_HOME/delta.ndjson" \
   || fail "delta attach did not observe recovered terminal event"
-read -r status count post ordered post_delta done_delta <<EOF
+read -r status count kernel_count post ordered post_delta done_delta <<EOF
 $($PY - "$DB" "$TITHON_HOME/delta.ndjson" "$pre" <<'PY'
 import json, re, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
-row = db.execute("SELECT status, execution_count FROM executions ORDER BY seq LIMIT 1").fetchone()
+row = db.execute("SELECT exec_id, status, execution_count FROM executions ORDER BY seq LIMIT 1").fetchone()
+# The only count the kernel ever published for this run: its pre-crash execute_input.
+inputs = [json.loads(c).get("execution_count") for (c,) in db.execute(
+    "SELECT content_json FROM messages WHERE exec_id=? AND msg_type='execute_input'", (row[0],))]
+kernel_count = inputs[0] if len(inputs) == 1 and isinstance(inputs[0], int) else "NONE"
 vals = []
 for (raw,) in db.execute("SELECT content_json FROM messages WHERE msg_type='stream' ORDER BY msg_seq"):
     vals += [int(x) for x in re.findall(r"RECOVER_STEP (\d+)", json.loads(raw).get("text", ""))]
@@ -93,13 +97,14 @@ for line in open(sys.argv[2]):
         delta_vals += [int(x) for x in re.findall(r"RECOVER_STEP (\d+)", ev.get("payload", {}).get("content", {}).get("text", ""))]
     done |= ev.get("kind") == "done" and ev.get("payload", {}).get("status") == "orphaned"
 ordered = vals == sorted(set(vals))
-print(row[0], "NULL" if row[1] is None else row[1], max(vals, default=-1),
+print(row[1], "NULL" if row[2] is None else row[2], kernel_count, max(vals, default=-1),
       int(ordered), int(any(v > int(sys.argv[3]) for v in delta_vals)), int(done))
 PY
 )
 EOF
 [ "$status" = orphaned ] || fail "recovered execution status is $status, expected orphaned"
-[ "$count" = NULL ] || fail "unavailable execute_reply count was invented: $count"
+[ "$kernel_count" != NONE ] || fail "journal holds no single execute_input count for the run"
+[ "$count" = "$kernel_count" ] || fail "recovered count $count is not the kernel's execute_input count $kernel_count"
 [ "$post" -gt $((pre + 3)) ] || fail "journal did not resume: pre=$pre post=$post"
 [ "$ordered" = 1 ] || fail "journal contains duplicate/reordered numbered output"
 [ "$post_delta" = 1 ] || fail "delta contains no post-restart output"
@@ -110,4 +115,4 @@ echo "$snap" | grep -q "RECOVER_STEP $post" || fail "fresh snapshot lacks recove
 after="$(timeout 20 "$TITHON" run -c 'print("AFTER_RECOVERY")')" || fail "next cell stayed gated"
 [ "$after" = AFTER_RECOVERY ] || fail "next cell output mismatch: $after"
 
-echo "RESULT v57 PASS daemon $dpid1 died; kernel $kpid1 survived; accepted msg $msg_id resumed $pre->$post, terminalized orphaned/count=NULL, delta+snapshot+next-cell gate verified"
+echo "RESULT v57 PASS daemon $dpid1 died; kernel $kpid1 survived; accepted msg $msg_id resumed $pre->$post, terminalized orphaned/count=$count (kernel execute_input), delta+snapshot+next-cell gate verified"

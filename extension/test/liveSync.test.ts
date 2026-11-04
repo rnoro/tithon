@@ -68,6 +68,9 @@ class TestSink implements CellSink {
   status(idx: number, status: string): void {
     this.ops.push({ op: "status", idx, status });
   }
+  executionOrder(idx: number, order: number): void {
+    this.ops.push({ op: "order", idx, text: String(order) });
+  }
   /** Visible stdout text of a cell = fold of the raw appended deltas (\r applied). */
   visibleStdout(idx: number): string {
     const f = new ExecutionFold();
@@ -275,6 +278,43 @@ describe("LiveOutputSync — coalescing & correctness", () => {
     // No status op -> the cell is left blank (a ✓/✗ would imply it ran).
     expect(sink.ops.filter((o) => o.op === "status").length).toBe(0);
     expect(sink.ops.length).toBe(0);
+  });
+
+  it("forwards the kernel's execute_input count as the cell's execution order", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.onEvent(queued("e1", src(1)));
+    live.onEvent({ seq: 2, exec_id: "e1", kind: "started", payload: {} });
+    live.onEvent({
+      seq: 3,
+      exec_id: "e1",
+      kind: "output",
+      payload: { msg_type: "execute_input", content: { code: src(1), execution_count: 7 } },
+    });
+    sched.tick();
+    expect(sink.ops.map((o) => [o.op, o.status ?? o.text])).toEqual([
+      ["status", "running"],
+      ["order", "7"],
+    ]);
+  });
+
+  it("takes the order from done when execute_input was never seen (mid-run attach)", () => {
+    const sched = new ManualScheduler();
+    const sink = new TestSink();
+    const live = new LiveOutputSync(cells, sink, sched);
+    live.seed([{ execId: "e1", cellHash: computeCellHash(src(0)), index: 0 }]);
+    live.onEvent({
+      seq: 9,
+      exec_id: "e1",
+      kind: "done",
+      payload: { status: "ok", execution_count: 3 },
+    });
+    sched.tick();
+    expect(sink.ops.map((o) => [o.op, o.status ?? o.text])).toEqual([
+      ["order", "3"],
+      ["status", "done"],
+    ]);
   });
 
   it("routes duplicate-code cells by recorded index, not hash — ADR-026 (#2 repro)", () => {
@@ -559,6 +599,15 @@ describe("LiveOutputSync — a clear repaints from the fold (RISKS #17)", () => 
       ).toEqual(["running", "done"]);
     },
   );
+
+  it("a repaint keeps the window's execution order — it is lifecycle, not output", () => {
+    const { sink, sched, feed } = harness();
+    feed(output("e1", "execute_input", { code: src(0), execution_count: 4 }));
+    feed(output("e1", "clear_output", { wait: false }));
+    feed(output("e1", "execute_input", { code: src(0), execution_count: 5 }));
+    sched.tick();
+    expect(sink.ops.filter((o) => o.op === "order").map((o) => o.text)).toEqual(["4", "5"]);
+  });
 
   it("a repaint supersedes the window's other output ops (no double-apply)", () => {
     const { sink, sched, feed } = harness();

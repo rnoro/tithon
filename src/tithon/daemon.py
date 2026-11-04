@@ -1456,6 +1456,10 @@ class Session:
             artifact_ref,
             target_exec=target if target != exec_id else None,
         )
+        if msg_type == "execute_input" and exec_id is not None:
+            count = content.get("execution_count")
+            if isinstance(count, int):
+                self.journal.set_execution_count(exec_id, count)
         # Claim ownership only once the creating row is DURABLE, matching the
         # journal-before-mutate order the fold and the widget mirror already
         # keep. A registry that ran ahead of a failed append would route
