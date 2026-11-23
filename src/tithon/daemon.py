@@ -21,13 +21,16 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import signal
 import socket
 import sqlite3
+import sys
 import time
 from collections import Counter
 from contextlib import closing
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
@@ -2205,6 +2208,20 @@ async def _notify_overflow(ws) -> None:
         pass
 
 
+def runtime_info() -> dict:
+    """The daemon's own versions, logged at start and returned by status for bug reports."""
+    try:
+        tithon_version = version("tithon")
+    except PackageNotFoundError:
+        tithon_version = "unknown"
+    return {
+        "daemon_version": tithon_version,
+        "daemon_python": platform.python_version(),
+        "daemon_platform": f"{platform.system()} {platform.release()} {platform.machine()}",
+        "daemon_executable": sys.executable,
+    }
+
+
 class Daemon:
     """Owns the unix socket server and a lazily-populated dict of sessions."""
 
@@ -2287,6 +2304,14 @@ class Daemon:
                 os.getpid(),
                 self.sock_path,
             )
+            info = runtime_info()
+            log.info(
+                "tithon %s, python %s (%s), %s",
+                info["daemon_version"],
+                info["daemon_python"],
+                info["daemon_executable"],
+                info["daemon_platform"],
+            )
             bg: list[asyncio.Task] = []
             if self.history_retention_days or self.history_target_mib:
                 bg.append(asyncio.create_task(self._history_loop(), name="output-retention"))
@@ -2350,6 +2375,7 @@ class Daemon:
         return {
             "op": "status_reply",
             "daemon_pid": os.getpid(),
+            **runtime_info(),
             "sessions": [s.status() for s in self._sessions.values()],
         }
 

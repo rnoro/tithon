@@ -13,15 +13,9 @@ requests, commit messages, code comments and docs.
 - Changing a requirement in the spec: open an issue that makes the case, and
   update `docs/SPEC.md` in the same pull request that changes the behavior.
 
-A useful bug report includes:
-
-- `$TITHON_HOME/daemon.log` (default `~/.tithon/daemon.log`), from the last
-  `attach` before the failure;
-- `tithon status` output;
-- versions of Tithon, the extension, VSCode and Python;
-- OS and connection type (local, Tunnel, Remote-SSH, WSL, container);
-- the reproduction as a sequence of events, including whether the client
-  disconnected and whether the daemon or host restarted.
+To report a bug from VS Code, run **Tithon: Report Issue**: it fills in your
+versions, connection type and the end of the daemon log, so you only describe
+what happened.
 
 ## Setup
 

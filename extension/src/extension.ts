@@ -8,13 +8,15 @@
  * The output<->cell attachment uses the journal's cell_hash (see cellAttach).
  */
 
-import { writeFile } from "node:fs/promises";
+import { open, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { PercentCodeLensProvider, RUN_CELL_COMMAND } from "./codeLens";
 import { DaemonClient, type ExecOrigin } from "./daemonClient";
 import { resolveDaemonHome } from "./daemonHome";
 import { ensureDaemon } from "./daemonProcess";
+import { buildReportData, LOG_MAX_CHARS } from "./issueReport";
 import { PercentNotebookSerializer } from "./notebookSerializer";
 import { isTithonNotebookType, NOTEBOOK_TYPES, notebookTypeForPath } from "./notebookTypes";
 import { confirmDestructive, notifyInfo, notifyWarn } from "./notify";
@@ -369,6 +371,24 @@ async function syncDiffAssociation(pattern: string, pinned: boolean): Promise<vo
   }
 }
 
+/** The end of the daemon log, read without loading a large file whole. */
+async function readLogTail(file: string): Promise<string | undefined> {
+  try {
+    const handle = await open(file, "r");
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, LOG_MAX_CHARS * 4);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      return buffer.toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const home = resolveDaemonHome(
     vscode.workspace.getConfiguration("tithon").get<string>("homePath", ""),
@@ -443,6 +463,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         storageView.show(true);
       } catch (error) {
         vscode.window.showErrorMessage(`Tithon storage: ${String(error)}`);
+      }
+    }),
+    vscode.commands.registerCommand("tithon.reportIssue", async () => {
+      // Never starts the daemon: a report about a daemon that will not start must still open.
+      let daemon: Record<string, unknown> | undefined;
+      let daemonError: string | undefined;
+      try {
+        daemon = await Promise.race([
+          client.status(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
+        ]);
+      } catch (error) {
+        daemonError = error instanceof Error ? error.message : String(error);
+      }
+      const data = buildReportData({
+        extensionVersion: String(context.extension.packageJSON.version ?? "unknown"),
+        vscodeVersion: vscode.version,
+        appHost: vscode.env.appHost,
+        remoteName: vscode.env.remoteName,
+        hostPlatform: `${os.platform()} ${os.release()} ${os.arch()}`,
+        daemonHome: home,
+        daemon,
+        daemonError,
+        log: await readLogTail(path.join(home, "daemon.log")),
+      });
+      try {
+        await vscode.commands.executeCommand("workbench.action.openIssueReporter", {
+          extensionId: context.extension.id,
+          issueBody: "Describe what happened and how to make it happen again.\n\n",
+          data,
+        });
+      } catch {
+        await vscode.env.clipboard.writeText(data);
+        await vscode.env.openExternal(
+          vscode.Uri.parse("https://github.com/rnoro/tithon/issues/new?template=bug_report.yml"),
+        );
+        notifyInfo("Tithon: environment details copied. Paste them into the issue.");
       }
     }),
     vscode.commands.registerCommand("tithon.newNotebook", async (destinationArg?: vscode.Uri) => {

@@ -171,6 +171,11 @@
         "category": "Tithon"
       },
       {
+        "command": "tithon.reportIssue",
+        "title": "Report Issue",
+        "category": "Tithon"
+      },
+      {
         "command": "tithon.retryRestore",
         "title": "Retry Output Restore",
         "category": "Tithon"
