@@ -1,4 +1,4 @@
-"""Journal primitives behind the lost-state signal (SPEC §7 host reboot).
+"""Journal primitives behind the lost-state signal.
 
 The signal answers "did the kernel generation that just died hold anything the
 user would miss?" purely from the journal, so these two predicates are the whole

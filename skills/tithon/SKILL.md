@@ -30,6 +30,7 @@ What that means in practice:
 
 # %%
 import numpy as np
+
 x = np.arange(10)
 
 # %%

@@ -1,7 +1,7 @@
-<h1 align="center">Tithon for VSCode</h1>
+<h1 align="center">Tithon for VS Code</h1>
 
 <p align="center">
-  <strong>Your Jupyter kernel dies with your client. It shouldn't.</strong>
+  <strong>The Python notebook built for AI agents. No JSON, no dead kernels.</strong>
 </p>
 
 <p align="center">
@@ -10,245 +10,99 @@
   <a href="https://github.com/rnoro/tithon"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
 
-![A real VS Code recording shows Tithon surviving a daemon crash: connection loss and reconnection are highlighted, then the same remote kernel resumes live output synchronization without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
+![Tithon surviving a daemon crash in VS Code: the connection drops, reconnects, and the same kernel keeps streaming output without restarting the cell.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/demo.gif)
 
-Open a `.pynb` Python Notebook (or optional `.py` cell view) against a **persistent remote kernel**.
-Close your editor, lose your connection, or return later; the same session is
-still there and still streaming.
+Start a long run on a remote GPU box, close your laptop, come back hours later
+from another machine. The kernel is still running, and every output it printed
+while you were gone is there, still streaming.
 
-This is the VSCode client for [Tithon][repo]. The kernel and all session state
-live in a host-resident daemon, not in the editor, so disconnecting only stops
-the rendering — never the work.
+The kernel lives in a daemon on the host, not in the editor, so closing VS Code
+only stops the rendering, never the work.
 
-> **Status: alpha.** It works and it's in daily use, but you will hit rough
-> edges. Bug reports are genuinely useful — please [open an issue][issues].
+> **Status: alpha.** In daily use, with rough edges. Bug reports help a lot:
+> [open an issue][issues].
 
-## The problem
+## Why
 
-You SSH into a GPU box, start a long run in a notebook, and close your laptop.
-When you come back, depending on your setup:
-
-- **VSCode Jupyter** ties the kernel to the extension-host process. Close the
-  window or drop the network and the kernel dies, taking the session with it.
-- **JupyterLab** reconnects, but everything printed while you were away is gone.
-  iopub output is streamed over the WebSocket and never persisted server-side,
-  so there is nothing to replay.
-- **`tmux` + `jupyter console`** survives the disconnect, but you lose rich
-  output (plots, HTML, widgets) and you can't open the same session from a
-  second client.
-
-The root cause is the same in all three: the source of truth for your session
-lives on the client, or in a channel that doesn't outlive a disconnect. Tithon
-moves it to the host — the extension is a thin view over a daemon, not the owner
-of the kernel.
-
-> **Tip.** And in the era of AI agents, one more: a `.ipynb` is JSON bloat — the
-> same notebook is ~250 lines of `"cell_type"`/`"outputs"` noise that Tithon
-> keeps as ~50 lines of clean `.py`. Output images? Tithon keeps them as real
-> files, so an agent hands them to the model as actual images it can _see_ — not
-> base64 the model burns thousands of tokens on and still can't read.
-> **Don't feed your AI idiot JSON.**
-
-## Requirements
-
-- The **Tithon daemon** on the host, which needs **Python 3.11+**
-  (`pip install tithon`, or `uv add tithon`). The extension can start it for you
-  (see `tithon.autoStartDaemon`).
-- A Unix-like host — the daemon uses unix domain sockets and `setsid` (developed
-  and tested on Linux).
-- **VSCode 1.85+.**
-
-> On Windows, we recommend running Tithon inside WSL and connecting with VS Code using the WSL extension.  
-> Native Windows is not currently supported.
-
-The intended setup is a **Tunnel** or **Remote-SSH** connection, where the
-extension host runs _on the remote host_ and reaches the daemon's local socket
-directly — no port forwarding. It works exactly the same locally.
+| Setup                      | What happens when you disconnect                                       |
+| -------------------------- | ---------------------------------------------------------------------- |
+| VS Code Jupyter            | Closing the window or dropping the network kills the kernel            |
+| JupyterLab                 | Kernel survives, but output printed while you were away is gone        |
+| `tmux` + `jupyter console` | Survives, but no plots, HTML or widgets, and one client only           |
+| **Tithon**                 | Kernel and every output survive; any client picks up where it left off |
 
 ## Install
 
 ```bash
 code --install-extension rnoro.tithon
+pip install tithon        # the daemon, on the host (Python 3.11+)
 ```
 
-or search for "tithon" in the Extensions view. The daemon side ships on PyPI:
-
-```bash
-pip install tithon      # or: uv add tithon
-```
+Runs on Linux and macOS hosts. On Windows, use WSL with the VS Code WSL extension.
 
 ## Quickstart
 
-A **Python Notebook** (`.pynb`) opens directly in the notebook editor. Its disk
-format is readable percent-format Python (`# %%` cells); outputs and metadata
-live separately under `.tithon/`, and execution lives in the persistent daemon.
+1. Run **Tithon: New Python Notebook…**, or open a `.pynb`.
+2. Pick the **Tithon** kernel and run cells.
 
-1. Run **Tithon: New Python Notebook…** to create a saved `.pynb`, or open one.
-2. Pick the **Tithon** kernel and run cells as usual.
+The extension starts the daemon for you. Reopen the notebook later, from any
+window or device, and its outputs come back and keep streaming. There is no
+command to run.
 
-Existing `.py` scripts still open as text by default. **Open as Notebook** keeps
-the optional cell view; **Copy as Python Notebook…** creates a separate `.pynb`
-with the saved source, current outputs and notebook metadata. Copying saves dirty
-source first, refuses running/queued work and existing destinations, and stays
-inside one project. It preserves the original file and creates a new URI/session:
-**live variables, imported modules and full execution history do not migrate**.
-Images are copied independently so rerunning one file cannot delete the other's
-saved images. If the source has saved local session history, open it first so the
-daemon can restore its authoritative outputs; wait for any unfinished work to recover before
-copying. A deliberately terminated source copies no retired outputs or widgets.
-
-**Import Jupyter Notebook…** defaults to `.pynb`; **Export to Jupyter Notebook…**
-accepts `.pynb` and existing `.py`. **Export Python Script…** makes a separate
-percent `.py` copy with saved outputs/metadata. Existing output/session history at
-a destination also prevents copying, even if its source file was deleted.
-
-That's all. Selecting the kernel attaches the session and restores any earlier
-output automatically; new output then streams into the cells live as it is
-produced. Close the laptop or drop the connection — the daemon and kernel keep
-running. Reopen the notebook later (VSCode remembers the kernel) and the outputs
-are back and resume streaming, with **no command to run**.
-
-Outputs are matched to cells in three tiers — recorded cell index + content
-hash first, then content hash across moved cells, and finally recorded cell
-index when a cell was edited in place (flagged stale until re-run) — so outputs
-survive cell insertions, moves, edits, and reopens. The source file itself
-stays pure source — outputs never touch the file, so diffs stay clean.
+Over a **Tunnel** or **Remote-SSH** this works unchanged: the extension runs on
+the remote host and talks to the daemon's local socket, with no port forwarding.
 
 ## What you get
 
-- **Python Notebook** for percent `.pynb` files and optional `.py` views, with per-cell run and a kernel
-  toolbar (interrupt / restart / select interpreter).
-- **Automatic restore + live sync** — selecting the kernel (or reopening the
-  file) rebuilds the folded output state into the cells and resumes streaming;
-  stdout/stderr, `matplotlib` figures, and rich `display_data` arrive in real
-  time, with no manual command.
-- **ipywidgets** — standard controls, anywidget 0.11.x and some installed classic
-  AMD widgets with matching metadata and version exports, including certain locally
-  mapped dependencies, render through the widget manager; bqplot 0.13.1 and
-  pythreejs 2.4.2 are verified. Custom JavaScript requires a trusted workspace and
-  a live kernel; saved or untrusted custom models fall back to text. Reconnection
-  restores synchronized traits without replaying clicks. Browser-only state and
-  transient custom messages are not generally recoverable. CDN loading, broader
-  dependency discovery, Lab-only bundles and dedicated `Output` layout remain in progress.
-  Some mixed saved or untrusted containers show supported labels and progress
-  bars in a clearly marked read-only snapshot with omissions indicated.
-- **Shareable outputs** — the folded output state is kept as text in
-  `<project>/.tithon/` (images referenced as deduplicated files, not embedded).
-  Commit it and whoever clones the repository opens the file with your results
-  already in it; leave it uncommitted to keep them to yourself.
+- **Plain Python on disk.** A `.pynb` is percent-format Python (`# %%` cells).
+  Outputs live under `.tithon/`, so diffs stay clean and AI agents edit cells as
+  ordinary code.
+- **Outputs that follow their cells** through inserts, moves and edits.
+- **Live widgets.** `tqdm`, standard ipywidgets and anywidget render and come
+  back at their current value after a reconnect.
+- **Outputs in Git.** Commit `.tithon/` and anyone who clones the repository
+  opens the notebook with your results in place.
+- **Language servers inside cells.** Pylance, ty and Ruff work in the notebook.
+  For Ruff, add `extend-include = ["*.pynb"]` to your Ruff config.
+- **Jupyter interchange.** **Import Jupyter Notebook…** and
+  **Export to Jupyter Notebook…**, without executing code.
 
-## Commands
+Existing `.py` scripts open as text. **Open as Notebook** shows one as cells,
+and **Tithon: Always Open With…** remembers the choice per file.
 
-Restore and live sync happen automatically, so there are no commands for them.
-The rest are run from the command palette or the notebook's kernel toolbar:
+## Useful commands and settings
 
-| Command | What it does |
-| --- | --- |
-| `Tithon: New Python Notebook…` | Create a `.pynb` file that opens directly as a notebook. |
-| `Tithon: Copy as Python Notebook…` | Copy saved `.py` source and current outputs to an independent `.pynb`. |
-| `Tithon: Export Python Script…` | Copy `.pynb` source and outputs to an independent `.py`. |
-| `Tithon: Import Jupyter Notebook…` | Import a Python nbformat 4 `.ipynb` into a `.pynb` (or `.py`) with saved outputs and metadata. |
-| `Tithon: Export to Jupyter Notebook…` | Export a `.pynb` or `.py` and its current/saved outputs to a `.ipynb` without running code. |
-| `Tithon: Open as Notebook` / `Open as Text Editor` | Toggle a `.py` between notebook and plain text, once. |
-| `Tithon: Always Open With…` | Choose Text Editor or Notebook for this one file, permanently in this workspace. |
-| `Tithon: Restart Kernel` | Restart the session's kernel. |
-| `Tithon: Interrupt Kernel` | Interrupt the running cell. |
-| `Tithon: Select Python Interpreter` | Choose the interpreter the daemon runs the kernel as. |
-| `Tithon: Restart Daemon` | Restart the host daemon. |
-| `Tithon: Terminate Kernel…` | Kill the session's kernel. Reopening the file then leaves the cells empty — terminating means you are done with that session. |
-| `Tithon: Restore Previous Outputs` | Put a terminated session's outputs back into the cells. |
-| `Tithon: Retry Output Restore` | Retry connecting and restoring outputs for the active notebook after a failure. |
-| `Tithon: Show Session Storage` | Show the active `TITHON_HOME`, retention policy, and per-session SQLite/image storage usage. |
+| Command                             | What it does                                           |
+| ----------------------------------- | ------------------------------------------------------ |
+| `Tithon: Terminate Kernel…`         | Free a kernel and its GPU memory                       |
+| `Tithon: Restore Previous Outputs`  | Bring back a terminated session's outputs              |
+| `Tithon: Select Python Interpreter` | Choose the Python the kernel runs on                   |
+| `Tithon: Show Session Storage`      | See where history is stored and how much space it uses |
 
-`Run Cell` is offered as a CodeLens above each `# %%` cell.
+| Setting                    | Default | Purpose                                                          |
+| -------------------------- | ------- | ---------------------------------------------------------------- |
+| `tithon.pythonPath`        | `""`    | Python for the daemon; empty uses the selected interpreter       |
+| `tithon.kernelIdleTimeout` | `0`     | Shut down idle, unattached kernels after N seconds (`0` = never) |
+| `tithon.homePath`          | `""`    | Where the daemon keeps its socket and history                    |
 
-A `.py` opens as a normal text editor unless you say otherwise. Use `Tithon:
-Always Open With…` from the Explorer context menu, editor title, or Notebook
-toolbar to choose `Text Editor` or `Notebook`. Tithon records the choice as one
-`workbench.editorAssociations` entry in the workspace's `.vscode/settings.json`,
-so it survives reloads and can be committed for the team. If you want *every*
-`.py` in a workspace to open as a notebook, that is VSCode's own setting rather
-than a Tithon command — `Reopen With…` → `Configure default editor…` on a `.py`,
-choosing `Notebook - Tithon`. It writes `"*.py": "tithon-py"`, which applies to
-every Python file in scope, `setup.py` and `conftest.py` included.
-
-## Settings
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `tithon.autoStartDaemon` | `true` | Start the daemon on the host when it isn't already running (spawned detached, so it survives reconnects). |
-| `tithon.daemonCommand` | `tithon` | Command used to launch the daemon (run as `<command> daemon`). Set an absolute path if `tithon` isn't on `PATH`. |
-| `tithon.pythonPath` | `""` | Run the daemon as `<python> -m tithon daemon`. Leave empty to use the Python extension's selected interpreter. |
-| `tithon.homePath` | `""` | Directory for the daemon socket, log, kernel files, and journals (`~/` supported). Empty uses `TITHON_HOME`, then `~/.tithon`. Changing this requires Reload Window. |
-| `tithon.reconnectMaxAttempts` | `0` | Maximum automatic reconnect attempts after losing the daemon connection (`0` = unlimited). |
-| `tithon.confirmDestructiveActions` | `true` | Ask in a modal dialog before Restart Kernel, Terminate Kernel and Restart Daemon. Set to `false` if you restart often and accept losing the namespace to a mis-click. |
-| `tithon.kernelIdleTimeout` | `0` | Reap a kernel after this many seconds idle (no attached notebook, nothing running or queued). Outputs stay restorable from the journal; only the in-memory variables are lost. `0` = never. Applied when the extension (re)starts the daemon. |
-| `tithon.historyRetentionDays` | `0` | Delete raw output-history messages older than this many days while preserving current cell outputs, widgets, and lifecycle events (`0` = keep all). Applied when the extension (re)starts the daemon. |
-| `tithon.historyTargetMiB` | `0` | Soft per-session limit in MiB for raw output-history messages and referenced images (`0` = keep all). Applied when the extension (re)starts the daemon. |
+The full lists are in the **Feature Contributions** tab.
 
 ## How it works
 
-A long-lived **daemon** on the host owns the kernel and serves clients:
+![Tithon architecture overview: a detached ipykernel, a daemon that records its output and widget state, and VS Code and CLI clients connected over a 0600 unix socket.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/how-it-works.png)
 
-![Tithon architecture overview: a detached ipykernel connected to the tithon daemon over ZMQ. The daemon journals every message verbatim to SQLite/WAL, folds it into a current-display snapshot plus an ipywidgets state mirror, stores rich outputs as files referenced by hash, and serves VSCode and CLI clients over a 0600 unix socket — no TCP.](https://raw.githubusercontent.com/rnoro/tithon/main/docs/how-it-works.png)
+- The kernel is standard `ipykernel`, started detached from the daemon, so the
+  daemon can crash or be upgraded while the kernel keeps running.
+- The daemon records kernel output on the host. A reconnecting client gets the
+  current state plus whatever it missed, not a replay of every message.
+- The daemon listens only on a `0600` unix socket, never TCP.
 
-- The kernel runs **detached** (`setsid`), so it is not a child of the daemon.
-  The daemon can crash, restart, or be upgraded; the kernel keeps running and
-  re-attaches through a persisted connection file.
-- Every execution iopub message (plus daemon lifecycle and widget comm events) is
-  journaled to append-only SQLite (WAL) by default, alongside a per-execution
-  _folded_ snapshot — the current display state — so reconnects are fast.
-- The extension attaches with the last sequence number it saw and gets a
-  snapshot plus an ordered, gapless delta stream; reconnecting is just resuming
-  the stream.
-- Rich outputs (images) are stored as files and referenced by hash, never
-  base64-embedded, and `ipywidgets` traffic is folded into a `widget-state+json`
-  snapshot, so a `tqdm` bar or a slider comes back at its real value.
-- Backpressure is bounded: per-subscriber buffers are capped, and a client that
-  falls too far behind is dropped and resyncs on reconnect — so one slow client
-  can't grow daemon memory or block the others.
-- The daemon binds a `0600` unix domain socket. No TCP.
-
-The kernel itself is plain `ipykernel` — Tithon replaces the session-management
-layer around it, not the execution engine.
-
-## How it pairs with the daemon
-
-The extension and the daemon must run on the **same host** and share
-`TITHON_HOME` (both default to `~/.tithon` for the same user). A
-Tunnel/Remote-SSH session satisfies this for free: the extension host runs on
-the host, so it uses the host-local socket and needs no forwarding. If you
-instead run the extension on your laptop against a _remote_ daemon, you must
-forward the unix socket yourself (SSH `RemoteForward`, `socat`, …) — that is not
-the default path.
-
-The daemon also ships a CLI (`tithon run`, `tithon attach`, `tithon status`) for
-driving the same sessions from a terminal. See the [main project README][repo]
-and the [design spec][spec] for the full architecture.
-
-### Python language services
-
-Notebook cells use the Python language. Pylance same/cross-cell definitions need
-Tithon's guarded pseudo-path redirect for both suffixes. Ruff's default file
-selection excludes `.pynb`; add this explicitly to your project's `ruff.toml`
-(or the equivalent `tool.ruff` setting in `pyproject.toml`):
-
-```toml
-extend-include = ["*.pynb"]
-```
-
-Tithon never rewrites your Ruff configuration. Real VS Code probes verified
-Pylance completion, imported-file definitions and inlay providers; ty diagnostics,
-cell/imported definitions and inlays; and Ruff diagnostics/edit/reopen with the
-setting above. Full language compatibility is not established: Pylance diagnostics
-and the targeted ty `str.upper` completion did not pass matched `.py` controls.
-The usual text/notebook lifecycle guards remain necessary when manually reopening
-source as text; routine text-toggle controls are shown only for `.py`.
+The extension and the daemon must run on the same host. The daemon also ships a
+CLI for terminals and AI agents; see the [project README][repo].
 
 ## License
 
 [MIT](https://github.com/rnoro/tithon/blob/main/LICENSE).
 
 [repo]: https://github.com/rnoro/tithon
-[spec]: https://github.com/rnoro/tithon/blob/main/docs/SPEC.md
 [issues]: https://github.com/rnoro/tithon/issues

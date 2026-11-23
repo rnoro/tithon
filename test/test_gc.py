@@ -1,7 +1,7 @@
 """Kernel lifetime policy (idle GC): eligibility + sweep semantics.
 
 A detached kernel otherwise lives forever; with per-file kernels every opened
-file leaves one more immortal process on the GPU host (SPEC §3.1). The idle-GC
+file leaves one more immortal process on the GPU host. The idle-GC
 reaps a session only when NOTHING can lose work: no attached client, no queued
 or running batch, no pending input() prompt, kernel not busy, and the idle
 clock past the operator's opt-in timeout (0 = disabled, the default). These
