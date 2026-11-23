@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/rnoro/tithon/compare/vscode-v0.3.0...vscode-v0.3.1) (2026-11-23)
+
+
+### Features
+
+* **extension:** show the kernel execution order under each cell ([#46](https://github.com/rnoro/tithon/issues/46)) ([5201928](https://github.com/rnoro/tithon/commit/5201928b5e07369e8458ff5b5971ec17c08bd67a))
+* report a bug in one step ([#51](https://github.com/rnoro/tithon/issues/51)) ([e7043f9](https://github.com/rnoro/tithon/commit/e7043f958f59268cf702328c2108b22d84e9430f)), closes [#50](https://github.com/rnoro/tithon/issues/50)
+
 ## [0.3.0](https://github.com/rnoro/tithon/compare/vscode-v0.2.5...vscode-v0.3.0) (2026-11-02)
 
 

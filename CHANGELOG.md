@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.2](https://github.com/rnoro/tithon/compare/v0.3.1...v0.3.2) (2026-11-23)
+
+
+### Features
+
+* **extension:** show the kernel execution order under each cell ([#46](https://github.com/rnoro/tithon/issues/46)) ([5201928](https://github.com/rnoro/tithon/commit/5201928b5e07369e8458ff5b5971ec17c08bd67a))
+* report a bug in one step ([#51](https://github.com/rnoro/tithon/issues/51)) ([e7043f9](https://github.com/rnoro/tithon/commit/e7043f958f59268cf702328c2108b22d84e9430f)), closes [#50](https://github.com/rnoro/tithon/issues/50)
+
+
+### Bug Fixes
+
+* **release:** release a root-only grouped PR ([#43](https://github.com/rnoro/tithon/issues/43)) ([9a1323d](https://github.com/rnoro/tithon/commit/9a1323d876ba9ac39cf08ab5f6a0365c39668717))
+
+
+### Documentation
+
+* cut the spec, contributing guide and readmes to essentials ([#49](https://github.com/rnoro/tithon/issues/49)) ([117706f](https://github.com/rnoro/tithon/commit/117706f7671f00c73b5ad927c675c0252d7e76ba)), closes [#48](https://github.com/rnoro/tithon/issues/48)
+* update README ([1135a44](https://github.com/rnoro/tithon/commit/1135a44995bfb536190f67047694651328d121f9))
+
 ## [0.3.1](https://github.com/rnoro/tithon/compare/v0.3.0...v0.3.1) (2026-11-02)
 
 
